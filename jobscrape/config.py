@@ -1,0 +1,176 @@
+"""Runtime configuration. API keys come from the environment or a .env file."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_DIR = PROJECT_ROOT / "data"
+CACHE_DIR = DATA_DIR / "cache"
+DB_PATH = DATA_DIR / "jobs.db"
+EXPORT_DIR = DATA_DIR / "exports"
+
+
+def _load_dotenv() -> None:
+    """Minimal .env reader so we don't need python-dotenv as a dependency."""
+    env_file = PROJECT_ROOT / ".env"
+    if not env_file.exists():
+        return
+    for raw in env_file.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        # Real environment variables win over the file.
+        os.environ.setdefault(key, value)
+
+
+_load_dotenv()
+
+
+def _env_str(name: str, default: str) -> str:
+    return os.environ.get(name, "") or default
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, "") or default)
+    except ValueError:
+        return default
+
+
+# --- Database -------------------------------------------------------------
+# PostgreSQL. `psycopg2` is the driver: the storage layer is synchronous and is
+# called under an asyncio lock, so an async driver would mean rewriting every
+# call site for no present gain.
+DATABASE_URL = _env_str(
+    "DATABASE_URL",
+    f"postgresql+psycopg2:///{os.environ.get('PGDATABASE') or 'jobscrape'}",
+)
+#: Used by the test suite. Kept separate so a stray test run can never truncate
+#: the real archive — see `tests/conftest.py`, which refuses to run without it.
+TEST_DATABASE_URL = _env_str(
+    "JOBSCRAPE_TEST_DATABASE_URL", "postgresql+psycopg2:///jobscrape_test"
+)
+#: A wide sweep runs ~16 concurrent workers that all reach the same connection.
+DB_POOL_SIZE = _env_int("JOBSCRAPE_DB_POOL_SIZE", 5)
+DB_MAX_OVERFLOW = _env_int("JOBSCRAPE_DB_MAX_OVERFLOW", 10)
+DB_POOL_TIMEOUT = _env_float("JOBSCRAPE_DB_POOL_TIMEOUT", 30.0)
+DB_ECHO = os.environ.get("JOBSCRAPE_DB_ECHO", "") in ("1", "true", "yes")
+
+#: How long a posting may be absent from a successful board fetch before it is
+#: treated as closed. Closing on the first absence is wrong often enough to
+#: matter: boards paginate inconsistently and truncate under load, and a posting
+#: wrongly closed disappears from the queue while it is still hiring.
+CLOSURE_GRACE_HOURS = _env_int("JOBSCRAPE_CLOSURE_GRACE_HOURS", 48)
+
+#: Sources the fetch sweep can never close, so their postings need URL probing.
+#:
+#: These are the *sampling* sources: they read a bounded slice rather than
+#: enumerating a catalogue, so absence from a run means nothing and they never
+#: report a complete crawl (see `sources.base.JobBatch`). Board sources are
+#: swept per board, and a global source that reports a complete crawl is swept
+#: by source — neither belongs here.
+LIVENESS_SOURCES = tuple(
+    s for s in _env_str("JOBSCRAPE_LIVENESS_SOURCES", "hackernews,jsearch").split(",") if s
+)
+
+# --- Logging / observability ----------------------------------------------
+#: "text" (human, the default) or "json" (one object per line, for shipping).
+LOG_FORMAT = _env_str("JOBSCRAPE_LOG_FORMAT", "text")
+LOG_LEVEL = _env_str("JOBSCRAPE_LOG_LEVEL", "INFO")
+
+# --- Contact / politeness -------------------------------------------------
+# A descriptive UA with a contact address is the courteous default when
+# hitting public endpoints; several providers ask for one explicitly.
+CONTACT_EMAIL = os.environ.get("JOBSCRAPE_CONTACT", "jobscrape@example.com")
+USER_AGENT = os.environ.get(
+    "JOBSCRAPE_UA",
+    f"jobscrape/1.0 (+{CONTACT_EMAIL})",
+)
+
+# --- HTTP tunables --------------------------------------------------------
+GLOBAL_CONCURRENCY = _env_int("JOBSCRAPE_CONCURRENCY", 16)
+PER_HOST_CONCURRENCY = _env_int("JOBSCRAPE_PER_HOST_CONCURRENCY", 4)
+PER_HOST_DELAY = _env_float("JOBSCRAPE_PER_HOST_DELAY", 0.25)
+
+# Hosts that need gentler treatment than the default. Every company on these
+# ATSes shares one hostname, so a broad sweep concentrates all its traffic on a
+# single endpoint. Ashby in particular returns 429s under the default rate, and
+# a rate-limited board is a board whose jobs we never see — being slower here is
+# strictly better than losing data.
+HOST_LIMITS: dict[str, tuple[int, float]] = {
+    # host: (max concurrent requests, minimum seconds between requests)
+    "jobs.ashbyhq.com": (2, 0.7),
+    "api.smartrecruiters.com": (3, 0.4),
+    "apply.workable.com": (3, 0.4),
+    "api.lever.co": (3, 0.3),
+    "index.commoncrawl.org": (2, 1.0),
+    # Small free services — deliberately gentle so we stay welcome.
+    "himalayas.app": (2, 0.5),
+    "remotive.com": (1, 1.0),
+    "jobicy.com": (1, 1.0),
+    "weworkremotely.com": (1, 1.0),
+    # Certificate-transparency lookups: free tiers with tight quotas.
+    "api.certspotter.com": (1, 2.0),
+    "api.hackertarget.com": (1, 3.0),
+    "crt.sh": (1, 3.0),
+}
+HTTP_TIMEOUT = _env_float("JOBSCRAPE_TIMEOUT", 45.0)
+MAX_RETRIES = _env_int("JOBSCRAPE_MAX_RETRIES", 4)
+CACHE_TTL_SECONDS = _env_int("JOBSCRAPE_CACHE_TTL", 6 * 3600)
+CACHE_ENABLED = os.environ.get("JOBSCRAPE_CACHE", "1") not in ("0", "false", "no")
+
+# --- Optional API keys ----------------------------------------------------
+USAJOBS_API_KEY = os.environ.get("USAJOBS_API_KEY", "")
+USAJOBS_EMAIL = os.environ.get("USAJOBS_EMAIL", CONTACT_EMAIL)
+ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID", "")
+ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
+JOOBLE_API_KEY = os.environ.get("JOOBLE_API_KEY", "")
+# JSearch on RapidAPI: aggregated LinkedIn/Indeed/Glassdoor/ZipRecruiter.
+RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+# Its free tier is ~200 requests/month, so the default budget is deliberately
+# small — one run should not consume the month's quota.
+JSEARCH_MAX_REQUESTS = _env_int("JSEARCH_MAX_REQUESTS", 6)
+# Which RapidAPI job API to call. Overridable because these come and go — the
+# default host currently has no registered endpoints on RapidAPI's side.
+RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "jsearch.p.rapidapi.com")
+RAPIDAPI_PATH = os.environ.get("RAPIDAPI_PATH", "/search")
+
+# --- Common Crawl ---------------------------------------------------------
+CC_COLLECTIONS = _env_int("JOBSCRAPE_CC_COLLECTIONS", 3)
+CC_INDEX_ROOT = "https://index.commoncrawl.org"
+
+# --- Workday --------------------------------------------------------------
+# Workday has no "list everything" call, but an EMPTY search string enumerates
+# the whole board — measured far better than keyword search on every tenant
+# tried (AIG 475 vs 28, 3M 655 vs 41, NVIDIA 2,000 vs 1,694). Listing is
+# paginated 20 at a time, so this caps how deep a single board is walked:
+# 1,000 = up to 50 list requests for the largest employers, and no cost at all
+# for the many boards that hold fewer postings than the cap.
+WORKDAY_MAX_PER_BOARD = _env_int("JOBSCRAPE_WORKDAY_MAX_PER_BOARD", 1000)
+
+# --- Global-source pagination caps ----------------------------------------
+# Both of these were verified to actually bind (i.e. the source still had more
+# to give when the old limit stopped us), so they are not theoretical ceilings:
+#   Himalayas — still returning full pages at page 60 under the old 50-page cap
+#   Jooble    — reports ~196,000 matches for one term; 10 pages saw 200 of them
+# Raising them costs proportionally more requests, so both stay tunable and the
+# role/region/date filters still trim whatever comes back.
+HIMALAYAS_MAX_PAGES = _env_int("JOBSCRAPE_HIMALAYAS_MAX_PAGES", 150)
+JOOBLE_MAX_PAGES = _env_int("JOBSCRAPE_JOOBLE_MAX_PAGES", 30)
+
+
+def ensure_dirs() -> None:
+    for path in (DATA_DIR, CACHE_DIR, EXPORT_DIR):
+        path.mkdir(parents=True, exist_ok=True)
