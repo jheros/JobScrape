@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jobscrape"
+version = "1.0.0"
+description = "Collect US software job postings from ATS boards and public job APIs"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "SQLAlchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "alembic>=1.13",
+]
+
+[project.optional-dependencies]
+# Excel export. openpyxl only — pandas/numpy are deliberately not required.
+excel = ["openpyxl>=3.1"]
+dev = ["pytest>=7.4", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+jobscrape = "jobscrape.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jobscrape*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
