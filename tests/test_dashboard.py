@@ -1,0 +1,247 @@
+"""Dashboard analytics, charts and routes.
+
+The web layer is thin by design, so most of the risk sits in the queries and in
+the run controller. Both are tested without starting a server.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from jobscrape import config, db
+from jobscrape.dashboard import analytics, charts
+from jobscrape.dashboard.runner import STAGES, RunManager
+from jobscrape.models import Job
+
+
+def _backdate_last_seen(conn: db.Connection, source_job_id: str, hours: float) -> None:
+    """See tests/test_tracking.py — `mark_board_closures` only closes a
+    posting once it has been unseen for `config.CLOSURE_GRACE_HOURS`, so
+    exercising real closure needs a row that looks old, not just-upserted.
+    """
+    stamp = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    conn.execute(
+        "UPDATE jobs SET last_seen_at = ? WHERE source_job_id = ?", (stamp, source_job_id)
+    )
+
+
+@pytest.fixture()
+def populated(tmp_path):
+    path = tmp_path / "d.db"
+    with db.session(path) as conn:
+        db.upsert_jobs(conn, [
+            Job(source="greenhouse", source_job_id="1", title="Software Engineer",
+                company="Acme", company_slug="acme", job_url="https://x/1",
+                location_raw="Austin, TX", state="TX", posted_at="2026-07-01",
+                salary_min=150000, salary_max=200000, salary_currency="USD",
+                description_html="<p>Build</p>"),
+            Job(source="greenhouse", source_job_id="2", title="Backend Engineer",
+                company="Acme", company_slug="acme", job_url="https://x/2",
+                location_raw="Remote - US", state=None, posted_at="2026-07-02"),
+            Job(source="lever", source_job_id="3", title="Platform Engineer",
+                company="Globex", company_slug="globex", job_url="https://x/3",
+                location_raw="Austin, TX (Hybrid)", state="TX", posted_at="2026-07-03"),
+        ])
+        db.add_companies(conn, "greenhouse", ["acme", "other"])
+        db.mark_company(conn, "greenhouse", "acme", "live", 2)
+        yield conn, path
+
+
+# --- analytics ------------------------------------------------------------
+
+def test_overview_counts(populated) -> None:
+    conn, _ = populated
+    data = analytics.overview(conn)
+    assert data["total_jobs"] == 3
+    assert data["open_jobs"] == 3
+    assert data["untriaged"] == 3
+    assert data["sources"] == 2
+    assert data["live_boards"] == 1
+
+
+def test_triage_reduces_the_review_queue(populated) -> None:
+    """The number the daily workflow depends on."""
+    conn, _ = populated
+    db.set_job_status(conn, "greenhouse", "1", "applied")
+    assert analytics.overview(conn)["untriaged"] == 2
+
+
+def test_closed_jobs_leave_the_open_count(populated) -> None:
+    conn, _ = populated
+    _backdate_last_seen(conn, "2", config.CLOSURE_GRACE_HOURS + 1)
+    db.mark_board_closures(conn, "greenhouse", "acme", {"1"})
+    data = analytics.overview(conn)
+    assert data["open_jobs"] == 2 and data["closed_jobs"] == 1
+
+
+def test_next_action_prioritises_by_leverage() -> None:
+    empty = {"total_jobs": 0, "unchecked_boards": 0, "untriaged": 0}
+    assert analytics.next_action(empty)["action"] == "sweep"
+
+    backlog = {"total_jobs": 100, "unchecked_boards": 3000, "untriaged": 50}
+    assert analytics.next_action(backlog)["action"] == "validate", (
+        "a large unvalidated backlog outranks triage"
+    )
+
+    triage = {"total_jobs": 100, "unchecked_boards": 10, "untriaged": 50}
+    assert analytics.next_action(triage)["action"] == "jobs"
+
+    done = {"total_jobs": 100, "unchecked_boards": 10, "untriaged": 0}
+    assert analytics.next_action(done)["action"] == "fetch"
+
+
+def test_search_defaults_to_untriaged(populated) -> None:
+    conn, _ = populated
+    db.set_job_status(conn, "greenhouse", "1", "dismissed")
+    rows, total = analytics.search_jobs(conn, status="new")
+    assert total == 2
+    assert all(r["source_job_id"] != "1" for r in rows)
+
+
+def test_search_filters_combine(populated) -> None:
+    conn, _ = populated
+    _, total = analytics.search_jobs(conn, status="all", source="lever")
+    assert total == 1
+    _, total = analytics.search_jobs(conn, status="all", state="TX")
+    assert total == 2
+    _, total = analytics.search_jobs(conn, status="all", query="Backend")
+    assert total == 1
+    _, total = analytics.search_jobs(conn, status="all", min_salary=190000)
+    assert total == 1
+
+
+def test_search_hides_closed_by_default(populated) -> None:
+    conn, _ = populated
+    _backdate_last_seen(conn, "2", config.CLOSURE_GRACE_HOURS + 1)
+    db.mark_board_closures(conn, "greenhouse", "acme", {"1"})
+    _, hidden = analytics.search_jobs(conn, status="all")
+    _, shown = analytics.search_jobs(conn, status="all", include_closed=True)
+    assert hidden == 2 and shown == 3
+
+
+def test_timeline_has_no_gaps(populated) -> None:
+    """Missing days must render as zero, not vanish and distort the axis."""
+    conn, _ = populated
+    series = analytics.jobs_over_time(conn, days=10)
+    assert len(series) == 11
+    assert all("date" in p and "count" in p for p in series)
+
+
+def test_coverage_funnel(populated) -> None:
+    conn, _ = populated
+    rows = analytics.coverage(conn)
+    gh = next(r for r in rows if r["ats"] == "greenhouse")
+    assert gh["discovered"] == 2 and gh["live"] == 1 and gh["unchecked"] == 1
+
+
+def test_run_history_parses_stats(populated) -> None:
+    conn, _ = populated
+    run_id = db.start_run(conn, "fetch", "fetch")
+    db.finish_run(conn, run_id, "ok", {"rows_touched": 42})
+    history = analytics.run_history(conn)
+    assert history[0]["stats_parsed"]["rows_touched"] == 42
+    assert history[0]["duration"]
+
+
+def test_analytics_survive_an_empty_database(tmp_path) -> None:
+    """A brand-new install must render, not crash."""
+    with db.session(tmp_path / "empty.db") as conn:
+        data = analytics.overview(conn)
+        assert data["total_jobs"] == 0
+        assert analytics.next_action(data)["action"] == "sweep"
+        assert analytics.by_source(conn) == []
+        assert analytics.latest_funnel(conn) == []
+        rows, total = analytics.search_jobs(conn)
+        assert rows == [] and total == 0
+
+
+# --- charts ---------------------------------------------------------------
+
+def test_charts_emit_svg() -> None:
+    series = [{"date": "2026-07-01", "count": 5}, {"date": "2026-07-02", "count": 9}]
+    svg = charts.area_chart(series)
+    assert svg.startswith("<svg") and "var(--series-1)" in svg
+    assert 'role="img"' in svg and "aria-label" in svg
+
+
+def test_charts_degrade_to_an_empty_state() -> None:
+    assert "chart-empty" in charts.area_chart([])
+    assert "chart-empty" in charts.bar_chart([], label_key="a", value_key="b")
+    assert "chart-empty" in charts.stacked_bars([], label_key="a", segments=[("x", "X")])
+
+
+def test_stacked_bars_label_segments() -> None:
+    """Direct labels are the relief the light-mode contrast warning requires."""
+    rows = [{"ats": "greenhouse", "live": 1000, "unchecked": 800}]
+    svg = charts.stacked_bars(
+        rows, label_key="ats", segments=[("live", "Live"), ("unchecked", "Unchecked")]
+    )
+    assert "seg-value" in svg, "wide segments must carry a visible value"
+    assert "<title>" in svg, "every segment needs a hover tooltip"
+
+
+def test_series_slots_are_never_cycled() -> None:
+    """A fifth category must not silently reuse slot 1's hue."""
+    assert len(charts.SERIES) == 4
+    assert len(set(charts.SERIES)) == 4
+
+
+def test_legend_is_present_for_multiple_series() -> None:
+    out = charts.legend([("a", "Alpha"), ("b", "Beta")])
+    assert out.count("legend-item") == 2
+    assert "Alpha" in out and "Beta" in out
+
+
+def test_chart_escapes_untrusted_labels() -> None:
+    """Company names land in SVG; they must not be able to inject markup."""
+    rows = [{"company": '<script>alert(1)</script>', "c": 5}]
+    svg = charts.bar_chart(rows, label_key="company", value_key="c")
+    assert "<script>" not in svg
+    assert "&lt;script&gt;" in svg
+
+
+# --- runner ---------------------------------------------------------------
+
+def test_stage_allowlist_prevents_arbitrary_commands() -> None:
+    """The web layer must never be able to assemble its own command line."""
+    assert set(STAGES) == {"discover", "discover-fast", "validate", "fetch", "export"}
+    for argv in STAGES.values():
+        assert argv[0] in {"discover", "validate", "fetch", "export"}
+
+
+async def test_unknown_stage_is_rejected(tmp_path) -> None:
+    manager = RunManager(str(tmp_path / "r.db"))
+    with pytest.raises(ValueError):
+        await manager.start("rm -rf /")
+
+
+def test_progress_parsing() -> None:
+    manager = RunManager()
+    from jobscrape.dashboard.runner import ActiveRun
+
+    run = ActiveRun(run_id=1, stage="fetch", command="fetch")
+    manager._parse(run, "12:00 INFO greenhouse       fetching 1343 boards...")
+    assert run.progress["boards_total"] == 1343
+    assert run.progress["current"] == "greenhouse"
+
+    manager._parse(
+        run,
+        "12:05 INFO greenhouse       done: 1343 boards, 72949 postings seen, "
+        "7482 matched, 7482 new, 0 refreshed, 0 closed",
+    )
+    assert run.progress["sources"]["greenhouse"]["new"] == 7482
+    assert run.progress["jobs_new"] == 7482
+
+    manager._parse(run, "12:06 INFO   ashby: 950/1566 probed (live=814 empty=40 dead=96)")
+    assert run.progress["boards_done"] == 950
+
+
+def test_progress_parsing_ignores_unrelated_lines() -> None:
+    manager = RunManager()
+    from jobscrape.dashboard.runner import ActiveRun
+
+    run = ActiveRun(run_id=1, stage="fetch", command="fetch")
+    assert manager._parse(run, "12:00 INFO something entirely unrelated") is None
+    assert run.progress == {}
