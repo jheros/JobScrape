@@ -1,0 +1,857 @@
+"""Command-line interface: discover -> validate -> fetch -> export."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import os
+import sys
+from datetime import date
+from functools import partial
+from pathlib import Path
+from typing import Any
+
+from . import config, db, dedupe, export as export_mod
+from .observability import setup_logging
+from .discovery import (
+    certtransparency,
+    commoncrawl,
+    github_lists,
+    validate as validate_mod,
+)
+from .filters import (
+    FilterFunnel,
+    apply_filters,
+    apply_filters_counted,
+    cheap_prefilter,
+    parse_date,
+)
+from .http import Fetcher
+from .models import Job
+from .sources import (
+    ALL_SOURCE_NAMES,
+    BOARD_SOURCES,
+    GLOBAL_SOURCES,
+    restricted_board_sources,
+    restricted_sources,
+)
+from .sources.base import is_complete
+
+log = logging.getLogger("jobscrape")
+
+
+def _command_line() -> str:
+    """The invocation, recorded with each run so history is reproducible."""
+    return " ".join(sys.argv[1:]) or "(no args)"
+
+#: Board ATSes selectable on the command line. Restricted boards are
+#: included so their discovered slugs can be validated on request, even
+#: though a normal fetch leaves them out.
+_ATS_CHOICES = sorted(set(BOARD_SOURCES) | {"avature"})
+
+#: How many cooled boards to probe before concluding a platform is still down.
+#: Bounded because the probe runs every sweep; three is enough to distinguish
+#: "the platform is back" from "this one board is genuinely broken".
+MAX_RECOVERY_PROBES = 3
+
+
+# --------------------------------------------------------------------------
+# discover
+# --------------------------------------------------------------------------
+
+async def cmd_discover(args: argparse.Namespace) -> int:
+    vectors = set(args.vector or ["cc", "ct", "github"])
+    results: dict[str, set[str]] = {}
+
+    def merge(found: dict[str, set[str]]) -> None:
+        for ats, slugs in found.items():
+            results.setdefault(ats, set()).update(slugs)
+
+    async with Fetcher(use_cache=not args.no_cache) as fetcher:
+        if "cc" in vectors:
+            log.info("Vector: Common Crawl index")
+            merge(await commoncrawl.discover_all(
+                fetcher,
+                collections=args.collections,
+                max_pages=args.max_pages,
+                include_workday=not args.no_workday,
+            ))
+        if "ct" in vectors:
+            # Independent of Common Crawl, so it still works when the index is
+            # rate-limiting us — which it periodically does.
+            log.info("Vector: certificate transparency")
+            merge(await certtransparency.discover_all(fetcher))
+        if "github" in vectors:
+            log.info("Vector: curated GitHub job lists")
+            merge(await github_lists.discover_all(fetcher))
+
+    if not results:
+        log.error("Discovery returned nothing from any vector.")
+        return 1
+
+    with db.session(args.db) as conn:
+        total_new = 0
+        for ats, slugs in sorted(results.items()):
+            added = db.add_companies(conn, ats, sorted(slugs))
+            total_new += added
+            log.info("%-16s %6d found, %6d new", ats, len(slugs), added)
+        log.info("Discovery complete: %d new companies added", total_new)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# validate
+# --------------------------------------------------------------------------
+
+async def cmd_validate(args: argparse.Namespace) -> int:
+    # Restricted boards are validated only when named explicitly, never as part
+    # of a default sweep.
+    known = set(BOARD_SOURCES) | set(restricted_board_sources())
+    targets = args.ats or list(BOARD_SOURCES)
+    with db.session(args.db) as conn:
+        async with Fetcher(use_cache=not args.no_cache) as fetcher:
+            for ats in targets:
+                if ats not in known:
+                    log.warning("Unknown ATS %r, skipping", ats)
+                    continue
+                log.info("Validating %s boards...", ats)
+                await validate_mod.validate_ats(
+                    conn, fetcher, ats,
+                    limit=args.limit,
+                    concurrency=args.concurrency,
+                    recheck=args.recheck,
+                )
+    return 0
+
+
+# --------------------------------------------------------------------------
+# fetch
+# --------------------------------------------------------------------------
+
+async def _fetch_boards(
+    conn: db.Connection,
+    fetcher: Fetcher,
+    ats: str,
+    since: date | None,
+    until: date | None,
+    args: argparse.Namespace,
+    boards: dict[str, Any] | None = None,
+) -> tuple[dict[str, int], FilterFunnel]:
+    source = (boards or BOARD_SOURCES)[ats]
+    # Prefer boards already known to be live; fall back to unchecked ones so a
+    # fetch still works before validate has been run.
+    rows = db.get_companies(conn, ats=ats, status="live", limit=args.companies)
+    if not rows:
+        rows = db.get_companies(
+            conn, ats=ats, status=["unchecked", "live"], limit=args.companies
+        )
+    empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0, "closed": 0, "cooled_down": 0}
+    if not rows:
+        log.info("%-16s no companies discovered yet", ats)
+        return empty, FilterFunnel()
+
+    cooldown = db.boards_in_cooldown(conn, ats)
+    if cooldown and len(rows) > 1:
+        # Half-open probe. A platform-wide outage backs off every board of that
+        # platform independently, and each would then serve out up to 24h on
+        # its own clock long after the outage ended. Probing a few cooled
+        # boards costs at most MAX_RECOVERY_PROBES requests, and one success is
+        # enough evidence that the platform is answering again — so it releases
+        # all of them at once rather than waiting out the longest timer.
+        #
+        # Skipped for a single-board platform: a lone board has nothing to
+        # release, so the probe would just be its retry with extra steps.
+        probes = [r["slug"] for r in rows if r["slug"] in cooldown][:MAX_RECOVERY_PROBES]
+        for slug in probes:
+            try:
+                probed = await source.fetch_board(fetcher, slug, with_details=False)
+            except Exception:  # noqa: BLE001 - a failed probe is just no evidence
+                probed = None
+            if probed is not None:
+                cleared = db.clear_ats_cooldowns(conn, ats)
+                conn.commit()
+                log.info(
+                    "%-16s recovered: %s answered, cleared %d cooldown(s)",
+                    ats, slug, cleared,
+                )
+                cooldown = set()
+                break
+
+    skipped_cooldown = sum(1 for r in rows if r["slug"] in cooldown)
+    if skipped_cooldown:
+        log.info(
+            "%-16s %d/%d boards in cooldown after repeated failures, skipping",
+            ats, skipped_cooldown, len(rows),
+        )
+    rows = [r for r in rows if r["slug"] not in cooldown]
+    if not rows:
+        return empty, FilterFunnel()
+
+    log.info("%-16s fetching %d boards...", ats, len(rows))
+    sem = asyncio.Semaphore(args.concurrency)
+    lock = asyncio.Lock()
+    # `new` and `refreshed` are distinct rows; `kept` counts postings that
+    # passed the filters, which can exceed rows when a source repeats a
+    # requisition (e.g. one copy per location).
+    totals = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0, "closed": 0,
+              "cooled_down": skipped_cooldown}
+    # Why postings were dropped, aggregated across this ATS's boards.
+    funnel = FilterFunnel()
+
+    # Lets Ashby/SmartRecruiters/Workday skip detail requests for postings that
+    # cannot pass the real filters — the single biggest speedup available.
+    prefilter = None if (args.all_roles and args.worldwide) else cheap_prefilter
+
+    # Postings already stored skip their detail request. Reading the ids costs
+    # one indexed query per board and saves one HTTP round-trip per known
+    # posting — on a repeat sweep that is the overwhelming majority of them.
+    refetch = getattr(args, "refetch_details", False)
+
+    async def one(slug: str) -> None:
+        known: set[str] | None = None
+        if not refetch:
+            async with lock:
+                # Stored jobs *plus* postings already evaluated and rejected —
+                # the latter are the majority on a repeat sweep.
+                known = db.skippable_ids(conn, ats, slug, since, until)
+        async with sem:
+            try:
+                jobs = await source.fetch_board(
+                    fetcher, slug, prefilter=prefilter, known_ids=known
+                )
+            except Exception as exc:  # noqa: BLE001 - isolate per-company failures
+                log.debug("%s/%s failed: %s", ats, slug, exc)
+                async with lock:
+                    db.mark_board_failure(conn, ats, slug)
+                    conn.commit()
+                return
+        # `None` means the board did not respond — quite different from an empty
+        # board, and closures must NOT be inferred from it. Also board_health:
+        # a board answering with `None` repeatedly (no exception, just nothing
+        # useful) still needs to back off the same as an exception would.
+        if jobs is None:
+            async with lock:
+                db.mark_board_failure(conn, ats, slug)
+                conn.commit()
+            return
+
+        async with lock:
+            db.mark_board_success(conn, ats, slug)
+            # The board answered, so anything it no longer lists has closed
+            # (after the grace period — see mark_board_closures). Done before
+            # filtering: a posting dropped by the date window is still open,
+            # and marking it closed would be wrong.
+            totals["closed"] += db.mark_board_closures(
+                conn, source.name, slug, {j.source_job_id for j in jobs}
+            )
+            conn.commit()
+
+        if not jobs:
+            return
+        kept, board_funnel = apply_filters_counted(
+            jobs, since=since, until=until,
+            software_only=not args.all_roles, us_only=not args.worldwide,
+        )
+        # Remember what we looked at and turned away, so the next sweep does
+        # not pay for the same detail requests again.
+        kept_ids = {j.source_job_id for j in kept}
+        rejected = [
+            (j.source_job_id, j.posted_at)
+            for j in jobs
+            if j.source_job_id not in kept_ids and j.description_text
+        ]
+
+        async with lock:
+            if rejected:
+                db.record_rejected(conn, ats, slug, rejected)
+            funnel.add(board_funnel)
+            totals["raw"] += len(jobs)
+            totals["boards"] += 1
+            if kept:
+                inserted, updated = db.upsert_jobs(conn, kept)
+                totals["kept"] += len(kept)
+                totals["new"] += inserted
+                totals["refreshed"] += updated
+                # Scoped to this one company, so it's an index range scan, not
+                # a table scan — see dedupe.resolve_scoped.
+                dedupe.resolve_scoped(conn, slug)
+            if totals["boards"] % 100 == 0:
+                log.info(
+                    "  %s: %d boards, %d raw, %d new",
+                    ats, totals["boards"], totals["raw"], totals["new"],
+                )
+
+    await asyncio.gather(*(one(row["slug"]) for row in rows))
+    log.info(
+        "%-16s done: %d boards, %d postings seen, %d matched, %d new, %d refreshed, %d closed",
+        ats, totals["boards"], totals["raw"], totals["kept"],
+        totals["new"], totals["refreshed"], totals["closed"],
+    )
+    if funnel.seen:
+        log.info(
+            "%-16s filter funnel: seen=%d role=-%d location=-%d window=-%d kept=%d",
+            ats, funnel.seen, funnel.dropped_role, funnel.dropped_location,
+            funnel.dropped_window, funnel.kept,
+        )
+    return totals, funnel
+
+
+async def cmd_fetch(args: argparse.Namespace) -> int:
+    since = parse_date(args.since)
+    until = parse_date(args.until)
+    if since and until and since > until:
+        log.error("--since (%s) is after --until (%s)", since, until)
+        return 2
+
+    if since:
+        age = (date.today() - since).days
+        if age > 120:
+            log.warning(
+                "--since is %d days ago. These APIs only return CURRENTLY OPEN "
+                "postings, so jobs from that window that have since closed are "
+                "not retrievable from any source.", age,
+            )
+
+    selected = set(args.sources) if args.sources else set(ALL_SOURCE_NAMES)
+    globals_map = dict(GLOBAL_SOURCES)
+    boards_map = dict(BOARD_SOURCES)
+    if args.include_restricted:
+        log.warning(
+            "Restricted sources enabled. These scrape sites whose Terms of Service "
+            "prohibit it, and are frequently blocked; results will be unreliable."
+        )
+        extra_globals = restricted_sources()
+        extra_boards = restricted_board_sources()
+        globals_map.update(extra_globals)
+        boards_map.update(extra_boards)
+        if not args.sources:
+            selected |= set(extra_globals) | set(extra_boards)
+
+    grand_total = 0
+    # Per-source stats persisted with the run so the dashboard can chart them.
+    per_source: dict[str, dict[str, Any]] = {}
+    with db.session(args.db) as conn:
+        # The dashboard opens the run row before spawning us and passes its id
+        # through the environment; without this each dashboard-launched run
+        # would appear twice in history.
+        inherited = os.environ.get("JOBSCRAPE_RUN_ID")
+        run_id = int(inherited) if inherited else db.start_run(
+            conn, _command_line(), "fetch", pid=os.getpid()
+        )
+        async with Fetcher(use_cache=not args.no_cache) as fetcher:
+            # ATS boards: the coverage backbone.
+            for ats in boards_map:
+                if ats not in selected:
+                    continue
+                board_totals, board_funnel = await _fetch_boards(
+                    conn, fetcher, ats, since, until, args, boards_map
+                )
+                grand_total += board_totals["new"] + board_totals["refreshed"]
+                per_source[ats] = {**board_totals, **board_funnel.as_dict()}
+
+            # Query-style sources.
+            for name, source in globals_map.items():
+                if name not in selected:
+                    continue
+                ok, reason = source.available()
+                if not ok:
+                    log.info("%-16s skipped — %s", name, reason)
+                    continue
+                log.info("%-16s fetching...", name)
+                try:
+                    jobs = await source.fetch(
+                        fetcher, since=since, until=until, max_results=args.max_results
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%-16s failed: %s", name, exc)
+                    continue
+                kept_jobs, gfunnel = apply_filters_counted(
+                    jobs, since=since, until=until,
+                    software_only=not args.all_roles, us_only=not args.worldwide,
+                )
+                per_source[name] = gfunnel.as_dict()
+                if kept_jobs:
+                    inserted, updated = db.upsert_jobs(conn, kept_jobs)
+                    grand_total += inserted + updated
+                    per_source[name].update(new=inserted, refreshed=updated)
+                    log.info(
+                        "%-16s %d seen, %d matched (%d new, %d updated)",
+                        name, len(jobs), len(kept_jobs), inserted, updated,
+                    )
+                    dedupe.resolve_many(conn, (j.company_slug for j in kept_jobs))
+                else:
+                    log.info("%-16s %d seen, 0 matched filters", name, len(jobs))
+
+                # Source-wide closure: a global source's jobs are otherwise
+                # unreachable by the per-board sweep, so without this they never
+                # close. It is only sound against a crawl that walked its WHOLE
+                # result set.
+                #
+                # Every one of these adapters stops early and returns what it
+                # has when a page fails, when a page budget runs out, or when
+                # --max-results caps it — so a rate-limited run is
+                # indistinguishable from a genuinely shrunken catalogue unless
+                # the adapter says which it was. Closing against a truncated
+                # "seen" set retires postings the run simply never reached, and
+                # the 48h grace hides it until failures repeat, which is exactly
+                # when rate-limiting happens. `is_complete` reads a plain list
+                # as incomplete, so an adapter that forgets to say under-closes
+                # rather than deleting live jobs.
+                if not is_complete(jobs):
+                    log.info(
+                        "%-16s closure skipped — crawl was incomplete "
+                        "(capped, budget-limited, or a page failed)", name,
+                    )
+                elif not jobs:
+                    # A run that returned nothing proves the crawl failed, not
+                    # that the source is empty.
+                    log.info("%-16s closure skipped — returned no postings", name)
+                else:
+                    closed = db.mark_board_closures(
+                        conn, name, None, {j.source_job_id for j in jobs}
+                    )
+                    if closed:
+                        per_source[name]["closed"] = closed
+                        log.info("%-16s %d postings closed (unseen > %dh)",
+                                  name, closed, config.CLOSURE_GRACE_HOURS)
+                    conn.commit()
+
+            log.info("HTTP: %s", dict(fetcher.stats))
+            http_stats = dict(fetcher.stats)
+
+        total = db.stats(conn)["total_jobs"]
+        db.finish_run(conn, run_id, "ok", {
+            "sources": per_source,
+            "http": http_stats,
+            "rows_touched": grand_total,
+            "total_jobs": total,
+            "since": str(since) if since else None,
+            "until": str(until) if until else None,
+        })
+    log.info("Fetch complete. %d rows touched; %d total jobs in database.", grand_total, total)
+    return 0
+
+
+# --------------------------------------------------------------------------
+# export / stats / sources
+# --------------------------------------------------------------------------
+
+def cmd_export(args: argparse.Namespace) -> int:
+    with db.session(args.db) as conn:
+        rows = db.query_jobs(
+            conn,
+            since=args.since, until=args.until,
+            sources=args.sources, state=args.state,
+            company=args.company, search=args.search, limit=args.limit,
+        )
+        if not rows:
+            log.warning("No jobs matched. Run `fetch` first, or widen the filters.")
+            return 1
+        try:
+            paths = export_mod.export(
+                rows,
+                formats=args.format,
+                path=Path(args.output) if args.output else None,
+                include_html=args.include_html,
+            )
+        except RuntimeError as exc:
+            log.error("%s", exc)
+            return 1
+    for path in paths:
+        log.info("Wrote %d jobs -> %s", len(rows), path)
+    return 0 if paths else 1
+
+
+def cmd_migrate_from_sqlite(args: argparse.Namespace) -> int:
+    from . import migrate as migrate_mod
+
+    path = Path(args.sqlite_path)
+    try:
+        counts = migrate_mod.migrate(path, args.db, dry_run=args.dry_run)
+    except FileNotFoundError as exc:
+        log.error("%s", exc)
+        return 1
+    label = "Would migrate" if args.dry_run else "Migrated"
+    for table, n in counts.items():
+        log.info("%-16s %s %d rows", table, label, n)
+    return 0
+
+
+def cmd_dedupe(args: argparse.Namespace) -> int:
+    with db.session(args.db) as conn:
+        if args.clear is not None:
+            db.clear_duplicate(conn, args.clear)
+            log.info("Cleared duplicate flag on job id %d", args.clear)
+            return 0
+        result = dedupe.resolve_all(conn, dry_run=args.dry_run)
+        label = "Would collapse" if args.dry_run else "Collapsed"
+        log.info(
+            "%s %d of %d open jobs (tier1: %d clusters / %d rows, tier2: %d clusters / %d rows)",
+            label, result["collapsed"], result["candidates"],
+            result["tier1_clusters"], result["tier1_rows"],
+            result["tier2_clusters"], result["tier2_rows"],
+        )
+        if args.sample:
+            for cluster in dedupe.sample_clusters(conn, limit=args.sample):
+                log.info("cluster canonical=%d:", cluster["canonical_id"])
+                for m in cluster["members"]:
+                    marker = " (canonical)" if m["duplicate_of"] is None else ""
+                    log.info("  [%s] %s -- %s%s", m["source"], m["company"], m["title"], marker)
+    return 0
+
+
+async def cmd_liveness(args: argparse.Namespace) -> int:
+    """Probe postings the fetch sweep can never close, and close the dead ones."""
+    from . import liveness
+
+    sources = args.sources or list(config.LIVENESS_SOURCES)
+    counts = {liveness.LIVE: 0, liveness.EXPIRED: 0, liveness.UNCERTAIN: 0}
+    closed = skipped = 0
+
+    with db.session(args.db) as conn:
+        candidates = db.liveness_candidates(conn, sources, limit=args.limit)
+        if not candidates:
+            log.info("liveness: nothing to probe for %s", ", ".join(sources) or "(none)")
+            return 0
+
+        probable = [c for c in candidates if liveness.is_probable(c["job_url"])]
+        skipped = len(candidates) - len(probable)
+        log.info(
+            "liveness: probing %d postings (%d skipped — their URL outlives the vacancy)",
+            len(probable), skipped,
+        )
+
+        sem = asyncio.Semaphore(args.concurrency)
+        lock = asyncio.Lock()
+
+        async with Fetcher(use_cache=False) as fetcher:
+            async def one(row: dict[str, Any]) -> None:
+                nonlocal closed
+                async with sem:
+                    probe = await liveness.probe_url(fetcher, row["job_url"])
+                strikes, should_close = liveness.apply_verdict(
+                    row["liveness_strikes"] or 0, probe.verdict
+                )
+                async with lock:
+                    counts[probe.verdict] += 1
+                    if args.dry_run:
+                        return
+                    db.record_liveness(conn, row["id"], strikes, should_close)
+                    if should_close:
+                        closed += 1
+                        log.info(
+                            "  closed #%s (%s) — %s", row["id"], row["source"], probe.reason
+                        )
+                    conn.commit()
+
+            await asyncio.gather(*(one(row) for row in probable))
+
+    label = "would close" if args.dry_run else "closed"
+    log.info(
+        "liveness: %d live, %d expired, %d uncertain; %s %d "
+        "(a posting closes at %d consecutive expired reads)",
+        counts[liveness.LIVE], counts[liveness.EXPIRED], counts[liveness.UNCERTAIN],
+        label, closed, liveness.CLOSE_THRESHOLD,
+    )
+    return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Launch the local web dashboard."""
+    try:
+        from .dashboard import serve
+    except ImportError as exc:
+        log.error("The dashboard needs fastapi, uvicorn and jinja2: %s", exc)
+        log.error("Install with: pip install fastapi uvicorn jinja2")
+        return 1
+    log.info("Dashboard on http://%s:%d  (Ctrl-C to stop)", args.host, args.port)
+    serve(host=args.host, port=args.port, reload=args.reload)
+    return 0
+
+
+def cmd_stats(args: argparse.Namespace) -> int:
+    with db.session(args.db) as conn:
+        print(json.dumps(db.stats(conn), indent=2))
+    return 0
+
+
+def cmd_sources(args: argparse.Namespace) -> int:
+    print(f"{'SOURCE':<18} {'TYPE':<8} {'READY':<6} NOTE")
+    print("-" * 100)
+    for ats, source in BOARD_SOURCES.items():
+        ok, reason = source.available()
+        print(f"{ats:<18} {'board':<8} {'yes' if ok else 'no':<6} {source.note or reason}")
+    for name, source in GLOBAL_SOURCES.items():
+        ok, reason = source.available()
+        print(f"{name:<18} {'global':<8} {'yes' if ok else 'no':<6} {source.note}")
+        if not ok:
+            print(f"{'':<34} -> {reason}")
+    print()
+    for kind, registry in (("global", restricted_sources), ("board", restricted_board_sources)):
+        for name, source in registry().items():
+            print(f"{name:<18} {kind:<8} {'opt-in':<6} {source.note}")
+    print("\nOpt-in sources require --include-restricted and are off by default.")
+    return 0
+
+
+# --------------------------------------------------------------------------
+# run: the one-command path
+# --------------------------------------------------------------------------
+
+async def cmd_run(args: argparse.Namespace) -> int:
+    """Discover (if needed) -> validate (if needed) -> fetch -> export."""
+    with db.session(args.db) as conn:
+        known = sum(
+            r["c"] for r in conn.execute("SELECT COUNT(*) c FROM companies")
+        )
+    if known < 100:
+        log.info("No company registry yet — running discovery first.")
+        rc = await cmd_discover(args)
+        if rc:
+            return rc
+
+    with db.session(args.db) as conn:
+        unchecked = conn.execute(
+            "SELECT COUNT(*) c FROM companies WHERE status='unchecked'"
+        ).fetchone()["c"]
+    if unchecked and not args.skip_validate:
+        log.info("Validating %d unchecked boards...", unchecked)
+        # `run`'s --limit belongs to export; validation has its own cap so the
+        # two cannot interfere.
+        validate_args = argparse.Namespace(**vars(args))
+        validate_args.limit = args.validate_limit
+        # Don't probe boards this run will never fetch from.
+        if not args.ats and args.sources:
+            scoped = [a for a in BOARD_SOURCES if a in set(args.sources)]
+            validate_args.ats = scoped or None
+        await cmd_validate(validate_args)
+
+    rc = await cmd_fetch(args)
+    if rc:
+        return rc
+    return cmd_export(args)
+
+
+# --------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jobscrape",
+        description="Collect US software job postings from ATS boards and job APIs.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Typical use:\n"
+            "  python -m jobscrape run --since 2026-06-01 --until 2026-07-28\n\n"
+            "Or step by step:\n"
+            "  python -m jobscrape discover\n"
+            "  python -m jobscrape validate\n"
+            "  python -m jobscrape fetch --since 2026-07-01\n"
+            "  python -m jobscrape export --format csv --format md\n\n"
+            "Note: these APIs return only CURRENTLY OPEN postings. Jobs from a past\n"
+            "window that have since closed cannot be retrieved by any source."
+        ),
+    )
+    # Accept -v/--db either before or after the subcommand. The subparser copies
+    # use SUPPRESS so an omitted flag doesn't clobber the top-level value.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-v", "--verbose", action="store_true",
+                        default=argparse.SUPPRESS)
+    common.add_argument("--db", default=argparse.SUPPRESS,
+                        help="database URL override (default: $DATABASE_URL)")
+
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--db", default=None,
+                        help="database URL override (default: $DATABASE_URL)")
+    sub = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=partial(argparse.ArgumentParser, parents=[common]),
+    )
+
+    def add_common(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--concurrency", type=int, default=8)
+        p.add_argument("--no-cache", action="store_true", help="bypass the disk cache")
+
+    def add_window(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--since", help="earliest posting date (YYYY-MM-DD)")
+        p.add_argument("--until", help="latest posting date (YYYY-MM-DD)")
+
+    def add_filters(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--all-roles", action="store_true",
+                       help="keep non-software roles too")
+        p.add_argument("--worldwide", action="store_true",
+                       help="keep non-US locations too")
+
+    # discover
+    p_disc = sub.add_parser("discover", help="harvest ATS company slugs from Common Crawl")
+    p_disc.add_argument("--collections", type=int, default=config.CC_COLLECTIONS,
+                        help="how many recent crawl collections to read")
+    p_disc.add_argument("--max-pages", type=int, default=None,
+                        help="cap index pages per host (for a quick sample)")
+    p_disc.add_argument("--no-workday", action="store_true")
+    p_disc.add_argument("--vector", action="append", choices=["cc", "ct", "github"],
+                        help="discovery vectors to run (default: all three)")
+    add_common(p_disc)
+
+    # validate
+    p_val = sub.add_parser("validate", help="probe discovered slugs, discard junk")
+    p_val.add_argument("--ats", action="append", choices=_ATS_CHOICES)
+    p_val.add_argument("--limit", type=int, default=None)
+    p_val.add_argument("--recheck", action="store_true", help="re-probe all, not just unchecked")
+    add_common(p_val)
+
+    # fetch
+    p_fetch = sub.add_parser("fetch", help="pull postings into the database")
+    add_window(p_fetch)
+    add_filters(p_fetch)
+    add_common(p_fetch)
+    p_fetch.add_argument("--sources", action="append",
+                         help="restrict to named sources (repeatable)")
+    p_fetch.add_argument("--companies", type=int, default=None,
+                         help="max boards per ATS")
+    p_fetch.add_argument("--max-results", type=int, default=None,
+                         help="cap results per global source")
+    p_fetch.add_argument("--include-restricted", action="store_true",
+                         help="enable LinkedIn/Indeed scrapers (violates their ToS)")
+    p_fetch.add_argument("--refetch-details", action="store_true",
+                         help="re-download descriptions for postings already stored "
+                              "(slow; only needed to repair existing rows)")
+
+    # export
+    p_exp = sub.add_parser("export", help="write collected jobs to a file")
+    add_window(p_exp)
+    p_exp.add_argument("--format", action="append",
+                       choices=["csv", "jsonl", "xlsx", "md"], default=None)
+    p_exp.add_argument("--output", help="output path (extension set per format)")
+    p_exp.add_argument("--sources", action="append")
+    p_exp.add_argument("--state", help="two-letter US state code")
+    p_exp.add_argument("--company")
+    p_exp.add_argument("--search", help="substring in title or description")
+    p_exp.add_argument("--limit", type=int, default=None)
+    p_exp.add_argument("--include-html", action="store_true",
+                       help="include the raw HTML description column")
+
+    # run
+    p_run = sub.add_parser("run", help="discover + validate + fetch + export in one go")
+    add_window(p_run)
+    add_filters(p_run)
+    add_common(p_run)
+    p_run.add_argument("--sources", action="append")
+    p_run.add_argument("--companies", type=int, default=None)
+    p_run.add_argument("--max-results", type=int, default=None)
+    p_run.add_argument("--include-restricted", action="store_true")
+    p_run.add_argument("--refetch-details", action="store_true")
+    p_run.add_argument("--skip-validate", action="store_true")
+    p_run.add_argument("--validate-limit", type=int, default=None,
+                       help="cap boards probed during the validate step")
+    p_run.add_argument("--collections", type=int, default=config.CC_COLLECTIONS)
+    p_run.add_argument("--max-pages", type=int, default=None)
+    p_run.add_argument("--no-workday", action="store_true")
+    p_run.add_argument("--vector", action="append", choices=["cc", "ct", "github"])
+    p_run.add_argument("--format", action="append",
+                       choices=["csv", "jsonl", "xlsx", "md"], default=None)
+    p_run.add_argument("--output")
+    p_run.add_argument("--state")
+    p_run.add_argument("--company")
+    p_run.add_argument("--search")
+    p_run.add_argument("--limit", type=int, default=None)
+    p_run.add_argument("--include-html", action="store_true")
+    p_run.add_argument("--ats", action="append", choices=_ATS_CHOICES)
+    p_run.add_argument("--recheck", action="store_true")
+
+    p_dash = sub.add_parser("dashboard", help="launch the local web dashboard")
+    p_dash.add_argument("--host", default="127.0.0.1")
+    p_dash.add_argument("--port", type=int, default=8000)
+    p_dash.add_argument("--reload", action="store_true", help="auto-reload on edit")
+
+    sub.add_parser("stats", help="summarize what has been collected")
+    sub.add_parser("sources", help="list every source and whether it is ready")
+
+    # migrate-from-sqlite
+    p_mig = sub.add_parser(
+        "migrate-from-sqlite",
+        help="one-time copy of the legacy SQLite archive into Postgres",
+    )
+    p_mig.add_argument("--sqlite-path", default=str(config.DB_PATH),
+                       help="path to the legacy jobs.db")
+    p_mig.add_argument("--dry-run", action="store_true",
+                       help="report row counts without writing")
+
+    # liveness
+    p_live = sub.add_parser(
+        "liveness",
+        help="probe postings the fetch sweep can't reach; close the dead ones",
+    )
+    p_live.add_argument("--sources", action="append",
+                        help="override which sources to probe (default: sampling sources)")
+    p_live.add_argument("--limit", type=int, default=500,
+                        help="max postings to probe this run")
+    p_live.add_argument("--concurrency", type=int, default=6,
+                        help="keeps the probe from hammering any one employer site")
+    p_live.add_argument("--dry-run", action="store_true",
+                        help="report verdicts without writing")
+
+    # dedupe
+    p_dedupe = sub.add_parser("dedupe", help="collapse reposts and cross-source duplicates")
+    p_dedupe.add_argument("--backfill", action="store_true",
+                          help="recompute clusters across the whole archive (the only mode; "
+                               "this flag exists so the intent is explicit at the call site)")
+    p_dedupe.add_argument("--dry-run", action="store_true",
+                          help="report what would collapse without writing")
+    p_dedupe.add_argument("--sample", type=int, default=0, metavar="N",
+                          help="print N resolved clusters for review")
+    p_dedupe.add_argument("--clear", type=int, default=None, metavar="JOB_ID",
+                          help="un-suppress one job by id (reverses a mis-cluster)")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    setup_logging(args.verbose)
+    config.ensure_dirs()
+
+    # argparse `append` defaults can't express "csv unless overridden".
+    if getattr(args, "format", None) is None and args.command in ("export", "run"):
+        args.format = ["csv"]
+    # `validate` reuses --limit; `run` needs it for export only.
+    if args.command == "run" and not hasattr(args, "limit"):
+        args.limit = None
+
+    try:
+        if args.command == "discover":
+            return asyncio.run(cmd_discover(args))
+        if args.command == "validate":
+            return asyncio.run(cmd_validate(args))
+        if args.command == "fetch":
+            return asyncio.run(cmd_fetch(args))
+        if args.command == "run":
+            return asyncio.run(cmd_run(args))
+        if args.command == "export":
+            return cmd_export(args)
+        if args.command == "stats":
+            return cmd_stats(args)
+        if args.command == "sources":
+            return cmd_sources(args)
+        if args.command == "dashboard":
+            return cmd_dashboard(args)
+        if args.command == "migrate-from-sqlite":
+            return cmd_migrate_from_sqlite(args)
+        if args.command == "dedupe":
+            return cmd_dedupe(args)
+        if args.command == "liveness":
+            return asyncio.run(cmd_liveness(args))
+    except KeyboardInterrupt:
+        log.warning("Interrupted — progress is saved; re-run to resume.")
+        return 130
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    parser.error("unknown command")
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
