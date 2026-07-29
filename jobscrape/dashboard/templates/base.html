@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}jobscrape{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">jobscrape</a>
+  <nav>
+    <a href="/" class="{% if request.url.path == '/' %}on{% endif %}">Overview</a>
+    <a href="/jobs" class="{% if request.url.path == '/jobs' %}on{% endif %}">Jobs</a>
+    <a href="/runs" class="{% if request.url.path == '/runs' %}on{% endif %}">Runs</a>
+    <a href="/coverage" class="{% if request.url.path == '/coverage' %}on{% endif %}">Coverage</a>
+    <a href="/sources" class="{% if request.url.path == '/sources' %}on{% endif %}">Sources</a>
+  </nav>
+  <div class="topbar-right">
+    {% if active_runs %}
+      <span class="pill running" title="a pipeline stage is running">
+        <span class="dot"></span>{{ active_runs|length }} running
+      </span>
+    {% endif %}
+    <button class="theme-toggle" type="button" aria-label="Toggle colour theme">◐</button>
+  </div>
+</header>
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

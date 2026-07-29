@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Coverage · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Coverage</h1>
+<p class="sub">
+  Discovered companies contribute nothing until they are probed. The unchecked
+  column is usually the largest single lever on how many jobs you see.
+</p>
+
+<div class="grid tiles">
+  <div class="tile"><div class="label">Discovered</div><div class="value">{{ totals.discovered|comma }}</div></div>
+  <div class="tile accent"><div class="label">Live</div><div class="value">{{ totals.live|comma }}</div>
+    <div class="foot">boards that return jobs</div></div>
+  <div class="tile"><div class="label">Unchecked</div><div class="value">{{ totals.unchecked|comma }}</div>
+    <div class="foot">never probed yet</div></div>
+  <div class="tile"><div class="label">Empty</div><div class="value">{{ totals.empty|comma }}</div>
+    <div class="foot">real board, nothing posted</div></div>
+  <div class="tile"><div class="label">Dead</div><div class="value">{{ totals.dead|comma }}</div>
+    <div class="foot">no longer exists</div></div>
+</div>
+
+{% if totals.unchecked %}
+<div class="banner">
+  <div>
+    <strong>{{ totals.unchecked|comma }} boards have never been probed</strong>
+    <div class="detail">
+      Validation is pure runtime and needs no new data. It is checkpointed, so it
+      can be stopped and resumed at any point.
+    </div>
+  </div>
+  <button class="btn" data-start-stage="validate" data-label="Validate now">Validate now</button>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>Board status by platform</h2>
+  {{ coverage_svg|safe }}
+  {{ coverage_legend|safe }}
+</div>
+
+<div class="card">
+  <h2>Detail</h2>
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr>
+        <th>Platform</th>
+        <th class="num">Discovered</th><th class="num">Live</th>
+        <th class="num">Unchecked</th><th class="num">Empty</th><th class="num">Dead</th>
+        <th class="num">Live rate</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.ats }}</td>
+        <td class="num">{{ row.discovered|comma }}</td>
+        <td class="num">{{ row.live|comma }}</td>
+        <td class="num">{{ row.unchecked|comma }}</td>
+        <td class="num">{{ row.empty|comma }}</td>
+        <td class="num">{{ row.dead|comma }}</td>
+        <td class="num">
+          {% set probed = row.discovered - row.unchecked %}
+          {% if probed > 0 %}{{ (100 * row.live / probed)|round|int }}%{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% endblock %}

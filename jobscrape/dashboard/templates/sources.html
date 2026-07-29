@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Sources · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Sources</h1>
+<p class="sub">What each source contributes, and why postings were discarded.</p>
+
+<div class="card">
+  <h2>Jobs collected per source</h2>
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr><th>Source</th><th class="num">Total</th><th class="num">Open</th>
+          <th class="num">Companies</th><th class="num">With salary</th></tr>
+    </thead>
+    <tbody>
+      {% for row in sources %}
+      <tr>
+        <td>{{ row.source }}</td>
+        <td class="num">{{ row.total|comma }}</td>
+        <td class="num">{{ row.open|comma }}</td>
+        <td class="num">{{ row.companies|comma }}</td>
+        <td class="num">
+          {% if row.total %}{{ (100 * row.with_salary / row.total)|round|int }}%{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Why postings were dropped</h2>
+  {% if funnel %}
+    <p class="sub" style="margin-bottom:14px">
+      From the most recent fetch. A source with a large “outside window” share is
+      working fine — its postings are simply older than the date range you asked for.
+    </p>
+    {{ funnel_svg|safe }}
+    {{ funnel_legend|safe }}
+    <div class="scroll-x" style="margin-top:16px">
+    <table>
+      <thead>
+        <tr><th>Source</th><th class="num">Seen</th><th class="num">Not software</th>
+            <th class="num">Not US-eligible</th><th class="num">Outside window</th>
+            <th class="num">Kept</th></tr>
+      </thead>
+      <tbody>
+        {% for row in funnel %}
+        <tr>
+          <td>{{ row.source }}</td>
+          <td class="num">{{ row.seen|comma }}</td>
+          <td class="num">{{ row.dropped_role|comma }}</td>
+          <td class="num">{{ row.dropped_location|comma }}</td>
+          <td class="num">{{ row.dropped_window|comma }}</td>
+          <td class="num">{{ row.kept|comma }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  {% else %}
+    <div class="chart-empty"><span>Run a fetch to record the filter funnel</span></div>
+  {% endif %}
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Companies with most open roles</h2>
+    {{ company_svg|safe }}
+  </div>
+  <div class="card">
+    <h2>Open roles by state</h2>
+    {{ state_svg|safe }}
+  </div>
+</div>
+
+{% endblock %}

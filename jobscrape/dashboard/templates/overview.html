@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Overview · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Overview</h1>
+<p class="sub">Your job collection at a glance.</p>
+
+<div class="banner">
+  <div>
+    <strong>{{ action.label }}</strong>
+    <div class="detail">{{ action.detail }}</div>
+  </div>
+  <div class="btn-row">
+    {% if action.action == 'sweep' %}
+      <button class="btn" data-start-stage="discover" data-label="Run first sweep">Run first sweep</button>
+    {% elif action.action == 'validate' %}
+      <button class="btn" data-start-stage="validate" data-label="Validate boards">Validate boards</button>
+    {% elif action.action == 'jobs' %}
+      <a class="btn" href="/jobs">Review jobs</a>
+    {% else %}
+      <button class="btn" data-start-stage="fetch" data-label="Refresh now">Refresh now</button>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid tiles">
+  <div class="tile accent">
+    <div class="label">To review</div>
+    <div class="value">{{ data.untriaged|comma }}</div>
+    <div class="foot">open and not yet triaged</div>
+  </div>
+  <div class="tile">
+    <div class="label">New today</div>
+    <div class="value">{{ data.new_24h|comma }}</div>
+    <div class="foot">{{ data.new_7d|comma }} in the last 7 days</div>
+  </div>
+  <div class="tile">
+    <div class="label">Open jobs</div>
+    <div class="value">{{ data.open_jobs|comma }}</div>
+    <div class="foot">{{ data.closed_jobs|comma }} closed since first seen</div>
+  </div>
+  <div class="tile">
+    <div class="label">Live boards</div>
+    <div class="value">{{ data.live_boards|comma }}</div>
+    <div class="foot">{{ data.unchecked_boards|comma }} still unchecked</div>
+  </div>
+  <div class="tile">
+    <div class="label">Companies hiring</div>
+    <div class="value">{{ data.companies_hiring|comma }}</div>
+    <div class="foot">across {{ data.sources }} sources</div>
+  </div>
+  <div class="tile">
+    <div class="label">With salary</div>
+    <div class="value">{{ salary.pct }}%</div>
+    <div class="foot">avg floor ${{ salary.avg_min|comma }}</div>
+  </div>
+  <div class="tile">
+    <div class="label">Duplicates collapsed</div>
+    <div class="value">{{ data.duplicates_collapsed|comma }}</div>
+    <div class="foot">reposts and cross-source copies hidden from your queue</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Jobs first seen per day</h2>
+  {{ timeline_svg|safe }}
+</div>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Jobs by source</h2>
+    {{ source_svg|safe }}
+  </div>
+  <div class="card">
+    <h2>Workplace type</h2>
+    {{ workplace_svg|safe }}
+    {{ workplace_legend|safe }}
+    <!-- The table is the relief for light-mode contrast: the numbers are
+         readable without relying on the fill colours. -->
+    <table style="margin-top:14px">
+      <thead><tr><th>Type</th><th class="num">Open jobs</th></tr></thead>
+      <tbody>
+        {% for row in workplace %}
+        <tr><td>{{ row.workplace }}</td><td class="num">{{ row.c|comma }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Pipeline</h2>
+  <div class="btn-row">
+    <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">Discover (fast)</button>
+    <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">Discover (full)</button>
+    <button class="btn ghost" data-start-stage="validate" data-label="Validate">Validate boards</button>
+    <button class="btn" data-start-stage="fetch" data-label="Fetch">Fetch jobs</button>
+    <button class="btn ghost" data-start-stage="export" data-label="Export">Export CSV + Excel</button>
+  </div>
+  {% if data.last_run %}
+    <p class="sub" style="margin:14px 0 0">
+      Last run: <span class="pill {{ data.last_run.status }}">{{ data.last_run.status }}</span>
+      <code>{{ data.last_run.command }}</code> — started {{ data.last_run.started_at|datefmt }}
+    </p>
+  {% endif %}
+</div>
+
+{% endblock %}

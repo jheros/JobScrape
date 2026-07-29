@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Runs · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Runs</h1>
+<p class="sub">Start, watch and stop every stage of the pipeline.</p>
+
+{% if active_runs %}
+  {% for run in active_runs %}
+  <div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:start; gap:16px">
+      <div>
+        <h2 style="margin-bottom:6px">
+          <span class="pill running"><span class="dot"></span>{{ run.stage }}</span>
+        </h2>
+        <code>{{ run.command }}</code>
+        <div class="job-meta" style="margin-top:8px">
+          <span>run #{{ run.run_id }}</span>
+          <span>pid {{ run.pid }}</span>
+          {% if run.progress.current %}<span>at: {{ run.progress.current }}</span>{% endif %}
+          {% if run.progress.boards_total %}
+            <span>{{ run.progress.boards_done or 0 }} / {{ run.progress.boards_total }} boards</span>
+          {% endif %}
+          {% if run.progress.jobs_new %}<span>{{ run.progress.jobs_new }} new jobs</span>{% endif %}
+        </div>
+      </div>
+      <button class="btn danger" data-stop-stage="{{ run.stage }}">Stop</button>
+    </div>
+    <div class="log" id="live-log" data-run-id="{{ run.run_id }}" style="margin-top:14px"></div>
+  </div>
+  {% endfor %}
+{% else %}
+  <div class="card">
+    <h2>Start a stage</h2>
+    <div class="btn-row">
+      <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">Discover (fast)</button>
+      <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">Discover (full)</button>
+      <button class="btn ghost" data-start-stage="validate" data-label="Validate">Validate boards</button>
+      <button class="btn" data-start-stage="fetch" data-label="Fetch">Fetch jobs</button>
+      <button class="btn ghost" data-start-stage="export" data-label="Export">Export</button>
+    </div>
+    <p class="sub" style="margin:14px 0 0">
+      Stages run as separate processes, so stopping one is immediate and whatever
+      it already wrote is kept.
+    </p>
+  </div>
+{% endif %}
+
+{% if trend_svg %}
+<div class="card">
+  <h2>Jobs collected per run</h2>
+  {{ trend_svg|safe }}
+</div>
+{% endif %}
+
+{% if http %}
+<div class="card">
+  <h2>Request health <span class="pill">run #{{ http.run_id }}</span></h2>
+  <div class="grid tiles">
+    <div class="tile"><div class="label">Requests</div><div class="value">{{ http.ok|comma }}</div></div>
+    <div class="tile"><div class="label">Cache hits</div><div class="value">{{ http.cache_pct }}%</div>
+      <div class="foot">{{ http.cache_hit|comma }} served from cache</div></div>
+    <div class="tile"><div class="label">Rate limited</div><div class="value">{{ http.rate_limited|comma }}</div>
+      <div class="foot">429s, retried with backoff</div></div>
+    <div class="tile"><div class="label">Failed</div><div class="value">{{ http.failed|comma }}</div>
+      <div class="foot">after all retries</div></div>
+  </div>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2>History</h2>
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>Stage</th><th>Command</th><th>Started</th>
+        <th>Duration</th><th class="num">New jobs</th><th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in history %}
+      <tr>
+        <td>{{ run.id }}</td>
+        <td>{{ run.stage or "—" }}</td>
+        <td><code style="font-size:12px">{{ run.command or "—" }}</code></td>
+        <td>{{ run.started_at|datefmt }}</td>
+        <td>{{ run.duration }}</td>
+        <td class="num">
+          {% if run.stats_parsed.rows_touched is defined %}{{ run.stats_parsed.rows_touched|comma }}
+          {% else %}—{% endif %}
+        </td>
+        <td><span class="pill {{ run.status }}">{{ run.status }}</span></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-muted)">
+        No runs recorded yet.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% endblock %}

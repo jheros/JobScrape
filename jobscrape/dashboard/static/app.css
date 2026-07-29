@@ -1,0 +1,253 @@
+/* Dashboard styling.
+   Colour roles come from the validated palette; both modes are selected
+   explicitly rather than auto-flipped, and the theme toggle wins over the OS
+   setting in both directions. */
+
+:root {
+  color-scheme: light;
+  --surface-0: #f4f3f0;
+  --surface-1: #fcfcfb;
+  --surface-2: #efeee9;
+  --border:    #dedcd5;
+  --text-primary:   #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted:     #7b7a74;
+
+  /* Categorical slots — fixed order, never cycled. Validated light:
+     worst adjacent CVD dE 9.1, normal-vision dE 22.9. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+
+  /* Status roles ship with a label, never colour alone. */
+  --good:     #0ca30c;
+  --warning:  #fab219;
+  --critical: #d03b3b;
+
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.04);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #232322;
+    --border:    #333331;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #8e8d85;
+    /* Dark steps validated as their own set: CVD dE 8.4, normal 19.8. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --surface-2: #232322;
+  --border:    #333331;
+  --text-primary:   #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted:     #8e8d85;
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --- chrome ------------------------------------------------------------ */
+
+.topbar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 0 20px; height: 54px;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { font-weight: 650; letter-spacing: -.01em; color: var(--text-primary); text-decoration: none; }
+.topbar nav { display: flex; gap: 4px; flex: 1; }
+.topbar nav a {
+  padding: 6px 12px; border-radius: 7px; text-decoration: none;
+  color: var(--text-secondary); font-weight: 500;
+}
+.topbar nav a:hover { background: var(--surface-2); color: var(--text-primary); }
+.topbar nav a.on { background: var(--surface-2); color: var(--text-primary); }
+.topbar-right { display: flex; align-items: center; gap: 10px; }
+.theme-toggle {
+  background: none; border: 1px solid var(--border); color: var(--text-secondary);
+  border-radius: 7px; width: 32px; height: 32px; cursor: pointer; font-size: 15px;
+}
+.theme-toggle:hover { background: var(--surface-2); }
+
+main { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+
+h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -.01em; }
+h2 { font-size: 15px; margin: 0 0 14px; letter-spacing: -.005em; }
+.sub { color: var(--text-secondary); margin: 0 0 22px; }
+
+/* --- cards & tiles ------------------------------------------------------ */
+
+.card {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+  margin-bottom: 18px;
+}
+.grid { display: grid; gap: 14px; }
+.grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid.tiles  { grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); }
+
+.tile {
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 15px 16px; box-shadow: var(--shadow);
+}
+.tile .label { color: var(--text-secondary); font-size: 12px; font-weight: 500;
+               text-transform: uppercase; letter-spacing: .04em; }
+.tile .value { font-size: 27px; font-weight: 650; letter-spacing: -.02em;
+               margin-top: 5px; font-variant-numeric: tabular-nums; }
+.tile .foot  { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
+.tile.accent { border-color: var(--series-1); }
+
+/* --- charts ------------------------------------------------------------- */
+
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.chart .grid  { stroke: var(--border); stroke-width: 1; }
+.chart .axis  { fill: var(--text-muted); font-size: 11px; }
+.chart .bar-label { fill: var(--text-secondary); font-size: 12px; }
+.chart .bar-value { fill: var(--text-primary); font-size: 12px; font-weight: 600;
+                    font-variant-numeric: tabular-nums; }
+/* Segment values sit on a filled bar: white reads on every slot in both modes. */
+.chart .seg-value { fill: #fff; font-size: 11px; font-weight: 650;
+                    font-variant-numeric: tabular-nums; }
+.chart .hit:hover { fill: var(--text-primary); opacity: .05; }
+.spark { display: block; margin-top: 8px; overflow: visible; }
+
+.chart-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 120px; color: var(--text-muted); font-size: 13px;
+  border: 1px dashed var(--border); border-radius: 8px;
+}
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px;
+               color: var(--text-secondary); font-size: 12px; }
+.swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+
+/* --- tables ------------------------------------------------------------- */
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th {
+  text-align: left; font-weight: 600; color: var(--text-secondary);
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  font-size: 12px; text-transform: uppercase; letter-spacing: .03em;
+}
+td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+tbody tr:hover { background: var(--surface-2); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.scroll-x { overflow-x: auto; }
+
+/* --- controls ----------------------------------------------------------- */
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--series-1); color: #fff; border: none;
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 550;
+  cursor: pointer; text-decoration: none;
+}
+.btn:hover { filter: brightness(1.08); }
+.btn.ghost { background: var(--surface-2); color: var(--text-primary);
+             border: 1px solid var(--border); }
+.btn.danger { background: var(--critical); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.filters {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: end;
+  margin-bottom: 16px;
+}
+.filters label { display: flex; flex-direction: column; gap: 4px;
+                 font-size: 11px; color: var(--text-secondary);
+                 text-transform: uppercase; letter-spacing: .04em; }
+input, select {
+  background: var(--surface-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 9px; font-size: 13px; font-family: inherit; min-width: 120px;
+}
+input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+
+/* --- status chips ------------------------------------------------------- */
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 550;
+  background: var(--surface-2); color: var(--text-secondary);
+  border: 1px solid var(--border); white-space: nowrap;
+}
+.pill .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pill.running { color: var(--good); border-color: var(--good); }
+.pill.running .dot { animation: pulse 1.4s ease-in-out infinite; }
+.pill.ok       { color: var(--good); }
+.pill.failed   { color: var(--critical); }
+.pill.stopped  { color: var(--warning); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+
+.status-select { min-width: 118px; font-size: 12px; padding: 5px 7px; }
+
+/* --- job rows ----------------------------------------------------------- */
+
+.job-title { font-weight: 600; color: var(--text-primary); text-decoration: none; }
+.job-title:hover { text-decoration: underline; }
+.job-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px;
+            display: flex; flex-wrap: wrap; gap: 10px; }
+.tag { font-size: 11px; padding: 1px 7px; border-radius: 5px;
+       background: var(--surface-2); border: 1px solid var(--border);
+       color: var(--text-secondary); }
+/* The tag always carries its own word ("likely evergreen"), so the colour is
+   reinforcement rather than the signal itself — readable without colour vision. */
+.tag.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+
+/* --- live log ----------------------------------------------------------- */
+
+.log {
+  background: var(--surface-0); border: 1px solid var(--border);
+  border-radius: 8px; padding: 12px; max-height: 340px; overflow-y: auto;
+  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
+.log .warn  { color: var(--warning); }
+.log .error { color: var(--critical); }
+
+.banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  background: var(--surface-1); border: 1px solid var(--series-1);
+  border-left: 3px solid var(--series-1);
+  border-radius: var(--radius); padding: 15px 18px; margin-bottom: 18px;
+}
+.banner .detail { color: var(--text-secondary); font-size: 13px; margin-top: 3px; }
+
+.pager { display: flex; gap: 8px; align-items: center; margin-top: 16px;
+         color: var(--text-secondary); font-size: 13px; }
+
+@media (max-width: 720px) {
+  .topbar { gap: 10px; padding: 0 12px; }
+  .topbar nav { overflow-x: auto; }
+  main { padding: 16px 12px 50px; }
+}

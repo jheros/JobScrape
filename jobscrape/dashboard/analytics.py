@@ -1,0 +1,431 @@
+"""Read-only queries behind the dashboard.
+
+Every function takes an open connection and returns plain dicts/lists, so the
+routes stay thin and each query can be tested without a web server.
+
+"Open" means ``closed_at IS NULL``; every count and listing here also excludes
+suppressed duplicates (``duplicate_of IS NOT NULL``) unless a function is
+explicitly about duplicates — see ``jobscrape.dedupe``.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime, timedelta, timezone
+from typing import Any
+
+from .. import db, staleness
+
+#: Every "current" job listing filters through this. Not applied to queries
+#: that are explicitly about closed jobs or about duplicates themselves.
+_OPEN = "closed_at IS NULL AND duplicate_of IS NULL"
+
+
+def _rows(conn: db.Connection, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    return [dict(r) for r in conn.execute(sql, params)]
+
+
+def _scalar(conn: db.Connection, sql: str, params: tuple = (), default: Any = 0) -> Any:
+    row = conn.execute(sql, params).fetchone()
+    if row is None:
+        return default
+    value = next(iter(row.values()))
+    return default if value is None else value
+
+
+# --- overview -------------------------------------------------------------
+
+def overview(conn: db.Connection) -> dict[str, Any]:
+    """Headline numbers for the landing page."""
+    open_jobs = _scalar(conn, f"SELECT COUNT(*) c FROM jobs WHERE {_OPEN}")
+    total = _scalar(conn, "SELECT COUNT(*) c FROM jobs WHERE duplicate_of IS NULL")
+
+    # Untriaged *open* jobs — the number that actually matters daily.
+    untriaged = _scalar(
+        conn,
+        "SELECT COUNT(*) c FROM jobs j LEFT JOIN job_status s"
+        "  ON s.source = j.source AND s.source_job_id = j.source_job_id "
+        "WHERE j.closed_at IS NULL AND j.duplicate_of IS NULL "
+        "AND (s.status IS NULL OR s.status = 'new')",
+    )
+
+    day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+    last = conn.execute(
+        "SELECT * FROM runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+    return {
+        "total_jobs": total,
+        "open_jobs": open_jobs,
+        "closed_jobs": total - open_jobs,
+        "untriaged": untriaged,
+        "duplicates_collapsed": db.duplicate_count(conn),
+        "new_24h": _scalar(
+            conn, "SELECT COUNT(*) c FROM jobs WHERE first_seen_at >= ? AND duplicate_of IS NULL",
+            (day_ago,),
+        ),
+        "new_7d": _scalar(
+            conn, "SELECT COUNT(*) c FROM jobs WHERE first_seen_at >= ? AND duplicate_of IS NULL",
+            (week_ago,),
+        ),
+        "live_boards": _scalar(conn, "SELECT COUNT(*) c FROM companies WHERE status='live'"),
+        "unchecked_boards": _scalar(
+            conn, "SELECT COUNT(*) c FROM companies WHERE status='unchecked'"
+        ),
+        "total_companies": _scalar(conn, "SELECT COUNT(*) c FROM companies"),
+        "sources": _scalar(conn, "SELECT COUNT(DISTINCT source) c FROM jobs"),
+        "companies_hiring": _scalar(
+            conn, f"SELECT COUNT(DISTINCT company) c FROM jobs WHERE {_OPEN}"
+        ),
+        "last_run": dict(last) if last else None,
+        "status_counts": db.status_counts(conn),
+    }
+
+
+def next_action(data: dict[str, Any]) -> dict[str, str]:
+    """Suggest the single most useful next step.
+
+    Ordered by leverage: an empty database needs a sweep; a large unvalidated
+    backlog is the biggest lever on coverage; otherwise just refresh.
+    """
+    if not data["total_jobs"]:
+        return {
+            "label": "Run the first full sweep",
+            "detail": "No jobs collected yet. This discovers boards, validates them, "
+                      "then fetches every open posting.",
+            "action": "sweep",
+        }
+    if data["unchecked_boards"] > 500:
+        return {
+            "label": f"Validate {data['unchecked_boards']:,} unchecked boards",
+            "detail": "Discovered companies contribute nothing until they are probed. "
+                      "This is usually the largest single gain available.",
+            "action": "validate",
+        }
+    if data["untriaged"] > 0:
+        return {
+            "label": f"Review {data['untriaged']:,} untriaged jobs",
+            "detail": "Work through the new listings and mark what you save or apply to.",
+            "action": "jobs",
+        }
+    return {
+        "label": "Refresh now",
+        "detail": "Everything is triaged. Fetch again to pick up newly posted jobs.",
+        "action": "fetch",
+    }
+
+
+# --- time series ----------------------------------------------------------
+
+def jobs_over_time(conn: db.Connection, days: int = 30) -> list[dict[str, Any]]:
+    """Jobs first seen per day — the growth curve of the archive."""
+    start = (date.today() - timedelta(days=days)).isoformat()
+    found = {
+        str(r["d"]): r["c"]
+        for r in conn.execute(
+            "SELECT first_seen_at::date d, COUNT(*) c FROM jobs "
+            "WHERE first_seen_at::date >= ? AND duplicate_of IS NULL GROUP BY d",
+            (start,),
+        )
+    }
+    # Fill gaps so the chart has no misleading holes.
+    series = []
+    for offset in range(days + 1):
+        day = (date.today() - timedelta(days=days - offset)).isoformat()
+        series.append({"date": day, "count": found.get(day, 0)})
+    return series
+
+
+def postings_by_date(conn: db.Connection, days: int = 30) -> list[dict[str, Any]]:
+    """When the jobs were *posted*, as opposed to when we saw them."""
+    start = (date.today() - timedelta(days=days)).isoformat()
+    rows = _rows(
+        conn,
+        f"SELECT posted_at::date d, COUNT(*) c FROM jobs "
+        f"WHERE posted_at IS NOT NULL AND posted_at::date >= ? AND {_OPEN} "
+        "GROUP BY d ORDER BY d",
+        (start,),
+    )
+    for r in rows:
+        r["d"] = str(r["d"])
+    return rows
+
+
+# --- breakdowns -----------------------------------------------------------
+
+def by_source(conn: db.Connection) -> list[dict[str, Any]]:
+    return _rows(
+        conn,
+        "SELECT source, COUNT(*) total,"
+        "       SUM(CASE WHEN closed_at IS NULL THEN 1 ELSE 0 END) open,"
+        "       SUM(CASE WHEN salary_min IS NOT NULL THEN 1 ELSE 0 END) with_salary,"
+        "       COUNT(DISTINCT company) companies "
+        "FROM jobs WHERE duplicate_of IS NULL GROUP BY source ORDER BY total DESC",
+    )
+
+
+def by_workplace(conn: db.Connection) -> list[dict[str, Any]]:
+    return _rows(
+        conn,
+        "SELECT COALESCE(workplace_type,'unknown') workplace, COUNT(*) c "
+        f"FROM jobs WHERE {_OPEN} GROUP BY workplace ORDER BY c DESC",
+    )
+
+
+def by_state(conn: db.Connection, limit: int = 12) -> list[dict[str, Any]]:
+    return _rows(
+        conn,
+        "SELECT state, COUNT(*) c FROM jobs "
+        f"WHERE state IS NOT NULL AND {_OPEN} GROUP BY state ORDER BY c DESC LIMIT ?",
+        (limit,),
+    )
+
+
+def top_companies(conn: db.Connection, limit: int = 12) -> list[dict[str, Any]]:
+    return _rows(
+        conn,
+        f"SELECT company, COUNT(*) c FROM jobs WHERE {_OPEN} "
+        "GROUP BY company ORDER BY c DESC LIMIT ?",
+        (limit,),
+    )
+
+
+def coverage(conn: db.Connection) -> list[dict[str, Any]]:
+    """The discovery -> validation funnel, per ATS."""
+    return _rows(
+        conn,
+        "SELECT ats,"
+        "  COUNT(*) discovered,"
+        "  SUM(CASE WHEN status='live' THEN 1 ELSE 0 END) live,"
+        "  SUM(CASE WHEN status='empty' THEN 1 ELSE 0 END) empty,"
+        "  SUM(CASE WHEN status='dead' THEN 1 ELSE 0 END) dead,"
+        "  SUM(CASE WHEN status='unchecked' THEN 1 ELSE 0 END) unchecked "
+        "FROM companies GROUP BY ats ORDER BY live DESC, discovered DESC",
+    )
+
+
+def salary_coverage(conn: db.Connection) -> dict[str, Any]:
+    total = _scalar(conn, f"SELECT COUNT(*) c FROM jobs WHERE {_OPEN}")
+    with_salary = _scalar(
+        conn, f"SELECT COUNT(*) c FROM jobs WHERE {_OPEN} AND salary_min IS NOT NULL"
+    )
+    median = _scalar(
+        conn,
+        f"SELECT AVG(salary_min) c FROM jobs WHERE {_OPEN} AND salary_min BETWEEN 30000 AND 900000",
+        default=0,
+    )
+    return {
+        "total": total,
+        "with_salary": with_salary,
+        "pct": round(100 * with_salary / total) if total else 0,
+        "avg_min": round(median or 0),
+    }
+
+
+# --- runs -----------------------------------------------------------------
+
+def run_history(conn: db.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    runs = []
+    for row in db.recent_runs(conn, limit):
+        item = dict(row)
+        stats = item.get("stats")
+        if isinstance(stats, str):
+            try:
+                item["stats_parsed"] = json.loads(stats or "{}")
+            except json.JSONDecodeError:
+                item["stats_parsed"] = {}
+        else:
+            item["stats_parsed"] = stats or {}
+        item["duration"] = _duration(item.get("started_at"), item.get("ended_at"))
+        runs.append(item)
+    return runs
+
+
+def _duration(started: Any, ended: Any) -> str:
+    if not started:
+        return ""
+    try:
+        a = started if isinstance(started, datetime) else datetime.fromisoformat(str(started))
+        if ended:
+            b = ended if isinstance(ended, datetime) else datetime.fromisoformat(str(ended))
+        else:
+            b = datetime.now(timezone.utc)
+    except ValueError:
+        return ""
+    seconds = int((b - a).total_seconds())
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+
+
+def _stats_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+
+
+def run_trend(conn: db.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    """New/refreshed jobs per fetch run, oldest first — a trend, not just the
+    last run's snapshot. Reads straight out of `runs.stats`, which storing as
+    JSONB (rather than the old opaque TEXT blob) is what makes this a simple
+    query instead of loading and parsing every row in Python."""
+    rows = [
+        {"run_id": r["id"], "rows_touched": (_stats_dict(r["stats"]) or {}).get("rows_touched", 0)}
+        for r in db.recent_runs(conn, limit)
+        if r["stage"] == "fetch" and r["status"] == "ok"
+    ]
+    return list(reversed(rows))
+
+
+def latest_funnel(conn: db.Connection) -> list[dict[str, Any]]:
+    """Per-source filter funnel from the most recent fetch that recorded one."""
+    for row in db.recent_runs(conn, 20):
+        stats = _stats_dict(row["stats"])
+        sources = stats.get("sources") or {}
+        if not sources:
+            continue
+        out = []
+        for name, s in sources.items():
+            if not isinstance(s, dict) or not s.get("seen"):
+                continue
+            out.append({
+                "source": name,
+                "seen": s.get("seen", 0),
+                "dropped_role": s.get("dropped_role", 0),
+                "dropped_location": s.get("dropped_location", 0),
+                "dropped_window": s.get("dropped_window", 0),
+                "kept": s.get("kept", 0),
+            })
+        if out:
+            return sorted(out, key=lambda r: -r["seen"])
+    return []
+
+
+def http_health(conn: db.Connection) -> dict[str, Any]:
+    """Request/cache/rate-limit counters from the most recent run that has them."""
+    for row in db.recent_runs(conn, 20):
+        stats = _stats_dict(row["stats"])
+        http = stats.get("http") or {}
+        if http:
+            ok = http.get("ok", 0)
+            cached = http.get("cache_hit", 0)
+            total = ok + cached
+            return {
+                "ok": ok,
+                "cache_hit": cached,
+                "cache_pct": round(100 * cached / total) if total else 0,
+                "rate_limited": sum(v for k, v in http.items() if "429" in k),
+                "failed": http.get("failed", 0),
+                "errors": {k: v for k, v in http.items() if k.startswith("http_")},
+                "run_id": row["id"],
+            }
+    return {}
+
+
+# --- jobs browser ---------------------------------------------------------
+
+JOB_SORTS = {
+    "newest": "j.first_seen_at DESC, j.id DESC",
+    "posted": "j.posted_at DESC NULLS LAST",
+    "salary": "j.salary_max DESC NULLS LAST",
+    "company": "j.company ASC",
+}
+
+
+def search_jobs(
+    conn: db.Connection,
+    *,
+    status: str | None = "new",
+    source: str | None = None,
+    state: str | None = None,
+    workplace: str | None = None,
+    query: str | None = None,
+    min_salary: float | None = None,
+    stale: str | None = None,
+    include_closed: bool = False,
+    include_duplicates: bool = False,
+    sort: str = "newest",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Filtered job list plus the total match count, for pagination."""
+    where = ["1=1"]
+    params: list[Any] = []
+
+    if not include_duplicates:
+        where.append("j.duplicate_of IS NULL")
+    if not include_closed:
+        where.append("j.closed_at IS NULL")
+    if status and status != "all":
+        if status == "new":
+            # Never-triaged rows have no job_status entry at all.
+            where.append("(s.status IS NULL OR s.status = 'new')")
+        else:
+            where.append("s.status = ?")
+            params.append(status)
+    if source:
+        where.append("j.source = ?")
+        params.append(source)
+    if state:
+        where.append("j.state = ?")
+        params.append(state)
+    if workplace:
+        where.append("COALESCE(j.workplace_type,'unknown') = ?")
+        params.append(workplace)
+    if min_salary:
+        where.append("j.salary_max >= ?")
+        params.append(min_salary)
+    if query:
+        where.append("(j.title ILIKE ? OR j.company ILIKE ? OR j.description_text ILIKE ?)")
+        like = f"%{query}%"
+        params.extend([like, like, like])
+
+    # The staleness verdict is computed, not stored, so filtering by it has to
+    # happen here rather than in Python — otherwise the page would be truncated
+    # before the filter ran and pagination would be wrong. The SQL is generated
+    # from staleness.py's own constants; see the drift test there.
+    # The verdict reads stored columns only, so it binds no parameters of its
+    # own and can appear in both the SELECT list and the WHERE clause freely.
+    verdict_sql = staleness.sql_verdict()
+    if stale:
+        where.append(f"{verdict_sql} = ?")
+        params.append(stale)
+
+    clause = " AND ".join(where)
+    base = (
+        f"FROM jobs j {staleness.CLUSTER_JOIN} LEFT JOIN job_status s "
+        "  ON s.source = j.source AND s.source_job_id = j.source_job_id "
+        f"WHERE {clause}"
+    )
+    total = _scalar(conn, f"SELECT COUNT(*) c {base}", tuple(params))
+    order = JOB_SORTS.get(sort, JOB_SORTS["newest"])
+    rows = _rows(
+        conn,
+        f"SELECT j.*, COALESCE(s.status,'new') AS status, s.notes, "
+        f"       {verdict_sql} AS staleness {base} "
+        f"ORDER BY {order} LIMIT ? OFFSET ?",
+        tuple(params) + (limit, offset),
+    )
+    return rows, total
+
+
+def filter_options(conn: db.Connection) -> dict[str, list[Any]]:
+    """Values that actually occur, so the filters never offer an empty result."""
+    return {
+        "sources": [r["source"] for r in conn.execute(
+            "SELECT DISTINCT source FROM jobs ORDER BY source")],
+        "states": [r["state"] for r in conn.execute(
+            "SELECT DISTINCT state FROM jobs WHERE state IS NOT NULL ORDER BY state")],
+        "workplaces": [r["w"] for r in conn.execute(
+            "SELECT DISTINCT COALESCE(workplace_type,'unknown') w FROM jobs ORDER BY w")],
+        "statuses": list(db.JOB_STATUSES) + ["all"],
+    }

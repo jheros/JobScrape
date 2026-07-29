@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}Jobs · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Jobs</h1>
+<p class="sub">{{ total|comma }} matching. Set a status and the row leaves this view, so you review each job once.</p>
+
+<form class="filters" method="get">
+  <label>Status
+    <select name="status">
+      {% for s in options.statuses %}
+        <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Search
+    <input type="search" name="q" value="{{ filters.q }}" placeholder="title, company, text">
+  </label>
+  <label>Source
+    <select name="source">
+      <option value="">any</option>
+      {% for s in options.sources %}
+        <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>State
+    <select name="state">
+      <option value="">any</option>
+      {% for s in options.states %}
+        <option value="{{ s }}" {% if filters.state == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Workplace
+    <select name="workplace">
+      <option value="">any</option>
+      {% for w in options.workplaces %}
+        <option value="{{ w }}" {% if filters.workplace == w %}selected{% endif %}>{{ w }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Freshness
+    <select name="stale">
+      <option value="">any</option>
+      <option value="fresh" {% if filters.stale == 'fresh' %}selected{% endif %}>fresh</option>
+      <option value="stale" {% if filters.stale == 'stale' %}selected{% endif %}>stale</option>
+      <option value="likely_evergreen" {% if filters.stale == 'likely_evergreen' %}selected{% endif %}>likely evergreen</option>
+    </select>
+  </label>
+  <label>Min salary
+    <input type="number" name="min_salary" value="{{ filters.min_salary }}" step="10000" placeholder="e.g. 150000">
+  </label>
+  <label>Sort
+    <select name="sort">
+      <option value="newest" {% if filters.sort=='newest' %}selected{% endif %}>Newest seen</option>
+      <option value="posted" {% if filters.sort=='posted' %}selected{% endif %}>Posted date</option>
+      <option value="salary" {% if filters.sort=='salary' %}selected{% endif %}>Salary</option>
+      <option value="company" {% if filters.sort=='company' %}selected{% endif %}>Company</option>
+    </select>
+  </label>
+  <button class="btn" type="submit">Apply</button>
+  <a class="btn ghost" href="/jobs">Reset</a>
+</form>
+
+<div id="bulk-bar" class="btn-row" style="display:none; margin-bottom:12px; align-items:center">
+  <span id="bulk-count" class="pill"></span>
+  <button class="btn ghost" data-bulk-status="saved">Save</button>
+  <button class="btn ghost" data-bulk-status="applied">Applied</button>
+  <button class="btn ghost" data-bulk-status="dismissed">Dismiss</button>
+</div>
+
+<div class="card">
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28px"><input type="checkbox" id="check-all" aria-label="Select all"></th>
+        <th>Role</th>
+        <th>Location</th>
+        <th class="num">Salary</th>
+        <th>Posted</th>
+        <th style="width:130px">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td><input type="checkbox" class="row-check"
+                   data-token="{{ row.source }}|{{ row.source_job_id }}"
+                   aria-label="Select job"></td>
+        <td>
+          <a class="job-title" href="{{ row.job_url }}" target="_blank" rel="noopener">{{ row.title }}</a>
+          <div class="job-meta">
+            <span>{{ row.company }}</span>
+            <span class="tag">{{ row.source }}</span>
+            {% if row.workplace_type %}<span class="tag">{{ row.workplace_type }}</span>{% endif %}
+            {% if row.staleness == 'likely_evergreen' %}<span class="tag warn"
+              title="Old, mass-posted, or worded as a standing advert — probably not a live opening">likely evergreen</span>
+            {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
+            {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
+          </div>
+        </td>
+        <td>{{ row.location_raw or "—" }}</td>
+        <td class="num">
+          {% if row.salary_min %}${{ (row.salary_min // 1000)|int }}k{% if row.salary_max %}–${{ (row.salary_max // 1000)|int }}k{% endif %}
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ row.posted_at|datefmt(10) }}</td>
+        <td>
+          <select class="status-select" data-source="{{ row.source }}"
+                  data-job-id="{{ row.source_job_id }}" aria-label="Set status">
+            {% for s in statuses %}
+              <option value="{{ s }}" {% if row.status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center; padding:34px; color:var(--text-muted)">
+        Nothing matches these filters.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+
+  {% if pages > 1 %}
+  <div class="pager">
+    {% if page > 1 %}
+      <a class="btn ghost" href="?{{ request.url.query|replace('page=' ~ page, '') }}&page={{ page - 1 }}">Previous</a>
+    {% endif %}
+    <span>Page {{ page }} of {{ pages }}</span>
+    {% if page < pages %}
+      <a class="btn ghost" href="?{{ request.url.query|replace('page=' ~ page, '') }}&page={{ page + 1 }}">Next</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}
