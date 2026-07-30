@@ -316,3 +316,92 @@ def test_clearing_one_platform_leaves_another_alone() -> None:
         db.clear_ats_cooldowns(conn, "ashby")
         assert db.boards_in_cooldown(conn, "ashby") == set()
         assert db.boards_in_cooldown(conn, "lever") == {"l1"}
+
+
+# --- derived columns must survive a shallow refresh ------------------------
+#
+# `skills`, `evergreen_text` and `scam_signals` are all computed at upsert time
+# from `description_text`. That column is COALESCE-preserved, but the derived
+# ones are assigned directly — so without an explicit guard, the second sweep of
+# every board recomputes them from a NULL description and stores the empty
+# result over good data. The damage compounds silently and looks like "the
+# extractor is broken" rather than "the upsert overwrote it".
+
+
+def _stored(conn: db.Connection, job_id: str) -> dict[str, Any]:
+    return conn.execute(
+        "SELECT skills, evergreen_text, scam_signals, description_text, seniority "
+        "FROM jobs WHERE source = ? AND source_job_id = ?",
+        ("greenhouse", job_id),
+    ).fetchone()
+
+
+def test_shallow_refresh_does_not_erase_skills(_isolated_db) -> None:
+    """The decisive test for the whole feature.
+
+    A repeat sweep sends exactly this: the same posting, with the description
+    stripped by `shallow_refresh`. If `skills` is not guarded, it comes back
+    empty and every already-known posting loses its skills on run two.
+    """
+    conn = _isolated_db
+    full = Job(
+        source="greenhouse", source_job_id="j1", title="Senior Backend Engineer",
+        company="Acme", job_url="https://x/j1",
+        description_text="We use Python, Kubernetes and PostgreSQL on AWS.",
+    )
+    db.upsert_jobs(conn, [full])
+    first = _stored(conn, "j1")
+    assert "python" in first["skills"]
+    assert "kubernetes" in first["skills"]
+
+    # Second sweep: the posting is already known, so the adapter emits a
+    # shallow row with no description.
+    db.upsert_jobs(conn, [shallow_refresh(
+        Job(source="greenhouse", source_job_id="j1", title="Senior Backend Engineer",
+            company="Acme", job_url="https://x/j1",
+            description_text="We use Python, Kubernetes and PostgreSQL on AWS.")
+    )])
+    second = _stored(conn, "j1")
+    assert second["skills"] == first["skills"], (
+        "a shallow refresh erased the skills — the CASE WHEN guard in "
+        "upsert_jobs is missing or wrong"
+    )
+    assert second["description_text"] == first["description_text"]
+
+
+def test_a_real_description_update_does_replace_the_skills(_isolated_db) -> None:
+    """The guard must not freeze the column: when a description genuinely
+    changes, the skills have to follow it."""
+    conn = _isolated_db
+    db.upsert_jobs(conn, [Job(
+        source="greenhouse", source_job_id="j2", title="Engineer", company="Acme",
+        job_url="https://x/j2", description_text="Python and Django shop.")])
+    assert "django" in _stored(conn, "j2")["skills"]
+
+    db.upsert_jobs(conn, [Job(
+        source="greenhouse", source_job_id="j2", title="Engineer", company="Acme",
+        job_url="https://x/j2", description_text="We have moved to Go and Kubernetes.")])
+    updated = _stored(conn, "j2")["skills"]
+    assert "kubernetes" in updated
+    assert "django" not in updated
+
+
+def test_seniority_is_refreshed_from_the_title_not_preserved(_isolated_db) -> None:
+    """The asymmetry with skills, made explicit.
+
+    Seniority derives from the title, which a shallow refresh keeps — so it is
+    assigned unconditionally and correctly tracks a retitled posting.
+    """
+    conn = _isolated_db
+    db.upsert_jobs(conn, [Job(
+        source="greenhouse", source_job_id="j3", title="Software Engineer",
+        company="Acme", job_url="https://x/j3", description_text="Python.")])
+    assert _stored(conn, "j3")["seniority"] == "unknown"
+
+    # The employer retitles the req; a shallow pass still carries the new title.
+    db.upsert_jobs(conn, [shallow_refresh(Job(
+        source="greenhouse", source_job_id="j3", title="Staff Software Engineer",
+        company="Acme", job_url="https://x/j3", description_text="Python."))])
+    row = _stored(conn, "j3")
+    assert row["seniority"] == "staff", "seniority must track the title"
+    assert "python" in row["skills"], "and skills must still be preserved"

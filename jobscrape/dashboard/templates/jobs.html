@@ -40,6 +40,22 @@
       {% endfor %}
     </select>
   </label>
+  <label>Level
+    <select name="seniority">
+      <option value="">any</option>
+      {% for level in options.seniorities %}
+        <option value="{{ level }}" {% if filters.seniority == level %}selected{% endif %}>{{ level }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>Skill
+    <select name="skill">
+      <option value="">any</option>
+      {% for s in options.skills %}
+        <option value="{{ s }}" {% if filters.skill == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </label>
   <label>Freshness
     <select name="stale">
       <option value="">any</option>
@@ -94,7 +110,8 @@
           <div class="job-meta">
             <span>{{ row.company }}</span>
             <span class="tag">{{ row.source }}</span>
-            {% if row.workplace_type %}<span class="tag">{{ row.workplace_type }}</span>{% endif %}
+            {% if row.workplace_type and row.workplace_type != 'unknown' %}<span class="tag">{{ row.workplace_type }}</span>{% endif %}
+            {% if row.seniority and row.seniority != 'unknown' %}<span class="tag level">{{ row.seniority }}</span>{% endif %}
             {% if row.staleness == 'likely_evergreen' %}<span class="tag warn"
               title="Old, mass-posted, or worded as a standing advert — probably not a live opening">likely evergreen</span>
             {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
@@ -102,6 +119,12 @@
               title="{{ row.scam_signals | scamreasons }}">possible scam</span>{% endif %}
             {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
           </div>
+          {% if row.skills %}
+          <div class="job-skills">
+            {% for skill in row.skills.split(',')[:8] %}<span class="chip">{{ skill }}</span>{% endfor %}
+            {% if row.skills.split(',')|length > 8 %}<span class="chip more">+{{ row.skills.split(',')|length - 8 }}</span>{% endif %}
+          </div>
+          {% endif %}
         </td>
         <td>{{ row.location_raw or "—" }}</td>
         <td class="num">

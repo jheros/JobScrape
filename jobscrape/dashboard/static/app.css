@@ -223,6 +223,25 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 /* The tag always carries its own word ("likely evergreen"), so the colour is
    reinforcement rather than the signal itself — readable without colour vision. */
 .tag.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+table.coverage { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.coverage td { padding: 4px 8px 4px 0; vertical-align: middle; }
+table.coverage td.name { width: 110px; color: var(--text-secondary); }
+table.coverage td.num { width: 60px; text-align: right; font-variant-numeric: tabular-nums; }
+table.coverage td.muted { color: var(--text-muted); }
+table.coverage tr.total { border-top: 1px solid var(--border); font-weight: 600; }
+table.coverage td.bar { background: var(--surface-2); border-radius: 3px; height: 9px; padding: 0; }
+table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
+                             background: var(--series-1); }
+
+.tag.level { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 40%, transparent); }
+/* Skills sit on their own line: a posting can name a dozen, and inlining them
+   with the meta tags makes every row a different height. */
+.job-skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.chip { font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+        background: var(--surface-2); color: var(--text-muted);
+        border: 1px solid var(--border); }
+.chip.more { opacity: .7; }
+
 .tag.critical { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 55%, transparent); }
 
 /* --- live log ----------------------------------------------------------- */

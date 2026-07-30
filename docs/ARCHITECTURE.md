@@ -244,6 +244,17 @@ what the liveness probe exists to cover.
   not mistaken for compensation.
 - **`workplace_type`** → `remote` / `hybrid` / `onsite` / `unknown`, trusting a source's
   own field first, then a structured boolean, then wording in title/location.
+- **`seniority`** → `intern` / `entry` / `mid` / `senior` / `staff` / `principal` / `lead` /
+  `manager` / `director` / `executive` / `unknown`, from a precedence ladder over the
+  **title only** (`jobscrape/seniority.py`). First match wins, which is the whole design:
+  5.8% of real titles name two levels, so "Senior Staff Engineer" is staff and "Principal
+  Engineering Manager" is a manager. Classifies **56.0%** of open postings; the rest name
+  no level and are honestly `unknown`.
+- **`skills`** → a comma-separated list drawn from a closed 133-term vocabulary
+  (`jobscrape/skills.py`), every pattern word-boundary anchored. That anchoring is not a
+  refinement: without it `rust` matched 1,677 of 4,000 descriptions instead of 305
+  (*trustworthiness*, *thrust*) and `scala` 1,543 instead of 137 (*scalable*,
+  *escalation*) — both outranking `java`, which is how the problem was noticed.
 
 ### 3d. Filtering
 
@@ -315,12 +326,45 @@ test suite, harmless to run against a database Alembic has already migrated.
 | `runs` | run history and per-source stats (`stats` is `JSONB`) | Feeds the dashboard's process monitor and the per-run trend chart |
 | `run_events` | streamed log lines | The live tail, and per-stage analytics |
 
+Three columns are **derived at upsert** rather than set by an adapter — `evergreen_text`,
+`scam_signals` and `skills`. All three are computed from `description_text`, which is
+`COALESCE`-preserved, so each carries an explicit
+`CASE WHEN excluded.description_text IS NOT NULL` guard. Without it the second sweep of
+every board would recompute them from the NULL description a shallow refresh carries and
+store the empty result over good data. `seniority` deliberately does *not* need this: it
+derives from `title`, which is required and survives a shallow refresh intact.
+
 `upsert_jobs` keys on `(source, source_job_id)`, preserves `first_seen_at`, and
 `COALESCE`s the expensive fields (descriptions, dates, salary) so a later shallow pass
 can never blank what an earlier deep pass captured. That guarantee is what makes the
 incremental fast path safe. A re-upsert also clears `closed_at` unconditionally — a
 posting the source is actively serving again is not closed, regardless of what an earlier
 sweep concluded.
+
+### The nine-field contract
+
+Every job is expected to carry **title, source, location, mode, seniority, salary, skills,
+description and link**. Measured across open, non-duplicate postings:
+
+| Field | Coverage | Note |
+| --- | --- | --- |
+| title / source / link | 100% | required |
+| location | 99.8% | |
+| description | 99.8% | |
+| skills | 78.5% overall, **87.1%** of full (>1500 char) postings | aggregator snippets are the gap |
+| salary | 63.4% | most employers do not publish one |
+| seniority | 56.0% | most titles do not name a level |
+| mode | 51.1% | |
+
+**Nothing is inferred to close those gaps and nothing is dropped for having one.** A blank
+means the employer did not state it, which is information in itself; guessing would make
+the column mean two different things at once. What the pipeline does instead is make the
+gaps visible — a field-coverage panel on the Overview page, and an `export --complete-only`
+flag for when you want only the fully-specified rows (about 7% of the archive).
+
+The skills gap is almost entirely structural rather than a failure of extraction: postings
+under 600 characters — Adzuna and Jooble serve snippets, not full descriptions — yield a
+skill 38% of the time, against 87.1% for postings over 1,500 characters.
 
 ## Is this posting real? (staleness)
 

@@ -10,6 +10,8 @@ from datetime import date, datetime, timezone
 from html import unescape
 from typing import Any
 
+from .seniority import classify as classify_seniority
+
 #: Fractional seconds in a timestamp, however many digits the source emits.
 _FRACTIONAL_RE = re.compile(r"\.(\d{1,9})")
 
@@ -402,6 +404,10 @@ class Job:
     workplace_type: str | None = None
     #: A source's own workplace field, used to classify then discarded.
     workplace_hint: str | None = None
+    #: intern / entry / mid / senior / staff / principal / lead / manager /
+    #: director / executive / unknown. Derived from the title unless an adapter
+    #: sets it — see `jobscrape.seniority`. Descriptive, never filtered on.
+    seniority: str | None = None
     employment_type: str | None = None
     department: str | None = None
     posted_at: str | None = None
@@ -449,6 +455,12 @@ class Job:
             )
         if self.is_remote is None and self.workplace_type == "remote":
             self.is_remote = True
+
+        # Title only, deliberately — see `jobscrape.seniority`. An adapter whose
+        # source states the level outright keeps its own value; this only fills
+        # a blank, the same contract `workplace_type` has with `workplace_hint`.
+        if not self.seniority:
+            self.seniority = classify_seniority(self.title)
 
         if self.salary_min is None:
             haystack = self.salary_raw or self.description_text

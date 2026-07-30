@@ -14,7 +14,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from .. import db, staleness
+from .. import db, seniority as seniority_mod, staleness
 
 #: Every "current" job listing filters through this. Not applied to queries
 #: that are explicitly about closed jobs or about duplicates themselves.
@@ -206,6 +206,63 @@ def coverage(conn: db.Connection) -> list[dict[str, Any]]:
     )
 
 
+#: The nine fields a job is expected to carry, as SQL predicates over an open
+#: posting. Mirrors ``export.REQUIRED_FIELDS`` — a field satisfied by any of a
+#: set of columns is written as an OR here too, so a location supplied as
+#: structured city/state counts even when `location_raw` is blank.
+#:
+#: `unknown` is deliberately NOT counted as populated for mode and seniority:
+#: it is the value meaning "we could not tell", and counting it would report
+#: 100% coverage of a column that is half empty.
+FIELD_COVERAGE = {
+    "title": "title IS NOT NULL AND title <> ''",
+    "source": "source IS NOT NULL",
+    "location": "COALESCE(location_raw, city, state) IS NOT NULL",
+    "mode": "workplace_type IS NOT NULL AND workplace_type <> 'unknown'",
+    "seniority": "seniority IS NOT NULL AND seniority <> 'unknown'",
+    "salary": "salary_min IS NOT NULL OR salary_max IS NOT NULL",
+    "skills": "skills IS NOT NULL AND skills <> ''",
+    # A NULL check, not a length check. `length(description_text)` forces
+    # Postgres to decompress every stored description — measured at 6.3s
+    # against 0.2s for the NULL test, to change the answer by 58 rows in
+    # 37,989 (0.15%). A page that takes six seconds to say the same thing is
+    # the wrong trade.
+    "description": "description_text IS NOT NULL",
+    "link": "COALESCE(job_url, apply_url) IS NOT NULL",
+}
+
+
+def field_coverage(conn: db.Connection) -> list[dict[str, Any]]:
+    """How completely each of the nine expected fields is populated.
+
+    Surfaced because the gaps are real and permanent: roughly half of all
+    postings never state a work mode and a third never state pay. Reporting
+    that is more useful than quietly showing a blank column, and it is the only
+    way to tell "the scraper missed it" from "the employer never said".
+    """
+    columns = ", ".join(
+        f"count(*) FILTER (WHERE {predicate}) AS {name}"
+        for name, predicate in FIELD_COVERAGE.items()
+    )
+    row = conn.execute(
+        f"SELECT count(*) AS total, {columns} FROM jobs WHERE {_OPEN}"
+    ).fetchone()
+    total = row["total"] or 0
+    complete = _scalar(
+        conn,
+        "SELECT count(*) c FROM jobs WHERE " + _OPEN + " AND "
+        + " AND ".join(f"({p})" for p in FIELD_COVERAGE.values()),
+    )
+    out = [
+        {"field": name, "count": row[name],
+         "pct": round(100 * row[name] / total) if total else 0}
+        for name in FIELD_COVERAGE
+    ]
+    out.append({"field": "all nine", "count": complete,
+                "pct": round(100 * complete / total) if total else 0})
+    return out
+
+
 def salary_coverage(conn: db.Connection) -> dict[str, Any]:
     total = _scalar(conn, f"SELECT COUNT(*) c FROM jobs WHERE {_OPEN}")
     with_salary = _scalar(
@@ -348,6 +405,8 @@ def search_jobs(
     source: str | None = None,
     state: str | None = None,
     workplace: str | None = None,
+    seniority: str | None = None,
+    skill: str | None = None,
     query: str | None = None,
     min_salary: float | None = None,
     stale: str | None = None,
@@ -381,6 +440,17 @@ def search_jobs(
     if workplace:
         where.append("COALESCE(j.workplace_type,'unknown') = ?")
         params.append(workplace)
+    if seniority:
+        where.append("COALESCE(j.seniority,'unknown') = ?")
+        params.append(seniority)
+    if skill:
+        # Whole-element match, not a substring — a bare LIKE '%go%' would hit
+        # "django" and "mongodb". Array containment rather than a padded LIKE
+        # because it can use the GIN index on `string_to_array(skills, ',')`:
+        # unindexed, this filter combined with the staleness cluster join took
+        # long enough to hang a page load; indexed, it is 0.03s.
+        where.append("string_to_array(j.skills, ',') @> ARRAY[?]")
+        params.append(skill)
     if min_salary:
         where.append("j.salary_max >= ?")
         params.append(min_salary)
@@ -427,5 +497,19 @@ def filter_options(conn: db.Connection) -> dict[str, list[Any]]:
             "SELECT DISTINCT state FROM jobs WHERE state IS NOT NULL ORDER BY state")],
         "workplaces": [r["w"] for r in conn.execute(
             "SELECT DISTINCT COALESCE(workplace_type,'unknown') w FROM jobs ORDER BY w")],
+        # Ordered by the seniority ladder, not alphabetically — "director,
+        # entry, executive, intern" tells a reader nothing about level.
+        "seniorities": sorted(
+            (r["s"] for r in conn.execute(
+                "SELECT DISTINCT COALESCE(seniority,'unknown') s FROM jobs")),
+            key=seniority_mod.sort_key,
+        ),
+        # Most-common first: a dropdown of 133 alphabetised technologies is
+        # unusable, and the popular ones are what people filter by.
+        "skills": [r["skill"] for r in conn.execute(
+            "SELECT skill, count(*) n FROM ("
+            "  SELECT unnest(string_to_array(skills, ',')) skill FROM jobs"
+            f"  WHERE {_OPEN} AND skills <> ''"
+            ") t WHERE skill <> '' GROUP BY skill ORDER BY n DESC, skill LIMIT 60")],
         "statuses": list(db.JOB_STATUSES) + ["all"],
     }

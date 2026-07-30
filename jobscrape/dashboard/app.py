@@ -108,6 +108,7 @@ async def overview(request: Request) -> HTMLResponse:
                 [(r["workplace"], r["workplace"]) for r in analytics.by_workplace(conn)]
             ),
             salary=analytics.salary_coverage(conn),
+            field_coverage=analytics.field_coverage(conn),
         )
     finally:
         conn.close()
@@ -120,6 +121,8 @@ async def jobs(
     source: str | None = None,
     state: str | None = None,
     workplace: str | None = None,
+    seniority: str | None = None,
+    skill: str | None = None,
     q: str | None = None,
     min_salary: float | None = None,
     stale: str | None = None,
@@ -132,6 +135,7 @@ async def jobs(
         per_page = 50
         rows, total = analytics.search_jobs(
             conn, status=status, source=source, state=state, workplace=workplace,
+            seniority=seniority, skill=skill,
             query=q, min_salary=min_salary, stale=stale, include_closed=include_closed,
             sort=sort, limit=per_page, offset=(max(page, 1) - 1) * per_page,
         )
@@ -143,7 +147,8 @@ async def jobs(
             statuses=db.JOB_STATUSES,
             filters={
                 "status": status, "source": source or "", "state": state or "",
-                "workplace": workplace or "", "q": q or "",
+                "workplace": workplace or "", "seniority": seniority or "",
+                "skill": skill or "", "q": q or "",
                 "min_salary": min_salary or "", "stale": stale or "",
                 "include_closed": include_closed,
                 "sort": sort,

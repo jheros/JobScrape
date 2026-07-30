@@ -304,10 +304,46 @@ Columns:
 
 ```text
 job_url, title, company, location_raw, city, state, country, workplace_type,
-is_remote, posted_at, employment_type, department, salary_min, salary_max,
-salary_currency, salary_raw, source, company_slug, apply_url, updated_at,
-description_text[, description_html]
+seniority, is_remote, posted_at, employment_type, department, salary_min,
+salary_max, salary_currency, salary_raw, skills, source, company_slug,
+apply_url, updated_at, description_text[, description_html]
 ```
+
+### The nine fields every job carries
+
+**title, source, location, mode, seniority, salary, skills, description, link.**
+Measured across open, non-duplicate postings:
+
+| Field | Coverage |
+| --- | --- |
+| title, source, link, location, description | 100% |
+| skills | 79% overall — **87%** of full (>1500 char) postings |
+| salary | 63% |
+| seniority | 56% |
+| mode | 51% |
+| *all nine at once* | *15%* |
+
+**Nothing is guessed to fill a gap, and nothing is dropped for having one.** A blank means
+the employer did not state it, which is itself worth knowing — most postings simply never
+publish a salary or a work mode, and inventing one would make the column mean two
+different things. The Overview page shows this table live, and:
+
+```bash
+# Only the fully-specified rows (~15% of the archive)
+python -m jobscrape export --complete-only --format csv
+```
+
+**`seniority`** — `intern` / `entry` / `mid` / `senior` / `staff` / `principal` / `lead` /
+`manager` / `director` / `executive` / `unknown`, read from the title by a precedence
+ladder. First match wins, which is what makes "Senior Staff Engineer" staff and "Principal
+Engineering Manager" a manager.
+
+**`skills`** — a comma-separated list from a closed 133-term vocabulary of languages,
+frameworks, clouds, datastores and practices. Every pattern is word-boundary anchored,
+which is load-bearing rather than tidy: unanchored, `rust` matched 1,677 of 4,000 real
+descriptions instead of 305 (*trustworthiness*, *thrust*) and `scala` 1,543 instead of 137
+(*scalable*, *escalation*) — both outranking `java`. The skills gap is mostly structural:
+Adzuna and Jooble serve ~500-character snippets, and a snippet rarely names a stack.
 
 `workplace_type` is `remote` / `hybrid` / `onsite` / `unknown`. **Nothing is filtered on
 it** — every job is collected regardless — so you can slice the dataset yourself:

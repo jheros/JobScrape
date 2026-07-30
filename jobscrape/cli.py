@@ -449,6 +449,17 @@ def cmd_export(args: argparse.Namespace) -> int:
         if not rows:
             log.warning("No jobs matched. Run `fetch` first, or widen the filters.")
             return 1
+        if getattr(args, "complete_only", False):
+            before = len(rows)
+            rows = [row for row in rows if export_mod.is_complete(row)]
+            # Say what was dropped and why. A row can be missing a field only
+            # because the employer never published it, so a silent 60% cut here
+            # would read as "the scraper lost most of the jobs".
+            log.info("--complete-only: %d of %d rows carry all nine fields (%.1f%%)",
+                     len(rows), before, 100 * len(rows) / before)
+            if not rows:
+                log.warning("Nothing carries all nine fields; widen or drop --complete-only.")
+                return 1
         try:
             paths = export_mod.export(
                 rows,
@@ -762,6 +773,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--limit", type=int, default=None)
     p_exp.add_argument("--include-html", action="store_true",
                        help="include the raw HTML description column")
+    p_exp.add_argument("--complete-only", action="store_true",
+                       help="keep only postings carrying all nine fields (title, source, "
+                            "location, mode, seniority, salary, skills, description, link). "
+                            "Most postings do not state a salary or work mode, so expect "
+                            "this to cut the result set substantially.")
 
     # run
     p_run = sub.add_parser("run", help="discover + validate + fetch + export in one go")

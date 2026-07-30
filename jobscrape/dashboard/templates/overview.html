@@ -62,6 +62,25 @@
 </div>
 
 <div class="card">
+  <h2>Field coverage</h2>
+  <p class="hint">How completely each expected field is populated across open postings.
+    A gap here usually means the employer never stated it &mdash; work mode and salary are
+    simply absent from most listings, and nothing is inferred to fill them in.</p>
+  <table class="coverage">
+    <tbody>
+      {% for f in field_coverage %}
+      <tr {% if f.field == 'all nine' %}class="total"{% endif %}>
+        <td class="name">{{ f.field }}</td>
+        <td class="bar"><span style="width: {{ f.pct }}%"></span></td>
+        <td class="num">{{ f.pct }}%</td>
+        <td class="num muted">{{ f.count|comma }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
   <h2>Jobs first seen per day</h2>
   {{ timeline_svg|safe }}
 </div>

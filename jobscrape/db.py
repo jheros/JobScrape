@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     country           TEXT,
     is_remote         BOOLEAN,
     workplace_type    TEXT,
+    -- intern / entry / mid / senior / staff / principal / lead / manager /
+    -- director / executive / unknown. Derived from the title alone, so it
+    -- recomputes safely on every pass — see seniority.py.
+    seniority         TEXT,
     employment_type   TEXT,
     department        TEXT,
     posted_at         TIMESTAMPTZ,
@@ -79,6 +83,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- Empty for essentially every posting — that is the intended resting state
     -- for a fraud check, not a sign it is broken.
     scam_signals      TEXT NOT NULL DEFAULT '',
+    -- Comma-separated technologies named in the description (see skills.py).
+    -- Stored, not computed on read, for the same reason as evergreen_text: it
+    -- derives from the description alone and never from the clock.
+    skills            TEXT NOT NULL DEFAULT '',
     -- Consecutive "expired" liveness probes. Closes at 2; any healthy read
     -- resets it, and so does a reopen — see liveness.py.
     liveness_strikes  INTEGER NOT NULL DEFAULT 0,
@@ -176,6 +184,12 @@ CREATE INDEX IF NOT EXISTS idx_jobs_company   ON jobs (company);
 CREATE INDEX IF NOT EXISTS idx_jobs_source    ON jobs (source);
 CREATE INDEX IF NOT EXISTS idx_jobs_state     ON jobs (state);
 CREATE INDEX IF NOT EXISTS idx_jobs_workplace ON jobs (workplace_type);
+CREATE INDEX IF NOT EXISTS idx_jobs_seniority ON jobs (seniority);
+-- GIN over the parsed skills list. `skills` is stored comma-separated, and
+-- filtering it with a leading-wildcard LIKE cannot use an index at all; that
+-- was slow enough on 44k rows to hang a page load once the staleness cluster
+-- join was layered on top.
+CREATE INDEX IF NOT EXISTS idx_jobs_skills ON jobs USING GIN (string_to_array(skills, ','));
 CREATE INDEX IF NOT EXISTS idx_jobs_seen      ON jobs (first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_board     ON jobs (source, company_slug);
 -- Open-job paths are the hot ones; a partial index keeps them small as
@@ -196,7 +210,8 @@ CREATE INDEX IF NOT EXISTS idx_status_value   ON job_status (status);
 JOB_COLUMNS = [
     "source", "source_job_id", "title", "company", "company_slug", "job_url",
     "apply_url", "location_raw", "city", "state", "country", "is_remote",
-    "workplace_type", "employment_type", "department", "posted_at", "updated_at",
+    "workplace_type", "seniority", "employment_type", "department",
+    "posted_at", "updated_at",
     "salary_min", "salary_max", "salary_currency", "salary_raw",
     "description_html", "description_text", "raw_json",
 ]
@@ -411,7 +426,7 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
     a posting the source is actively serving again is not closed, regardless
     of what an earlier sweep concluded.
     """
-    from . import fingerprint as fp, scam, staleness
+    from . import fingerprint as fp, scam, skills, staleness
 
     stamp = now_iso()
     updatable = [c for c in JOB_COLUMNS if c not in ("source", "source_job_id")]
@@ -422,10 +437,10 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
         f"{c}=COALESCE(excluded.{c}, jobs.{c})" if c in preserve else f"{c}=excluded.{c}"
         for c in updatable
     )
-    placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 7))
+    placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 8))
     sql = (
         f"INSERT INTO jobs ({', '.join(JOB_COLUMNS)}, first_seen_at, last_seen_at, "
-        f"role_fingerprint, role_key, content_hash, evergreen_text, scam_signals) "
+        f"role_fingerprint, role_key, content_hash, evergreen_text, scam_signals, skills) "
         f"VALUES ({placeholders}) "
         f"ON CONFLICT(source, source_job_id) DO UPDATE SET {set_clause}, "
         f"last_seen_at=excluded.last_seen_at, closed_at=NULL, "
@@ -443,6 +458,14 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
         # description is still stored one column over.
         f"scam_signals=CASE WHEN excluded.description_text IS NOT NULL "
         f"THEN excluded.scam_signals ELSE jobs.scam_signals END, "
+        # And again for skills — the most consequential of the three, because
+        # it is the one a user actually reads. A repeat sweep sends a shallow
+        # refresh for every already-known posting, so without this guard the
+        # column would be emptied on the second run of every board and the
+        # damage would look like "skills extraction is broken" rather than
+        # "the upsert overwrote it".
+        f"skills=CASE WHEN excluded.description_text IS NOT NULL "
+        f"THEN excluded.skills ELSE jobs.skills END, "
         # A reopen clears accumulated liveness strikes, so the two-strike grace
         # survives it. Without this a posting that was closed, came back, and
         # then returned one transient death signal would close again instantly
@@ -458,7 +481,8 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
             [row.get(c) for c in JOB_COLUMNS]
             + [stamp, stamp, fp.role_fingerprint(job), fp.role_key(job), fp.content_hash(job),
                staleness.has_evergreen_text(job.description_text),
-               ",".join(scam.scam_signals(job.description_text))]
+               ",".join(scam.scam_signals(job.description_text)),
+               skills.to_field(job.description_text)]
         )
         exists = conn.execute(
             "SELECT 1 FROM jobs WHERE source=? AND source_job_id=?",
