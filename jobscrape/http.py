@@ -170,6 +170,11 @@ class Fetcher:
 
         A ``None`` return means "this source had nothing for us" and is always
         recoverable — callers skip and continue rather than aborting a sweep.
+
+        ``expect`` selects what comes back: ``"json"``, ``"text"``, or
+        ``"headers"`` for endpoints whose answer *is* a header — Apple's CSRF
+        bootstrap replies 200 with an empty body and the token in
+        ``X-Apple-CSRF-Token``, so reading the body would find nothing at all.
         """
         if self._client is None:
             raise RuntimeError("Fetcher must be used as an async context manager")
@@ -224,6 +229,10 @@ class Fetcher:
                         return None
 
                     self.stats["ok"] += 1
+                    if expect == "headers":
+                        # Never cached: these are session tokens, and a stale
+                        # one is refused by the very call it exists for.
+                        return dict(resp.headers)
                     try:
                         data = resp.json() if expect == "json" else resp.text
                     except (ValueError, json.JSONDecodeError):
@@ -260,6 +269,12 @@ class Fetcher:
 
     async def post_json(self, url: str, body: Any, **kw: Any) -> Any | None:
         return await self.request("POST", url, json_body=body, **kw)
+
+    async def get_headers(self, url: str, **kw: Any) -> dict[str, str] | None:
+        """Fetch a URL for its response headers alone. Never cached."""
+        kw["expect"] = "headers"
+        kw["cache"] = False
+        return await self.request("GET", url, **kw)
 
     async def get_text(self, url: str, **kw: Any) -> str | None:
         kw["expect"] = "text"

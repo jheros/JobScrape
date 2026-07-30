@@ -18,6 +18,7 @@ from . import (
     bamboohr,
     breezy,
     cornerstone,
+    employers,
     greenhouse,
     hackernews,
     himalayas,
@@ -96,6 +97,11 @@ GLOBAL_SOURCES: dict[str, GlobalSource] = {
         adzuna.Adzuna(),
         jooble.Jooble(),
         jsearch.JSearch(),
+        # Direct employer career sites: single fixed employers who run their own
+        # APIs rather than an ATS, so no other adapter can see their openings.
+        employers.Amazon(),
+        employers.Apple(),
+        employers.Uber(),
     )
 }
 
