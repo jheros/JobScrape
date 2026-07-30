@@ -11,12 +11,13 @@ import json
 import logging
 from datetime import datetime as datetime_cls
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, Form, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BeforeValidator
 
 from .. import config, db, scam
 from ..observability import health as health_check
@@ -24,6 +25,27 @@ from . import analytics, charts
 from .runner import STAGES, manager
 
 log = logging.getLogger("jobscrape.dashboard")
+
+
+def _blank_to_none(value: Any) -> Any:
+    """Treat an empty query parameter as absent rather than as a bad value.
+
+    An HTML form submits **every** named field, so a number input the user left
+    alone arrives as ``""``. Pydantic cannot parse that as a float and rejects
+    the whole request with a 422 — which is what the Jobs page did on every
+    press of Apply, because leaving "Min salary" blank is the normal case. The
+    filters never ran; the user got raw JSON instead of results.
+
+    Only blank is reinterpreted. ``min_salary=abc`` still fails validation, as
+    it should.
+    """
+    return None if isinstance(value, str) and not value.strip() else value
+
+
+#: Numeric query parameters reachable from an HTML form. Any `<input
+#: type="number">` needs one of these, or it reintroduces the 422 above.
+BlankableFloat = Annotated[float | None, BeforeValidator(_blank_to_none)]
+BlankableInt = Annotated[int | None, BeforeValidator(_blank_to_none)]
 
 def _datefmt(value: Any, length: int = 16) -> str:
     """Format a timestamp for display, accepting either a `datetime` (what
@@ -124,24 +146,27 @@ async def jobs(
     seniority: str | None = None,
     skill: str | None = None,
     q: str | None = None,
-    min_salary: float | None = None,
+    min_salary: BlankableFloat = None,
     stale: str | None = None,
     include_closed: bool = False,
     sort: str = "newest",
-    page: int = 1,
+    page: BlankableInt = 1,
 ) -> HTMLResponse:
     conn = _conn()
     try:
         per_page = 50
+        # A blank `page=` now validates to None rather than 422-ing; an absent
+        # or unusable page number means the first one.
+        current = max(page or 1, 1)
         rows, total = analytics.search_jobs(
             conn, status=status, source=source, state=state, workplace=workplace,
             seniority=seniority, skill=skill,
             query=q, min_salary=min_salary, stale=stale, include_closed=include_closed,
-            sort=sort, limit=per_page, offset=(max(page, 1) - 1) * per_page,
+            sort=sort, limit=per_page, offset=(current - 1) * per_page,
         )
         return _page(
             request, "jobs.html",
-            rows=rows, total=total, page=max(page, 1), per_page=per_page,
+            rows=rows, total=total, page=current, per_page=per_page,
             pages=max((total + per_page - 1) // per_page, 1),
             options=analytics.filter_options(conn),
             statuses=db.JOB_STATUSES,

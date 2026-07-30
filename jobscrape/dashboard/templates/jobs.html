@@ -153,11 +153,13 @@
   {% if pages > 1 %}
   <div class="pager">
     {% if page > 1 %}
-      <a class="btn ghost" href="?{{ request.url.query|replace('page=' ~ page, '') }}&page={{ page - 1 }}">Previous</a>
+      {# Starlette rebuilds the query properly. The old string replace left a
+         stray "&&" and would have mangled any filter value containing "page=". #}
+      <a class="btn ghost" href="{{ request.url.include_query_params(page=page - 1) }}">Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ pages }}</span>
     {% if page < pages %}
-      <a class="btn ghost" href="?{{ request.url.query|replace('page=' ~ page, '') }}&page={{ page + 1 }}">Next</a>
+      <a class="btn ghost" href="{{ request.url.include_query_params(page=page + 1) }}">Next</a>
     {% endif %}
   </div>
   {% endif %}
