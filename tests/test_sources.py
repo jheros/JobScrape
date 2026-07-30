@@ -711,3 +711,105 @@ async def test_new_board_adapters_report_a_dead_board_as_none() -> None:
     assert await ADP().fetch_board(FakeFetcher(None), "cid") is None
     assert await Rippling().fetch_board(FakeFetcher(None), "slug") is None
     assert await ICIMS().fetch_board(FakeFetcher(None), "slug") is None
+
+
+# --- Workday 2,000 reporting cap -------------------------------------------
+#
+# Workday answers `total: 2000` for any board with at least that many postings,
+# and paginating past it wraps to page 1. Measured on NVIDIA: `total` reads
+# 2000 while the jobFamilyGroup facet counts sum to 2,583 — so a board sitting
+# on the cap is silently truncated unless the query is narrowed by facet.
+
+
+def _wd_capped_page(facet_values: int = 3) -> dict[str, Any]:
+    """A first page that reports the cap and offers a facet to split on."""
+    return {
+        "total": 2000,
+        "jobPostings": [
+            {"title": f"Engineer {i}", "externalPath": f"/job/capped{i}",
+             "bulletFields": [f"CAP{i}"]}
+            for i in range(20)
+        ],
+        "facets": [{
+            "facetParameter": "jobFamilyGroup",
+            "values": [{"id": f"fid{i}", "descriptor": f"Family {i}", "count": 500}
+                       for i in range(facet_values)],
+        }],
+    }
+
+
+def _wd_branch_page(prefix: str, n: int, total: int) -> dict[str, Any]:
+    return {
+        "total": total,
+        "jobPostings": [
+            {"title": f"{prefix} {i}", "externalPath": f"/job/{prefix}{i}",
+             "bulletFields": [f"{prefix}{i}"]}
+            for i in range(n)
+        ],
+        "facets": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_workday_subdivides_when_the_total_is_capped() -> None:
+    """A board reporting exactly 2000 must be narrowed by facet, not accepted."""
+    from jobscrape.sources.workday import Workday
+
+    fetcher = FakeFetcher(
+        _wd_capped_page(facet_values=2),   # probe: reports the cap
+        _wd_branch_page("a", 5, 5),        # branch 1 first page (under cap)
+        _wd_branch_page("a", 5, 5),        # branch 1 paged read
+        _wd_branch_page("b", 5, 5),        # branch 2 first page
+        _wd_branch_page("b", 5, 5),        # branch 2 paged read
+    )
+    found = await Workday()._enumerate(
+        fetcher, "https://x/cxs", limit=2000
+    )
+    paths = {p["externalPath"] for p in found}
+    assert paths == {f"/job/a{i}" for i in range(5)} | {f"/job/b{i}" for i in range(5)}
+    # The capped page's own rows are NOT used — the branches replace them.
+    assert not any(p.startswith("/job/capped") for p in paths)
+    # It applied a facet rather than paging the capped query.
+    assert any(b.get("appliedFacets") for b in fetcher.bodies)
+
+
+@pytest.mark.asyncio
+async def test_workday_does_not_subdivide_below_the_cap() -> None:
+    """A real count is pageable, so narrowing would just cost requests."""
+    from jobscrape.sources.workday import Workday
+
+    fetcher = FakeFetcher(
+        _wd_branch_page("x", 5, 5),   # probe: real total
+        _wd_branch_page("x", 5, 5),   # the paged read
+    )
+    found = await Workday()._enumerate(fetcher, "https://x/cxs", limit=2000)
+    assert len(found) == 5
+    assert all(not b.get("appliedFacets") for b in fetcher.bodies)
+
+
+@pytest.mark.asyncio
+async def test_workday_dedupes_postings_across_facet_branches() -> None:
+    """One posting can sit under several facet values, so branches overlap."""
+    from jobscrape.sources.workday import Workday
+
+    overlap = _wd_branch_page("same", 3, 3)
+    fetcher = FakeFetcher(
+        _wd_capped_page(facet_values=2),
+        overlap, overlap,   # branch 1
+        overlap, overlap,   # branch 2 returns the SAME postings
+    )
+    jobs = await Workday().fetch_board(fetcher, "acme|wd1|Careers")
+    assert jobs is not None
+    assert len({j.source_job_id for j in jobs}) == len(jobs), "no duplicate ids"
+    assert len(jobs) == 3
+
+
+@pytest.mark.asyncio
+async def test_workday_takes_the_capped_page_when_no_facet_can_narrow() -> None:
+    """Under-collecting beats collecting nothing."""
+    from jobscrape.sources.workday import Workday
+
+    capped_no_facets = dict(_wd_capped_page(), facets=[])
+    fetcher = FakeFetcher(capped_no_facets, capped_no_facets)
+    found = await Workday()._enumerate(fetcher, "https://x/cxs", limit=2000)
+    assert len(found) == 20

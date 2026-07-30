@@ -20,9 +20,21 @@ from ..models import Job, html_to_text
 from .base import BoardSource, DEFAULT_QUERIES, Prefilter, shallow_refresh
 
 CXS = "https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
+#: Hard cap. Workday rejects a larger `limit` with HTTP 400.
 PAGE_SIZE = 20
 #: Cap when falling back to per-keyword search (see `fetch_board`).
 MAX_PER_QUERY = 200
+
+#: The value Workday reports as `total` when it is really saying "at least this
+#: many". It is a reporting ceiling, not a count: measured on NVIDIA, `total`
+#: comes back as exactly 2000 while the jobFamilyGroup facet counts sum to
+#: 2,583. Paginating past it wraps to page 1, so a board sitting on this number
+#: is silently truncated unless the query is narrowed.
+REPORTED_TOTAL_CAP = 2000
+
+#: How deep to recurse when narrowing. Each level multiplies request count, and
+#: three levels covers the largest tenants observed.
+MAX_SUBDIVISION_DEPTH = 3
 
 
 def parse_slug(slug: str) -> tuple[str, str, str] | None:
@@ -41,24 +53,41 @@ class Workday(BoardSource):
     ats = "workday"
     note = "Public CXS API; needs a detail call per job for the exact date."
 
+    async def _page(
+        self,
+        fetcher: Fetcher,
+        base: str,
+        query: str,
+        offset: int,
+        facets: dict[str, list[str]] | None = None,
+    ) -> dict[str, Any] | None:
+        data = await fetcher.post_json(
+            f"{base}/jobs",
+            {
+                "appliedFacets": facets or {},
+                "limit": PAGE_SIZE,
+                "offset": offset,
+                "searchText": query,
+            },
+            headers={"content-type": "application/json", "accept": "application/json"},
+        )
+        return data if isinstance(data, dict) else None
+
     async def _search(
-        self, fetcher: Fetcher, base: str, query: str, limit: int
+        self,
+        fetcher: Fetcher,
+        base: str,
+        query: str,
+        limit: int,
+        facets: dict[str, list[str]] | None = None,
     ) -> list[dict[str, Any]]:
+        """Page through one query/facet combination, up to `limit` postings."""
         found: list[dict[str, Any]] = []
         offset = 0
         total = None
         while offset < limit:
-            data = await fetcher.post_json(
-                f"{base}/jobs",
-                {
-                    "appliedFacets": {},
-                    "limit": PAGE_SIZE,
-                    "offset": offset,
-                    "searchText": query,
-                },
-                headers={"content-type": "application/json", "accept": "application/json"},
-            )
-            if not isinstance(data, dict):
+            data = await self._page(fetcher, base, query, offset, facets)
+            if data is None:
                 break
             batch = data.get("jobPostings") or []
             if not batch:
@@ -76,6 +105,70 @@ class Workday(BoardSource):
             if len(batch) < PAGE_SIZE or (total and offset >= total):
                 break
         return found
+
+    async def _enumerate(
+        self,
+        fetcher: Fetcher,
+        base: str,
+        limit: int,
+        facets: dict[str, list[str]] | None = None,
+        depth: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Enumerate a board, narrowing by facet when the total is capped.
+
+        Workday answers `total: 2000` for anything at or above that many, so a
+        board reporting exactly the cap is hiding an unknown number of postings.
+        Applying a facet narrows the query until each branch reports a real
+        count that can be paged to the end.
+
+        Two things the upstream implementations don't account for, both measured:
+
+        * Facet names are **tenant-specific** — NVIDIA exposes
+          ``locationMainGroup``, not the ``locations`` a hardcoded list would
+          expect — so the facet to split on is read from the response.
+        * Once a facet is applied, the **nested facet counts come back as 0**.
+          So a deeper split cannot be driven by counts; instead any branch that
+          *itself* reports the cap is recursed into, enumerating its facet
+          values blindly.
+        """
+        first = await self._page(fetcher, base, "", 0, facets)
+        if first is None:
+            return []
+        total = int(first.get("total") or 0)
+
+        if total < REPORTED_TOTAL_CAP or depth >= MAX_SUBDIVISION_DEPTH:
+            # Either a real count we can page to the end of, or we've narrowed
+            # as far as we're willing to. Take what this branch offers.
+            return await self._search(fetcher, base, "", limit, facets)
+
+        # Pick a facet to split on: the one offering the most values, skipping
+        # any already applied (re-applying would return the same branch).
+        applied = set((facets or {}).keys())
+        candidates = [
+            f for f in (first.get("facets") or [])
+            if isinstance(f, dict)
+            and f.get("facetParameter") not in applied
+            and len(f.get("values") or []) > 1
+        ]
+        if not candidates:
+            # Nothing left to narrow by; take the capped page set rather than
+            # nothing. Under-collecting beats collecting zero.
+            return await self._search(fetcher, base, "", limit, facets)
+
+        facet = max(candidates, key=lambda f: len(f.get("values") or []))
+        parameter = facet["facetParameter"]
+
+        collected: list[dict[str, Any]] = []
+        for value in facet.get("values") or []:
+            value_id = value.get("id")
+            if not value_id:
+                continue
+            branch = dict(facets or {})
+            branch[parameter] = [value_id]
+            collected.extend(
+                await self._enumerate(fetcher, base, limit, branch, depth + 1)
+            )
+        return collected
 
     async def _detail(self, fetcher: Fetcher, base: str, path: str) -> dict[str, Any] | None:
         data = await fetcher.get_json(f"{base}{path}", headers={"accept": "application/json"})
@@ -103,15 +196,27 @@ class Workday(BoardSource):
         seen: dict[str, dict[str, Any]] = {}
 
         # An EMPTY search enumerates the whole board, and beats keyword search
-        # on every tenant measured — AIG 475 postings vs 28, 3M 655 vs 41,
-        # NVIDIA 2,000 vs 1,694. Keyword search also can't be made complete by
-        # adding terms: it misses anything whose title doesn't happen to match,
-        # so it silently under-collects rather than just running slower.
+        # on every tenant measured — AIG 475 postings vs 28, 3M 655 vs 41.
+        # Keyword search also can't be made complete by adding terms: it misses
+        # anything whose title doesn't happen to match, so it silently
+        # under-collects rather than just running slower.
+        #
+        # `_enumerate` additionally narrows by facet when the tenant is large
+        # enough to hit Workday's 2,000 reporting cap — without that, the
+        # biggest employers are truncated at exactly the point they matter most.
         if queries is None:
-            limit = config.WORKDAY_MAX_PER_BOARD if with_details else PAGE_SIZE
-            for posting in await self._search(fetcher, base, "", limit):
+            if with_details:
+                postings = await self._enumerate(
+                    fetcher, base, config.WORKDAY_MAX_PER_BOARD
+                )
+            else:
+                # Probing only needs to prove the board answers.
+                postings = await self._search(fetcher, base, "", PAGE_SIZE)
+            for posting in postings:
                 path = posting.get("externalPath")
                 if path:
+                    # Dedup by path: one posting can appear under several facet
+                    # values, so branches overlap by construction.
                     seen[path] = posting
 
         # Fall back to keyword search only if the empty search found nothing —

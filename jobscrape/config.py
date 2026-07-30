@@ -158,7 +158,11 @@ CC_INDEX_ROOT = "https://index.commoncrawl.org"
 # paginated 20 at a time, so this caps how deep a single board is walked:
 # 1,000 = up to 50 list requests for the largest employers, and no cost at all
 # for the many boards that hold fewer postings than the cap.
-WORKDAY_MAX_PER_BOARD = _env_int("JOBSCRAPE_WORKDAY_MAX_PER_BOARD", 1000)
+#: Per-BRANCH cap, not per-board. Workday reports `total` as at most 2,000
+#: however many postings a tenant really has, so the adapter narrows by facet
+#: until each branch reports a real count (see sources/workday.py). This bounds
+#: how deep any one branch is paged; the board total is the union of branches.
+WORKDAY_MAX_PER_BOARD = _env_int("JOBSCRAPE_WORKDAY_MAX_PER_BOARD", 2000)
 
 # --- Global-source pagination caps ----------------------------------------
 # Both of these were verified to actually bind (i.e. the source still had more
