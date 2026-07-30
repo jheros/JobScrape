@@ -291,6 +291,9 @@ python -m jobscrape fetch --companies 50 --max-results 200
 # Keep non-software roles, or non-US locations
 python -m jobscrape fetch --all-roles --worldwide
 
+# QA and management are excluded by default; re-admit either
+python -m jobscrape fetch --include-qa --include-management
+
 # Query the archive on export
 python -m jobscrape export --state CA --search kubernetes --format xlsx
 python -m jobscrape export --since 2026-07-01 --company stripe --include-html
@@ -395,7 +398,46 @@ row is dropped rather than allowed to pollute the dataset.
   omits its location will come through. That is the cost of not discarding real jobs
   over a blank field.
 
+- **QA and management are excluded**, by preference rather than because they are not
+  software roles. Two flags reverse them independently:
+
+  | Excluded | Covers | Flag |
+  | --- | --- | --- |
+  | QA | QA / quality assurance, SDET, software engineer in test, tester, **test engineer**, **test automation**, **automation engineer** | `--include-qa` |
+  | Management | whatever the seniority ladder calls `manager`, `director` or `executive` | `--include-management` |
+
+  Management is read from `jobscrape/seniority.py` rather than a second set of regexes,
+  which is what gets the hard cases right: **"Chief Engineer" is kept** (in aerospace and
+  defence it is a senior individual contributor, not C-suite), as are "Tech Lead", "Staff
+  Engineer" and "Principal Engineer". It also catches what deleting the obvious patterns
+  would miss — the bare-word rule matches "engineering" on its own, so "Director of
+  Engineering Operations" and "VP Engineering" would otherwise still pass.
+
+  The QA list deliberately takes the broad reading, which also removes hardware test roles
+  ("Flight Test Engineer", "Propulsion Test Engineer") and a few software titles that merely
+  contain the word, such as "Data and Automation Engineer - Python".
+
 Override with `--all-roles` and `--worldwide`.
+
+### Removing roles already collected
+
+The archive is written once per posting and never re-evaluated, so a filter change only
+affects future fetches. To apply it retroactively:
+
+```bash
+python -m jobscrape purge --dry-run --sample 10   # look first
+python -m jobscrape purge
+python -m jobscrape dedupe --backfill             # re-cluster anything released
+```
+
+This re-applies the *current role filter* to every stored row and deletes what no longer
+passes — role only, since region and date are per-run choices rather than archive-wide
+rules. Purged postings are recorded in `posting_seen` so the next sweep skips them instead
+of downloading them again, and your triage notes in `job_status` are untouched.
+
+It is the only destructive command in the project. Reversing it means re-fetching, and
+`--include-qa` alone will *not* bring back postings already turned away — those are recorded
+as rejected and skipped, so pair it with `--refetch-details`.
 
 ### Why runs are faster than they look
 

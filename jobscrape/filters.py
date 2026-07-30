@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Iterable
 
+from . import seniority
 from .models import Job
 
 # --- Software role classification ----------------------------------------
@@ -188,7 +189,79 @@ _GENERIC_TECH = re.compile(
 )
 
 
-def is_software_role(title: str | None, department: str | None = None) -> bool:
+# --- Roles that are software but deliberately not wanted ------------------
+#
+# Distinct from `_NOT_SOFTWARE_TERMS`, which means "this is not a software job
+# at all". A QA engineer and an engineering manager both *are* software roles;
+# they are excluded by preference, and each preference is individually
+# reversible with a flag. Keeping the two lists apart is what lets
+# `--include-qa` work without also re-admitting mechanical engineers.
+
+#: QA / test / automation. Word-boundary anchored throughout.
+#:
+#: `test engineer` and `automation engineer` are deliberately included on the
+#: broad reading. That also removes ~268 hardware test roles ("Flight Test
+#: Engineer", "Propulsion Test Engineer"), which do not belong in a software
+#: archive anyway, and a handful of genuine software titles whose only sin is
+#: containing the word — "Data and Automation Engineer - Python" is the clearest
+#: example. That trade was chosen knowingly: the alternative left every plain
+#: "Test Engineer" in.
+_QA_TERMS = [
+    r"\b(qa|q\.a\.)\b",
+    r"\bquality\s+(assurance|engineer)",
+    r"\bsdet\b",
+    r"\bsoftware\s+(development\s+)?engineer\s+in\s+test\b",
+    r"\bsoftware\s+tester\b", r"\btesters?\b",
+    r"\btest\s+(engineer|automation|analyst|architect)",
+    r"\bautomation\s+engineer",
+]
+_QA_RE = re.compile("|".join(_QA_TERMS), re.I)
+
+#: Seniority levels that mean people management rather than engineering.
+#:
+#: Read from `jobscrape.seniority` rather than restated as regexes here. That
+#: module already resolves the cases a naive `\bchief\b` or `\bmanager\b` gets
+#: wrong — "Chief Engineer" is a senior IC title in aerospace and defence (69
+#: postings in the archive) and stays; "Principal Engineering Manager" is a
+#: manager despite the IC word; "Tech Lead" is an IC and stays.
+#:
+#: This also catches what removing the explicit accept patterns would not:
+#: `_BARE_TECH` matches the bare word "engineering", so "Director of Engineering
+#: Operations" and "VP Engineering" would otherwise still pass.
+MANAGEMENT_LEVELS = frozenset({"manager", "director", "executive"})
+
+
+def is_excluded_role(
+    title: str | None,
+    *,
+    exclude_qa: bool = True,
+    exclude_management: bool = True,
+) -> bool:
+    """Is this a software role the archive deliberately does not collect?
+
+    Checked *before* the accept lists by both :func:`is_software_role` and
+    :func:`cheap_prefilter`. Those two are independent copies of the role
+    decision and the prefilter runs before the expensive detail request, so an
+    exclusion applied to only one of them half-works: the posting is downloaded
+    and then discarded, or worse, kept.
+    """
+    text = (title or "").strip()
+    if not text:
+        return False
+    if exclude_qa and _QA_RE.search(text):
+        return True
+    if exclude_management and seniority.classify(text) in MANAGEMENT_LEVELS:
+        return True
+    return False
+
+
+def is_software_role(
+    title: str | None,
+    department: str | None = None,
+    *,
+    exclude_qa: bool = True,
+    exclude_management: bool = True,
+) -> bool:
     """True when a posting is a software/engineering role.
 
     Order matters, and the blocklist comes first: bare "Engineer" and
@@ -198,9 +271,16 @@ def is_software_role(title: str | None, department: str | None = None) -> bool:
 
     Tuned for recall over precision — you would rather review a few wrong rows
     than never see a real job.
+
+    QA and management roles are excluded by default even though both *are*
+    software roles — see :func:`is_excluded_role`. The accept patterns for both
+    are deliberately left in the lists below so the two flags can re-admit them.
     """
     text = (title or "").strip()
     if not text:
+        return False
+    if is_excluded_role(text, exclude_qa=exclude_qa,
+                        exclude_management=exclude_management):
         return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
@@ -436,6 +516,9 @@ def cheap_prefilter(
     department: str | None = None,
     location: str | None = None,
     country: str | None = None,
+    *,
+    exclude_qa: bool = True,
+    exclude_management: bool = True,
 ) -> bool:
     """Decide whether a listing deserves an expensive detail request.
 
@@ -448,13 +531,30 @@ def cheap_prefilter(
     ``country`` is accepted so that a structured code can rescue a listing whose
     location string names a non-US city; without it, such a job would be dropped
     here even though the full filters would keep it.
+
+    The role exclusions must be kept in step with :func:`is_software_role`. The
+    invariant test between these two functions only catches a prefilter that is
+    *stricter* than the full filter, so a missing exclusion here would not fail
+    it — it would just quietly download every QA posting before discarding it.
     """
     text = (title or "").strip()
     if not text:
         return True
+    if is_excluded_role(text, exclude_qa=exclude_qa,
+                        exclude_management=exclude_management):
+        return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
-    if not (_SOFTWARE_RE.search(text) or _GENERIC_TECH.search(text)):
+    # `_BARE_TECH` belongs here even though it is the broadest rule, because
+    # `is_software_role` accepts on it: without it this function was *stricter*
+    # than the full filter for titles carrying only the bare word — "VP
+    # Engineering" was accepted by the filter and skipped by the prefilter, so
+    # the posting was never fetched at all. Deliberately without the
+    # non-software-department veto that `is_software_role` applies: a listing
+    # often has no department yet at prefilter time, and a wasted request costs
+    # one HTTP call while a wrongly skipped one loses the job permanently.
+    if not (_SOFTWARE_RE.search(text) or _GENERIC_TECH.search(text)
+            or _BARE_TECH.search(text)):
         return False
     # Delegate the location call so the two can never disagree.
     if (location or country) and not is_us_eligible(location, country):
@@ -469,11 +569,14 @@ def apply_filters(
     until: date | None = None,
     software_only: bool = True,
     us_only: bool = True,
+    exclude_qa: bool = True,
+    exclude_management: bool = True,
 ) -> list[Job]:
     """Apply role, location and date filters, enriching city/state as we go."""
     kept, _ = apply_filters_counted(
         jobs, since=since, until=until,
         software_only=software_only, us_only=us_only,
+        exclude_qa=exclude_qa, exclude_management=exclude_management,
     )
     return kept
 
@@ -524,6 +627,8 @@ def apply_filters_counted(
     until: date | None = None,
     software_only: bool = True,
     us_only: bool = True,
+    exclude_qa: bool = True,
+    exclude_management: bool = True,
 ) -> tuple[list[Job], FilterFunnel]:
     """Filter, and report why each rejected posting was rejected.
 
@@ -534,7 +639,10 @@ def apply_filters_counted(
     funnel = FilterFunnel()
     for job in jobs:
         funnel.seen += 1
-        if software_only and not is_software_role(job.title, job.department):
+        if software_only and not is_software_role(
+            job.title, job.department,
+            exclude_qa=exclude_qa, exclude_management=exclude_management,
+        ):
             funnel.dropped_role += 1
             continue
         if us_only and not is_us_eligible(job.location_raw, job.country, job.is_remote):

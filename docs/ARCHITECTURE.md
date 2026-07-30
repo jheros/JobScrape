@@ -144,7 +144,8 @@ For each live board, concurrently:
       Done BEFORE filtering — a posting outside your date window is
       still open, and marking it closed would be wrong.
 
- 5. apply_filters_counted()   → role, then region, then date
+ 5. apply_filters_counted()   → excluded roles (QA, management), then role,
+                                 then region, then date
  6. record_rejected()         → so the next sweep skips them too
  7. upsert_jobs()             → COALESCE preserves already-captured detail;
                                  a re-upsert also reopens a closed posting
@@ -258,6 +259,13 @@ what the liveness probe exists to cover.
 
 ### 3d. Filtering
 
+- **Excluded by preference** — QA/test/automation and anything the seniority ladder calls
+  `manager`/`director`/`executive`. Distinct from the blocklist below, which means "not a
+  software job at all": these *are* software jobs, and each category is reversible with its
+  own flag (`--include-qa`, `--include-management`). The check runs in **both**
+  `is_software_role` and `cheap_prefilter` — they are independent copies of the role
+  decision, and the invariant test between them is one-directional, so an exclusion applied
+  to only one would silently download every QA posting before discarding it.
 - **Role** — ~100 title patterns. A blocklist is checked **first**, so "Sales Engineer",
   "Mechanical Engineer" and "Business Developer" never qualify on a shared word. Bare
   `Engineer` / `Developer` do qualify on their own; a clearly irrelevant department

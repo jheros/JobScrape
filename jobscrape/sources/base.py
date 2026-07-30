@@ -58,6 +58,13 @@ class Prefilter(Protocol):
     ) -> bool: ...
 
 # Search terms used by the query-based (non-ATS) sources.
+#
+# "qa engineer" was removed deliberately: QA roles are excluded by the role
+# filter, and leaving it here meant Jooble, JSearch, Adzuna, USAJobs and Indeed
+# actively spent request budget searching for postings that would then be
+# thrown away. Order matters — Workday takes `[:4]` and LinkedIn `[:6]`, so
+# reordering or removing an earlier entry silently changes what they search
+# for. This one was last, which is why it was safe to drop.
 DEFAULT_QUERIES = [
     "software engineer",
     "software developer",
@@ -70,7 +77,6 @@ DEFAULT_QUERIES = [
     "site reliability engineer",
     "security engineer",
     "mobile engineer",
-    "qa engineer",
 ]
 
 

@@ -32,10 +32,8 @@ from jobscrape.models import Job
         "Data Engineer",
         "iOS Developer",
         "Security Engineer, Application Security",
-        "Engineering Manager, Payments",
         "Principal Architect, Cloud Platform",
         "Python Developer",
-        "QA Automation Engineer",
         "Embedded Firmware Engineer",
     ],
 )
@@ -257,3 +255,90 @@ def test_apply_filters_end_to_end() -> None:
     kept = apply_filters(jobs, since=date(2026, 6, 1), until=date(2026, 6, 30))
     assert [j.source_job_id for j in kept] == ["a"]
     assert kept[0].city == "Austin" and kept[0].state == "TX"
+
+
+# --- QA and management: software roles we deliberately do not collect ------
+#
+# Distinct from the blocklist above, which means "not a software job at all".
+# These ARE software jobs; they are excluded by preference and each preference
+# is individually reversible.
+
+
+#: QA titles the filter used to accept. These must round-trip: excluded by
+#: default, re-admitted by the flag. That round-trip is what keeps the QA accept
+#: patterns in `_SOFTWARE_TERMS` earning their place rather than being dead
+#: weight to delete.
+QA_PREVIOUSLY_ACCEPTED = [
+    "QA Engineer", "Senior QA Engineer", "QA Automation Engineer",
+    "Quality Assurance Engineer", "SDET",
+    "Software Development Engineer in Test", "Software Engineer in Test",
+    "Test Engineer", "Test Automation Engineer", "Automation Engineer",
+]
+
+#: QA titles that were *already* rejected before this change — "Quality
+#: Engineer" is in the blocklist (`validation|quality|safety` + engineer), and
+#: the rest match no accept pattern at all. `--include-qa` correctly does not
+#: resurrect them; it re-admits what the filter used to keep, not everything
+#: QA-shaped.
+QA_ALREADY_REJECTED = [
+    "Quality Engineer", "Software Tester", "Tester", "Test Analyst",
+]
+
+
+@pytest.mark.parametrize("title", QA_PREVIOUSLY_ACCEPTED)
+def test_qa_roles_excluded(title: str) -> None:
+    assert is_software_role(title) is False
+    assert is_software_role(title, exclude_qa=False) is True
+
+
+@pytest.mark.parametrize("title", QA_ALREADY_REJECTED)
+def test_qa_titles_the_filter_never_wanted_stay_rejected(title: str) -> None:
+    assert is_software_role(title) is False
+    assert is_software_role(title, exclude_qa=False) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Engineering Manager", "Engineering Manager, Payments",
+        "Senior Engineering Manager", "Manager, Software Engineering",
+        "Director of Engineering", "Director of Engineering Operations",
+        "Senior Director, Device Platform Engineering",
+        "VP of Engineering", "VP Engineering", "Associate Director of Engineering",
+    ],
+)
+def test_management_roles_excluded(title: str) -> None:
+    assert is_software_role(title) is False
+    assert is_software_role(title, exclude_management=False) is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # "Chief Engineer" is the case a naive \bchief\b rule gets wrong: in
+        # aerospace and defence it is a senior individual contributor, and 69
+        # postings in the archive carry it.
+        "Chief Engineer", "Deputy Chief Engineer, Autonomous Flight",
+        # Leads are individual contributors at most companies.
+        "Tech Lead, Payments", "Technical Lead", "Engineering Lead",
+        # And the ordinary senior IC ladder is untouched.
+        "Staff Engineer", "Principal Engineer", "Senior Software Engineer",
+        "Distinguished Engineer",
+    ],
+)
+def test_senior_ic_roles_are_kept(title: str) -> None:
+    assert is_software_role(title) is True
+
+
+def test_the_two_exclusions_are_independent() -> None:
+    """Each flag re-admits only its own category."""
+    assert is_software_role("QA Engineer", exclude_management=False) is False
+    assert is_software_role("Engineering Manager", exclude_qa=False) is False
+
+
+def test_exclusions_do_not_re_admit_non_software_roles() -> None:
+    """--include-qa must not become a general "keep everything" switch."""
+    for title in ("Mechanical Engineer", "Sales Engineer", "Registered Nurse"):
+        assert is_software_role(
+            title, exclude_qa=False, exclude_management=False
+        ) is False

@@ -536,6 +536,54 @@ def record_rejected(
     conn.commit()
 
 
+def delete_jobs(conn: Connection, keys: list[tuple[str, str]]) -> tuple[int, int]:
+    """Remove postings outright. Returns ``(deleted, duplicates_released)``.
+
+    The only destructive operation in the project — everything else marks a row
+    closed. Used by ``jobscrape purge`` when a stored posting no longer passes
+    the role filter, where marking it closed would be a lie: the employer did
+    not withdraw it, we changed our mind about wanting it.
+
+    **Surviving duplicates are released first, before the delete.** ``jobs``
+    carries ``duplicate_of BIGINT REFERENCES jobs(id)``, so deleting a canonical
+    while a duplicate still points at it raises a foreign-key violation and
+    takes the whole purge down with it. Measured on the real archive, 35 rows
+    sat in exactly that position. Clearing the pointer first both avoids the
+    error and is the behaviour you want anyway: a duplicate whose canonical is
+    gone has to become visible again, or it stays suppressed by a row that no
+    longer exists — invisible in every view, with nothing to indicate why.
+
+    Re-run ``dedupe --backfill`` afterwards to re-cluster the released rows
+    against a surviving canonical.
+
+    **`job_status` is deliberately untouched.** That table is separate precisely
+    so a re-fetch can never erase where you applied; an orphaned note costs a
+    row and restores itself if the posting is ever re-admitted.
+    """
+    if not keys:
+        return 0, 0
+
+    deleted = released = 0
+    for offset in range(0, len(keys), 500):
+        batch = keys[offset:offset + 500]
+        placeholders = ",".join("(?, ?)" for _ in batch)
+        params: list[Any] = []
+        for source, job_id in batch:
+            params.extend([source, job_id])
+
+        released += conn.execute(
+            f"UPDATE jobs SET duplicate_of = NULL WHERE duplicate_of IN "
+            f"(SELECT id FROM jobs WHERE (source, source_job_id) IN ({placeholders}))",
+            list(params),
+        ).rowcount
+        deleted += conn.execute(
+            f"DELETE FROM jobs WHERE (source, source_job_id) IN ({placeholders})",
+            list(params),
+        ).rowcount
+    conn.commit()
+    return deleted, released
+
+
 def skippable_ids(
     conn: Connection,
     source: str,

@@ -21,6 +21,13 @@ TITLES = [
     "Site Reliability Engineer", "Security Engineer",
     "Mechanical Engineer", "Sales Engineer", "Account Executive",
     "Recruiter", "Audio Engineer", "Product Manager",
+    # Excluded by preference rather than by the blocklist. Present here so the
+    # prefilter and the full filter are held together on them too — the
+    # invariant below is one-directional, so a prefilter that forgot these
+    # would not fail it, it would just download every QA posting and then
+    # throw it away.
+    "QA Engineer", "Test Engineer", "Automation Engineer", "SDET",
+    "Engineering Manager", "Director of Engineering", "VP Engineering",
 ]
 LOCATIONS = [
     None, "", "Austin, TX", "San Francisco, CA", "Remote - US", "United States",
@@ -59,3 +66,36 @@ def test_prefilter_is_permissive_when_uncertain() -> None:
     assert cheap_prefilter("Engineer", None, None) is True
     # US-scoped remote must survive even though "Remote" alone would not.
     assert cheap_prefilter("Software Engineer", None, "Remote - US") is True
+
+
+@pytest.mark.parametrize("title", [
+    "QA Engineer", "Test Engineer", "Automation Engineer", "SDET",
+    "Engineering Manager", "Director of Engineering", "VP Engineering",
+])
+def test_prefilter_excludes_the_same_roles_as_the_full_filter(title: str) -> None:
+    """The one-directional invariant above cannot catch this case.
+
+    The prefilter runs *before* the detail request, so an exclusion missing
+    here costs one HTTP round-trip per posting and shows up only as an
+    unexplained slowdown.
+    """
+    assert cheap_prefilter(title) is False
+    assert is_software_role(title) is False
+    # Both must relax together too.
+    assert cheap_prefilter(title, exclude_qa=False, exclude_management=False) is True
+
+
+def test_prefilter_accepts_bare_tech_titles_the_filter_accepts() -> None:
+    """Regression: the prefilter did not consult `_BARE_TECH`.
+
+    `is_software_role` accepts a title carrying only the bare word, so
+    "VP Engineering" passed the filter while the prefilter skipped it — the
+    posting was never fetched at all. Invisible until a title of that shape was
+    tested, because the one-directional invariant above only fires when the full
+    filter would keep it, and nothing in TITLES had that shape.
+    """
+    for title in ("VP Engineering", "Director of Engineering Operations",
+                  "Engineering", "Dev"):
+        assert cheap_prefilter(
+            title, exclude_qa=False, exclude_management=False
+        ) is True, f"prefilter skipped {title!r}, which the filter accepts"
