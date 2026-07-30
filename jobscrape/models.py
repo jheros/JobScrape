@@ -199,6 +199,71 @@ _HOURLY_HINT = re.compile(r"(per\s+hour|/\s?hour|hourly|/\s?hr|an\s+hour)", re.I
 #: the conversion stays auditable.
 HOURS_PER_YEAR = 2080.0
 
+#: How many of each pay period fall in a year. 2,080 hours (40 × 52) and 260
+#: days are the US full-time conventions. Keyed on the bare period word so the
+#: many spellings the APIs use ("HOUR", "hourly", "1 HOUR", "Annually") all
+#: reduce to one entry — see :func:`annualise`.
+PERIODS_PER_YEAR = {
+    "hour": HOURS_PER_YEAR,
+    "day": 260.0,
+    "week": 52.0,
+    "biweek": 26.0,
+    "semimonth": 24.0,
+    "month": 12.0,
+    "quarter": 4.0,
+    "year": 1.0,
+}
+
+_PERIOD_ALIASES = {
+    "hourly": "hour", "hr": "hour", "perhour": "hour",
+    "daily": "day", "weekly": "week",
+    "biweekly": "biweek", "fortnightly": "biweek", "fortnight": "biweek",
+    "semimonthly": "semimonth",
+    "monthly": "month", "quarterly": "quarter",
+    "yearly": "year", "annual": "year", "annually": "year", "annum": "year",
+}
+
+
+def period_factor(period: Any) -> float | None:
+    """How many of ``period`` make a year, or ``None`` if it isn't a period.
+
+    Tolerant of the shapes these APIs actually send — ``"HOUR"``, ``"hourly"``,
+    ``"1 YEAR"`` (Ashby), ``"per year"`` — because every provider spells it
+    differently and a missed spelling silently means "no salary".
+
+    Returns ``None`` rather than defaulting to 1.0 for anything unrecognised.
+    Defaulting to annual is the dangerous direction: it files an hourly rate as
+    a salary, which is a *wrong* number rather than a missing one.
+    """
+    if not isinstance(period, str):
+        return None
+    # "1 YEAR" -> "year"; "per hour" -> "hour"; strip digits and filler words.
+    words = re.findall(r"[a-z]+", period.lower())
+    for word in words:
+        if word in ("per", "a", "an", "the", "1"):
+            continue
+        key = _PERIOD_ALIASES.get(word, word)
+        if key in PERIODS_PER_YEAR:
+            return PERIODS_PER_YEAR[key]
+    return None
+
+
+def annualise(amount: Any, period: Any) -> float | None:
+    """Scale ``amount`` to a yearly figure, or ``None`` if it can't be trusted.
+
+    ``None`` when the amount isn't a positive number or the period isn't
+    recognised — see :func:`period_factor` for why an unknown period must not
+    fall back to "annual".
+    """
+    factor = period_factor(period)
+    if factor is None:
+        return None
+    try:
+        value = float(amount)
+    except (TypeError, ValueError):
+        return None
+    return value * factor if value > 0 else None
+
 
 def _to_amount(number: str, k_suffix: str | None) -> float | None:
     try:

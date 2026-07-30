@@ -391,3 +391,148 @@ async def test_jazzhr_board_with_no_openings_returns_empty() -> None:
 
     empty = '<html><body>applytojob.com no openings</body></html>'
     assert await JazzHR().fetch_board(FakeFetcher(text=empty), "acme") == []
+
+
+# --- Ashby: itemised compensation -----------------------------------------
+#
+# Ashby breaks pay into typed components. Across five live boards they were
+# 219 Salary, 132 EquityCashValue, 81 EquityPercentage, 48 Commission, 1 Bonus
+# — and the human summary concatenates them ("$211.4K – $290.6K • Offers
+# Equity"), so reading a range out of that text can pick up an equity valuation
+# and file it as pay.
+
+
+def _ashby_compensation(*components: dict[str, Any], summary: str = "") -> dict[str, Any]:
+    return {
+        "compensationTierSummary": summary,
+        "compensationTiers": [{"id": "t1", "tierSummary": summary,
+                               "components": list(components)}],
+    }
+
+
+def _salary_component(min_v: float, max_v: float, interval: str = "1 YEAR") -> dict[str, Any]:
+    return {"compensationType": "Salary", "interval": interval,
+            "currencyCode": "USD", "minValue": min_v, "maxValue": max_v,
+            "summary": f"${min_v} – ${max_v}"}
+
+
+def test_ashby_reads_the_exact_band_from_components() -> None:
+    from jobscrape.sources.ashby import _salary_from_components
+
+    comp = _ashby_compensation(_salary_component(211_400, 290_600),
+                               summary="$211.4K – $290.6K • Offers Equity")
+    assert _salary_from_components(comp) == (211_400, 290_600, "USD")
+
+
+def test_ashby_ignores_equity_commission_and_bonus() -> None:
+    """An equity cash value beside a salary must not be read as pay."""
+    from jobscrape.sources.ashby import _salary_from_components
+
+    equity_first = _ashby_compensation(
+        {"compensationType": "EquityCashValue", "interval": "1 YEAR",
+         "currencyCode": "USD", "minValue": 900_000, "maxValue": 900_000},
+        {"compensationType": "Commission", "interval": "1 YEAR",
+         "currencyCode": "USD", "minValue": 50_000, "maxValue": 50_000},
+        _salary_component(150_000, 180_000),
+    )
+    assert _salary_from_components(equity_first) == (150_000, 180_000, "USD")
+
+    # Equity alone is not a salary.
+    equity_only = _ashby_compensation(
+        {"compensationType": "EquityPercentage", "interval": "NONE",
+         "currencyCode": None, "minValue": None, "maxValue": None},
+    )
+    assert _salary_from_components(equity_only) == (None, None, None)
+
+
+def test_ashby_annualises_a_monthly_interval() -> None:
+    """218 of 219 components measured were "1 YEAR"; one was "1 MONTH"."""
+    from jobscrape.sources.ashby import _salary_from_components
+
+    comp = _ashby_compensation(_salary_component(5_000, 6_000, interval="1 MONTH"))
+    assert _salary_from_components(comp) == (60_000, 72_000, "USD")
+
+
+def test_ashby_handles_a_single_value_band() -> None:
+    """"$80K" is one number, and the summary regex needs a *range* — so this
+    kind of posting previously carried no salary at all."""
+    from jobscrape.sources.ashby import _salary_from_components
+    from jobscrape.models import parse_salary
+
+    assert parse_salary("$80K • Offers Equity")[0] is None, "the regex needs two amounts"
+    comp = _ashby_compensation(
+        {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "USD",
+         "minValue": 80_000, "maxValue": None})
+    assert _salary_from_components(comp) == (80_000, 80_000, "USD")
+
+
+def test_ashby_missing_or_malformed_compensation_is_survivable() -> None:
+    from jobscrape.sources.ashby import _salary_from_components
+
+    assert _salary_from_components({}) == (None, None, None)
+    assert _salary_from_components({"compensationTiers": "nonsense"}) == (None, None, None)
+    assert _salary_from_components({"compensationTiers": [None, {"components": [None]}]}) \
+        == (None, None, None)
+
+
+# --- Pinpoint: pay period and visibility -----------------------------------
+
+
+def _pinpoint_posting(**over: Any) -> dict[str, Any]:
+    item = {
+        "id": 1, "title": "Support Specialist",
+        "url": "https://acme.pinpointhq.com/en/postings/1",
+        "location": {"city": "Annapolis", "province": "MD"},
+        "description": "<p>Help members.</p>",
+        "compensation": "$16.00 - $18.00 / hour",
+        "compensation_minimum": 16.0, "compensation_maximum": 18.0,
+        "compensation_currency": "USD", "compensation_frequency": "hour",
+        "compensation_visible": True,
+    }
+    item.update(over)
+    return item
+
+
+@pytest.mark.asyncio
+async def test_pinpoint_annualises_by_the_stated_frequency() -> None:
+    """201 of 323 postings with visible pay across 39 boards were hourly."""
+    fetcher = FakeFetcher({"data": [_pinpoint_posting()]})
+    jobs = await Pinpoint().fetch_board(fetcher, "acme", with_details=False)
+    assert jobs[0].salary_min == 16 * 2080
+    assert jobs[0].salary_max == 18 * 2080
+    # The published text is what the numbers were derived from.
+    assert jobs[0].salary_raw == "$16.00 - $18.00 / hour"
+
+
+@pytest.mark.asyncio
+async def test_pinpoint_leaves_annual_pay_alone() -> None:
+    fetcher = FakeFetcher({"data": [_pinpoint_posting(
+        compensation="$200,000 - $240,000 / year", compensation_minimum=200_000,
+        compensation_maximum=240_000, compensation_frequency="year")]})
+    jobs = await Pinpoint().fetch_board(fetcher, "acme", with_details=False)
+    assert (jobs[0].salary_min, jobs[0].salary_max) == (200_000, 240_000)
+
+
+@pytest.mark.asyncio
+async def test_pinpoint_respects_the_publishers_visibility_flag() -> None:
+    fetcher = FakeFetcher({"data": [_pinpoint_posting(compensation_visible=False)]})
+    jobs = await Pinpoint().fetch_board(fetcher, "acme", with_details=False)
+    assert jobs[0].salary_min is None
+    assert jobs[0].salary_max is None
+    assert jobs[0].salary_currency is None
+    assert jobs[0].salary_raw is None
+
+
+@pytest.mark.asyncio
+async def test_pinpoint_without_a_frequency_settles_it_by_magnitude() -> None:
+    """Dropping the figure would lose real data; the two bands don't overlap."""
+    hourly = FakeFetcher({"data": [_pinpoint_posting(
+        compensation_frequency=None, compensation=None)]})
+    jobs = await Pinpoint().fetch_board(hourly, "acme", with_details=False)
+    assert jobs[0].salary_min == 16 * 2080
+
+    annual = FakeFetcher({"data": [_pinpoint_posting(
+        compensation_frequency=None, compensation=None,
+        compensation_minimum=120_000, compensation_maximum=160_000)]})
+    jobs = await Pinpoint().fetch_board(annual, "acme", with_details=False)
+    assert jobs[0].salary_min == 120_000

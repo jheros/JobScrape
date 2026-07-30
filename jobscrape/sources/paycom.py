@@ -39,7 +39,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..http import Fetcher, gather_limited
-from ..models import Job, html_to_text
+from ..models import Job, annualise, html_to_text
 from .base import BoardSource, Prefilter, shallow_refresh
 
 log = logging.getLogger("jobscrape.paycom")
@@ -74,19 +74,9 @@ _EMPLOYMENT = {
     "VOLUNTEER": "Volunteer", "OTHER": None,
 }
 
-#: Paycom's long tail is heavily hourly, so unit conversion is the common case
-#: here rather than an edge case. An unrecognised unit yields no salary rather
-#: than an unconverted number — "$22" filed as an annual salary is worse than a
-#: blank, because it silently lands in every salary filter and chart.
+#: Below this a figure cannot be an annual salary, so it must be a rate. Used
+#: only when the payload names no period at all — see `_salary`.
 _ANNUAL_FLOOR = 1000.0
-_ANNUALISE = {
-    "HOUR": 2080.0, "HOURLY": 2080.0,
-    "DAY": 260.0, "DAILY": 260.0,
-    "WEEK": 52.0, "WEEKLY": 52.0,
-    "BIWEEKLY": 26.0,
-    "MONTH": 12.0, "MONTHLY": 12.0,
-    "YEAR": 1.0, "YEARLY": 1.0, "ANNUAL": 1.0, "ANNUALLY": 1.0,
-}
 
 
 def parse_slug(slug: str) -> str | None:
@@ -199,16 +189,17 @@ def _salary(
             r"\b(hourly|hour|daily|day|weekly|week|biweekly|monthly|month|"
             r"yearly|year|annual|annually)\b", raw_text, re.I)
         unit = match.group(1).upper() if match else ""
-    factor = _ANNUALISE.get(unit)
-    if factor is None:
+    scaled_low = annualise(low, unit)
+    if scaled_low is None:
         # Some tenants write "$60,000.00 - $175,000.00 Salary", naming no
         # period at all. Magnitude settles it without guessing: the two
         # populations do not overlap, since no US annual salary is under
         # $1,000 and no hourly rate reaches it.
-        factor = 1.0 if low >= _ANNUAL_FLOOR else _ANNUALISE["HOUR"]
+        unit = "year" if low >= _ANNUAL_FLOOR else "hour"
+        scaled_low = annualise(low, unit)
+    scaled_high = annualise(high, unit) if high is not None else None
 
-    return low * factor, (high * factor if high is not None else None), \
-        salary.get("currency") or None, raw_text
+    return scaled_low, scaled_high, salary.get("currency") or None, raw_text
 
 
 def _country(google: dict[str, Any]) -> str | None:

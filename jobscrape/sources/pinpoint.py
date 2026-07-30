@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from ..http import Fetcher, gather_limited
-from ..models import Job
+from ..models import Job, annualise
 from .base import BoardSource, Prefilter, shallow_refresh
 
 API = "https://{slug}.pinpointhq.com/postings.json"
@@ -110,11 +110,38 @@ class Pinpoint(BoardSource):
                 ) if p
             ) or None
 
-            def _num(value: Any) -> float | None:
+            # Pinpoint states the pay period separately, and most of its boards
+            # are hourly: across 39 live boards, 201 of the 323 postings with
+            # visible pay were `hour`, against 116 `year` (plus 5 day, 1 month).
+            # Reading the numbers without the period would file two hundred
+            # hourly rates as annual salaries — the single largest source of
+            # that mixing in the archive.
+            frequency = item.get("compensation_frequency")
+            # `compensation_visible` is the board's own "don't publish this"
+            # flag. Measured, Pinpoint already nulls the numbers when it is
+            # false (0 of 352 hidden postings carried one), so this is defence
+            # in depth rather than a fix for an observed leak — and it costs
+            # nothing to respect a publisher's stated intent directly.
+            visible = item.get("compensation_visible") is not False
+
+            def _pay(value: Any) -> float | None:
+                if not visible:
+                    return None
+                scaled = annualise(value, frequency)
+                if scaled is not None:
+                    return scaled
+                # No frequency stated. Every visible-pay posting in a 39-board
+                # sample carried one, but dropping the figure when it is absent
+                # would lose real data; magnitude settles it without guessing,
+                # since no annual salary is under $1,000 and no hourly rate
+                # reaches it.
+                return annualise(value, "year" if _num(value) >= 1000 else "hour")
+
+            def _num(value: Any) -> float:
                 try:
                     return float(value)
                 except (TypeError, ValueError):
-                    return None
+                    return 0.0
 
             job = Job(
                     source=self.name,
@@ -136,11 +163,14 @@ class Pinpoint(BoardSource):
                     posted_at=dates.get(str(item["id"]))
                     or item.get("published_at")
                     or item.get("created_at"),
-                    salary_min=_num(item.get("compensation_minimum")),
-                    salary_max=_num(item.get("compensation_maximum")),
-                    salary_currency=item.get("compensation_currency"),
+                    salary_min=_pay(item.get("compensation_minimum")),
+                    salary_max=_pay(item.get("compensation_maximum")),
+                    salary_currency=item.get("compensation_currency") if visible else None,
+                    # Kept even when the numbers are dropped: "$25 - $30 / hour"
+                    # is what the employer published, and it is the evidence
+                    # behind whatever ends up in the numeric columns.
                     salary_raw=item.get("compensation")
-                    if isinstance(item.get("compensation"), str) else None,
+                    if visible and isinstance(item.get("compensation"), str) else None,
                     description_html=_description(item) or None,
                     raw=item if with_details else {},
             )

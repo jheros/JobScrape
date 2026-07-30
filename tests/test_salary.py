@@ -140,3 +140,51 @@ def test_an_annualised_hourly_range_is_not_re_scaled_by_the_annual_band() -> Non
               description_text="The hourly rate is $55.00 to $70.00 per hour.")
     assert job.salary_min == 55.0 * 2080
     assert job.salary_max == 70.0 * 2080
+
+
+# --- shared period handling ------------------------------------------------
+#
+# Four adapters state a pay period in their own spelling (Ashby "1 YEAR",
+# Pinpoint "hour", Paycom "Hourly", Indeed "HOUR"), so the conversion lives in
+# one place. A period the table doesn't recognise must yield *no* salary — the
+# alternative, defaulting to annual, files an hourly rate as a salary, which is
+# a wrong number rather than a missing one.
+
+from jobscrape.models import annualise, period_factor
+
+
+@pytest.mark.parametrize(
+    "period,factor",
+    [
+        ("hour", 2080.0), ("HOUR", 2080.0), ("Hourly", 2080.0), ("hr", 2080.0),
+        ("per hour", 2080.0), ("/ hour", 2080.0),
+        ("1 YEAR", 1.0), ("year", 1.0), ("Annually", 1.0), ("Salary/year", 1.0),
+        ("1 MONTH", 12.0), ("monthly", 12.0),
+        ("day", 260.0), ("Daily", 260.0),
+        ("week", 52.0), ("biweekly", 26.0),
+    ],
+)
+def test_period_factor_reads_every_spelling_the_apis_use(period: str, factor: float) -> None:
+    assert period_factor(period) == factor
+
+
+@pytest.mark.parametrize("period", ["", None, "Salary", "per widget", "commission only", 7])
+def test_period_factor_refuses_what_it_does_not_understand(period: object) -> None:
+    """Defaulting to annual would turn $22/hr into a $22 salary.
+
+    "Salary" is in this list on purpose: it says the pay is salaried, not what
+    period it covers. Paycom writes "$60,000.00 - $175,000.00 Salary", and the
+    adapter settles that one by magnitude — evidence rather than a guess.
+    """
+    assert period_factor(period) is None
+
+
+def test_annualise() -> None:
+    assert annualise(22, "Hourly") == 22 * 2080
+    assert annualise(211400, "1 YEAR") == 211400
+    assert annualise(5000, "1 MONTH") == 60000
+    # Nothing usable in, nothing out.
+    assert annualise(22, "per widget") is None
+    assert annualise(None, "hour") is None
+    assert annualise(0, "hour") is None
+    assert annualise("not a number", "hour") is None

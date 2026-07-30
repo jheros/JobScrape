@@ -99,7 +99,7 @@ async def test_hourly_pay_is_annualised_and_unknown_units_are_dropped() -> None:
     assert jobs[0].salary_min == 60 * 2080 and jobs[0].salary_max == 80 * 2080
 
     weird = _entry(key="w1", compensation={
-        "baseSalary": {"unitOfWork": "FORTNIGHT", "range": {"min": 5000, "max": 6000}},
+        "baseSalary": {"unitOfWork": "PER_WIDGET", "range": {"min": 5000, "max": 6000}},
         "currencyCode": "USD",
     }, description={"html": "<p>No pay stated in the body.</p>"},
        recruit={"viewJobUrl": None, "detailedSalary": None, "workSchedule": None})

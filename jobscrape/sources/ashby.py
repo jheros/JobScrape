@@ -23,11 +23,54 @@ from __future__ import annotations
 from typing import Any
 
 from ..http import Fetcher, gather_limited
-from ..models import Job
+from ..models import Job, annualise
 from .base import BoardSource, Prefilter, shallow_refresh
 
 REST_ENDPOINT = "https://api.ashbyhq.com/posting-api/job-board"
 ENDPOINT = "https://jobs.ashbyhq.com/api/non-user-graphql"
+
+#: The only component type that is a *salary*. Ashby itemises pay, and across
+#: five boards the components broke down as 219 Salary, 132 EquityCashValue,
+#: 81 EquityPercentage, 48 Commission, 1 Bonus. The tier summary concatenates
+#: them — "$211.4K – $290.6K • Offers Equity" — so reading a range out of that
+#: text risks picking up an equity valuation and filing it as pay.
+_SALARY_COMPONENT = "Salary"
+
+
+def _salary_from_components(
+    compensation: dict[str, Any]
+) -> tuple[float | None, float | None, str | None]:
+    """Read the exact salary band out of Ashby's itemised compensation.
+
+    Ashby publishes structured components with ``minValue``/``maxValue``/
+    ``currencyCode``/``interval``, which beats parsing the human summary on
+    both counts: no abbreviation to decode ("$211.4K"), and the component type
+    says whether the number is salary at all rather than equity or commission.
+
+    ``interval`` arrives as ``"1 YEAR"`` (218 of 219 measured) or ``"1 MONTH"``,
+    so it is annualised like every other source. A tier with no recognisable
+    salary component yields nothing, leaving the summary text for ``Job`` to
+    fall back on.
+    """
+    tiers = compensation.get("compensationTiers")
+    if not isinstance(tiers, list):
+        return None, None, None
+    for tier in tiers:
+        if not isinstance(tier, dict):
+            continue
+        for component in tier.get("components") or []:
+            if not isinstance(component, dict):
+                continue
+            if component.get("compensationType") != _SALARY_COMPONENT:
+                continue
+            interval = component.get("interval")
+            low = annualise(component.get("minValue"), interval)
+            high = annualise(component.get("maxValue"), interval)
+            if low is None and high is None:
+                continue
+            # A single-value band (min == max, or only one side set) is normal.
+            return low or high, high or low, component.get("currencyCode")
+    return None, None, None
 
 LIST_QUERY = """
 query ApiJobBoardWithTeams($organizationHostedJobsPageName: String!) {
@@ -76,6 +119,7 @@ class Ashby(BoardSource):
             compensation.get("compensationTierSummary")
             or compensation.get("scrapeableCompensationSalarySummary")
         )
+        low, high, currency = _salary_from_components(compensation)
         return Job(
             source=self.name,
             source_job_id=str(item.get("id")),
@@ -91,6 +135,9 @@ class Ashby(BoardSource):
             department=item.get("department") or item.get("team"),
             posted_at=item.get("publishedAt"),
             description_html=item.get("descriptionHtml"),
+            salary_min=low,
+            salary_max=high,
+            salary_currency=currency,
             salary_raw=summary,
             raw=item,
         )

@@ -53,7 +53,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from ...http import Fetcher
-from ...models import Job, html_to_text
+from ...models import Job, annualise, html_to_text
 from ..base import DEFAULT_QUERIES, GlobalSource, JobBatch
 
 log = logging.getLogger("jobscrape.indeed")
@@ -137,18 +137,6 @@ query GetJobData {{
 }}
 """
 
-#: Indeed quotes salary per hour/day/week/year; everything downstream is annual.
-#: Two decisions worth stating: a 2,080-hour year (40h × 52) and a 260-day year
-#: are the US full-time conventions, and an unrecognised unit yields *no*
-#: salary rather than an unconverted number — a $30 "salary" is worse than none.
-_ANNUALISE = {
-    "HOUR": 2080.0,
-    "DAY": 260.0,
-    "WEEK": 52.0,
-    "BIWEEKLY": 26.0,
-    "MONTH": 12.0,
-    "YEAR": 1.0,
-}
 
 
 def _gql_str(value: str) -> str:
@@ -464,12 +452,8 @@ def _salary(compensation: dict[str, Any]) -> tuple[float | None, float | None, s
     low, high = rng.get("min"), rng.get("max")
     if low is None and high is None:
         return None, None, None
-    factor = _ANNUALISE.get(str(base.get("unitOfWork") or "").upper())
-    if factor is None:
-        return None, None, None
-    currency = compensation.get("currencyCode")
-    return (
-        float(low) * factor if low is not None else None,
-        float(high) * factor if high is not None else None,
-        currency,
-    )
+    # An unrecognised unit yields no salary rather than an unconverted number:
+    # a $30 "salary" is worse than a blank, because it silently joins every
+    # salary filter and chart as if it were annual.
+    unit = base.get("unitOfWork")
+    return annualise(low, unit), annualise(high, unit), compensation.get("currencyCode")
