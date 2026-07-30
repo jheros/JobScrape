@@ -119,8 +119,9 @@ python -m jobscrape sources                       # which sources are ready
 
 ## Sources
 
-All verified working against live endpoints. The **19 ATS board sources** need no API key
-and carry the bulk of the volume.
+All verified working against live endpoints. The **21 ATS board sources** need no API key
+and carry the bulk of the volume, and three large employers who run their own careers APIs
+(Amazon, Apple, Uber) are covered directly because no ATS adapter can see them.
 
 | Source | Key | Detail available |
 | --- | --- | --- |
@@ -143,6 +144,8 @@ and carry the bulk of the volume.
 | **ADP** | none | Workforce Now career centres — US mid-market and enterprise |
 | **Rippling** | none | Public REST board; common among US startups |
 | **Jobvite** | none | Server-rendered listing, JSON-LD detail |
+| **Cornerstone** | none | JWT + *regional* API host read from the career page |
+| **Paycom** | none | Session JWT from the portal page; schema.org salary in detail |
 | **RemoteOK** | none | Remote roles. *ToS requires attribution — see below.* |
 | **Arbeitnow** | none | Mostly EU; low US yield, but free |
 | **Hacker News** | none | "Who is hiring?" threads — startups no aggregator lists |
@@ -154,6 +157,9 @@ and carry the bulk of the volume.
 | **USAJobs** | free | Federal jobs — [register](https://developer.usajobs.gov/apirequest/) |
 | **Adzuna** | free | Long-tail SMB — [register](https://developer.adzuna.com/) |
 | **Jooble** | free | Aggregator breadth — [register](https://jooble.org/api/about) |
+| **Amazon** | none | amazon.jobs — ~1,200 US software postings, full qualifications |
+| **Apple** | none | jobs.apple.com — ~3,500 US postings behind a CSRF bootstrap |
+| **Uber** | none | ~220 US postings. **Titles and locations only — no descriptions** |
 
 **JSearch is the compliant route to the big-three job boards.** Rather than scraping
 LinkedIn/Indeed (which violates their terms and is usually blocked), JSearch licenses and
@@ -190,16 +196,36 @@ returns nothing:
 
 - **JS-rendered with no reachable data endpoint** (a plain HTTP fetch returns an empty
   shell; these would need a headless browser per board, which does not scale to
-  thousands of companies): iCIMS, Zoho Recruit, ClearCompany, Paylocity, Taleo/Oracle
-  Recruiting, SAP SuccessFactors.
-- **Blocked outright**: ZipRecruiter (its supported path is a keyed partner API).
+  thousands of companies): Zoho Recruit, ClearCompany, Paylocity, Taleo,
+  SAP SuccessFactors.
+- **Blocked outright, re-measured 2026-07-30 with TLS fingerprinting
+  (`curl_cffi`) as well as plain HTTP** — impersonation was tried because it is the
+  usual answer here, and it did not work, so no dependency was added:
+  - **ZipRecruiter** — plain HTTP is refused by Cloudflare's WAF; impersonation gets
+    past that and is then refused by ZipRecruiter's own anti-automation layer
+    (`forbidden cf-waf` becomes `forbidden aa`). Seven browser profiles, same result.
+    Its supported path is a keyed partner API.
+  - **Glassdoor** — 403 at the edge on every profile.
+  - **Indeed's mobile-app API** — blocked on the **header name** `indeed-api-key`
+    itself: an empty value, a bogus value and the real key all 403, while that same key
+    under any other header name reaches a normal API error and no key at all returns a
+    clean 401 asking for one. The API demands a key and the edge blocks the only header
+    that carries it. Not a fingerprinting problem, so impersonation cannot help.
+  - **Meta** and **Tesla** — need a stealth headless browser, and Tesla a residential
+    proxy on top; `ats-scrapers` records httpx, httpcloak, curl_cffi *and* Browserbase
+    all failing against Tesla's Akamai.
 - **Not job boards**: Employ (parent of JazzHR/Lever/Jobvite — already covered *via*
   those three), Google Hire (discontinued 2020), SignalHire (contact lookup), CareerArc
   (social distribution), Freshteam (sunset), "Homegrown (proprietary systems)".
 - **HR suites / recruiting CRMs** whose boards are per-customer or behind auth: Bullhorn,
   JobDiva, Ceipal, Crelate, Recruit CRM, RecruiterFlow, Manatal, iSmartRecruit,
-  BrightMove, CATS, HiBob, Factorial, PeopleForce, Lark, Bright Pattern, ADP, UKG,
-  Paycom, Paycor.
+  BrightMove, CATS, HiBob, Factorial, PeopleForce, Lark, Bright Pattern, Paycor.
+
+*(iCIMS, ADP, UKG, Oracle Recruiting, Cornerstone and Paycom were on this list in earlier
+revisions and are now supported. Each was dropped after a guess at the endpoint rather
+than a reading of the page — Cornerstone's API host, for instance, is regional and
+per-tenant, and Paycom's session token is in the portal page's own HTML, not in a
+minified bundle as previously recorded.)*
 
 ### RemoteOK attribution
 
@@ -430,8 +456,45 @@ alembic/
 
 ## Credits
 
-The repost/cross-source deduplication design — a company/title/description identity hash,
-suppression via a pointer rather than deletion, and a grace period before closing a
-posting — is adapted from [freehire](https://github.com/strelov1/freehire) (MIT licensed),
-reimplemented in Python and extended with a two-tier fingerprint/key split to handle
-aggregator description truncation, which the original single-hash design didn't need to.
+Everything below was reimplemented in Python against this project's own `Job` model and
+`Fetcher` — nothing is vendored — and every borrowed claim was re-measured against live
+endpoints before being adopted. Several were not adopted; those are recorded too, because
+a measured negative is worth as much here as a feature.
+
+**[freehire](https://github.com/strelov1/freehire)** (MIT) — the repost/cross-source
+deduplication design: a company/title/description identity hash, suppression via a pointer
+rather than deletion, and a grace period before closing a posting. Extended here with a
+two-tier fingerprint/key split to handle aggregator description truncation, which the
+original single-hash design didn't need to. Its staleness scoring shaped
+`jobscrape/staleness.py`.
+
+**[ats-scrapers](https://github.com/kalil0321/ats-scrapers)** (MIT) — the largest single
+contribution:
+- The **Workday 2,000 reporting cap** and the facet-subdivision fix for it. This was a
+  live bug here: every employer at or above 2,000 postings was silently truncated.
+  NVIDIA now yields 2,584 instead of 2,000.
+- The **Cornerstone and Paycom** bootstrap flows, which corrected an earlier wrong call
+  that both were unreachable.
+- Its **MIT-licensed tenant lists** — 49,567 slugs across the 21 platforms we can fetch,
+  imported via `jobscrape import-tenants` (see [Discovery](#how-discovery-works)).
+- Endpoint shapes for Amazon, Apple and Uber.
+
+**[JobSpy](https://github.com/speedyapply/JobSpy)** (MIT) — the Indeed mobile-app GraphQL
+endpoint, its app key and attribute filter keys, plus the ZipRecruiter and Glassdoor
+request shapes. All three of those routes are currently blocked (see
+[Platforms that could not be supported](#platforms-that-could-not-be-supported)); the
+Indeed implementation ships behind `INDEED_ALLOW_APP_API=1` so it is ready if the route
+reopens.
+
+**[JobSentinel](https://github.com/cboyd0319/JobSentinel)** (MIT) — the scam-signal
+regexes behind `jobscrape/scam.py`. **Three of its nine were adopted.** All nine were run
+against 44,493 real descriptions from this archive first; six produced 670 matches and not
+one was a scam — they fire on fintech and messaging companies describing their own product
+(Coinbase, Block, Fiserv), on recruiter boilerplate ("will NOT pay a placement fee"), and
+hardest of all on the employers who publish anti-fraud warnings. The three kept matched
+zero of those 44,493, and the reasoning is written up in `jobscrape/scam.py`.
+
+**[job-board-aggregator](https://github.com/Feashliaa/job-board-aggregator)** — read for
+code patterns only. Its code is MIT but its `data/` directory is **CC BY-NC 4.0**, so its
+tenant lists, salary lookup and locations file are deliberately **not** used. The
+MIT-licensed ats-scrapers lists are used instead.

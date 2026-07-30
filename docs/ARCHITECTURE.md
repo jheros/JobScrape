@@ -41,7 +41,7 @@ restart from zero.
 ## Stage 1 — Discover: which companies exist
 
 Fetching a job is easy. Knowing *which employers exist* is the hard part, and it is the
-real determinant of coverage. Four independent inputs merge into the `companies` table.
+real determinant of coverage. Five independent inputs merge into the `companies` table.
 
 | Input | Scale | Notes |
 | --- | --- | --- |
@@ -49,6 +49,7 @@ real determinant of coverage. Four independent inputs merge into the `companies`
 | **Common Crawl** (`cc`) | ~7,600 per index page | 16 URL patterns. Highest volume by far. Completed pages are checkpointed to `data/cc_progress.json`. |
 | **Certificate transparency** (`ct`) | 9 platforms | Every subdomain-per-customer board needs a TLS certificate, and certificates are public. Found **84 Teamtailor boards against Common Crawl's 6**. |
 | **Curated GitHub lists** (`github`) | 5 repos | Small but high quality — every entry is a real hiring tech company, and it is the main source of Workday tenant triples. |
+| **Published tenant lists** (`import-tenants`) | 49,567 slugs | Somebody else's discovery, already done. MIT-licensed only. Measured **77% live** on a 2,080-board sample — by far the best yield per unit of effort of any vector. |
 
 ```bash
 python -m jobscrape discover                  # all three vectors
@@ -63,6 +64,32 @@ seeds, and the other two vectors carry on rather than the run failing.
 Slugs pass a junk filter (`_clean` in `discovery/commoncrawl.py`) rejecting numeric ids,
 asset paths and hash-like strings, plus a vendor-subdomain list so `www.bamboohr.com` is
 never probed as if it were a customer.
+
+### Published tenant lists
+
+```bash
+python -m jobscrape import-tenants path/to/ats-companies --dry-run
+python -m jobscrape import-tenants path/to/ats-companies
+```
+
+A separate command rather than a `discover` vector, because it reads a local directory
+rather than the network and is run once per list refresh, not on every sweep.
+
+**Normalisation is the whole job.** Each list publishes whatever identifier its own
+scraper used, and those are not our slugs. Workday ships `23andme/23` where we need
+`23andme|wd5|23` — and the `wd5` exists *only* in the URL column, so importing the slug
+column verbatim produces boards that all 404. Six platforms need real parsing (Workday,
+Cornerstone, Oracle, UKG, ADP, iCIMS) and three need lighter fixes (Paycom, Ashby,
+Jobvite); the rest pass through. A row that cannot be normalised is skipped **and
+counted** — a wrong slug costs a probe and lands as a permanently dead company, and
+silence about how many were dropped would make a partial import look complete.
+
+Imported as `unchecked`, so Stage 2 decides what is real; a re-import never resets a
+board that has already been validated.
+
+**Licensing is checked per source, not per repo.** `ats-scrapers` is MIT throughout
+including its CSVs. `job-board-aggregator`'s code is MIT but its `data/` is CC BY-NC 4.0,
+so its ~60k slugs are deliberately not used.
 
 **Output:** rows in `companies` with `status='unchecked'`.
 

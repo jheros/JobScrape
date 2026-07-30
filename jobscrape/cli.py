@@ -502,6 +502,36 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_import_tenants(args: argparse.Namespace) -> int:
+    """Seed companies from a published ATS tenant list.
+
+    Imported as `unchecked`; the `validate` stage decides what is real. Slugs
+    already known are left alone, so a re-import never resets a validated board.
+    """
+    from .discovery import tenant_lists
+
+    directory = Path(args.directory)
+    if not directory.is_dir():
+        log.error("not a directory: %s", directory)
+        return 1
+
+    if args.dry_run:
+        total = skipped = 0
+        for platform, ats, slugs, missed in tenant_lists.iter_lists(directory):
+            total += len(slugs)
+            skipped += missed
+            log.info("%-16s %6d slugs, %4d unparseable", platform, len(slugs), missed)
+        log.info("Would import %d slug(s); %d unparseable", total, skipped)
+        return 0
+
+    with db.session(args.db) as conn:
+        added = tenant_lists.import_directory(conn, directory)
+        conn.commit()
+    log.info("Imported %d new company slug(s) across %d platform(s)",
+             sum(added.values()), len(added))
+    return 0
+
+
 async def cmd_liveness(args: argparse.Namespace) -> int:
     """Probe postings the fetch sweep can never close, and close the dead ones."""
     from . import liveness
@@ -794,6 +824,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="report verdicts without writing")
 
     # dedupe
+    p_tenants = sub.add_parser(
+        "import-tenants",
+        help="seed companies from a published ATS tenant list (MIT-licensed only)",
+    )
+    p_tenants.add_argument("directory", help="directory of <platform>.csv files")
+    p_tenants.add_argument("--dry-run", action="store_true",
+                           help="report what would be imported without writing")
+
     p_dedupe = sub.add_parser("dedupe", help="collapse reposts and cross-source duplicates")
     p_dedupe.add_argument("--backfill", action="store_true",
                           help="recompute clusters across the whole archive (the only mode; "
@@ -841,6 +879,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_migrate_from_sqlite(args)
         if args.command == "dedupe":
             return cmd_dedupe(args)
+        if args.command == "import-tenants":
+            return cmd_import_tenants(args)
         if args.command == "liveness":
             return asyncio.run(cmd_liveness(args))
     except KeyboardInterrupt:
