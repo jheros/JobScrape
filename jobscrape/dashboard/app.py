@@ -18,7 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .. import config, db
+from .. import config, db, scam
 from ..observability import health as health_check
 from . import analytics, charts
 from .runner import STAGES, manager
@@ -35,10 +35,18 @@ def _datefmt(value: Any, length: int = 16) -> str:
     return text[:length].replace("T", " ")
 
 
+def _scam_reasons(value: Any) -> str:
+    """Turn the stored comma-separated signal names into a readable tooltip."""
+    names = [n for n in str(value or "").split(",") if n]
+    reasons = scam.scam_reasons(names)
+    return "This posting " + "; ".join(reasons) if reasons else ""
+
+
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["comma"] = lambda v: f"{int(v):,}" if v is not None else "0"
 templates.env.filters["datefmt"] = _datefmt
+templates.env.filters["scamreasons"] = _scam_reasons
 
 app = FastAPI(title="jobscrape dashboard", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")

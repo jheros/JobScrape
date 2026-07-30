@@ -73,6 +73,12 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- the clock. Scanning for it at read time cost 52s a query — see
     -- staleness.sql_verdict.
     evergreen_text    BOOLEAN NOT NULL DEFAULT false,
+    -- Comma-separated names of any advance-fee / identity-harvest patterns the
+    -- description trips (see scam.py). Stored for the same reason as
+    -- evergreen_text: derived from the description alone, never from the clock.
+    -- Empty for essentially every posting — that is the intended resting state
+    -- for a fraud check, not a sign it is broken.
+    scam_signals      TEXT NOT NULL DEFAULT '',
     -- Consecutive "expired" liveness probes. Closes at 2; any healthy read
     -- resets it, and so does a reopen — see liveness.py.
     liveness_strikes  INTEGER NOT NULL DEFAULT 0,
@@ -405,7 +411,7 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
     a posting the source is actively serving again is not closed, regardless
     of what an earlier sweep concluded.
     """
-    from . import fingerprint as fp, staleness
+    from . import fingerprint as fp, scam, staleness
 
     stamp = now_iso()
     updatable = [c for c in JOB_COLUMNS if c not in ("source", "source_job_id")]
@@ -416,10 +422,10 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
         f"{c}=COALESCE(excluded.{c}, jobs.{c})" if c in preserve else f"{c}=excluded.{c}"
         for c in updatable
     )
-    placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 6))
+    placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 7))
     sql = (
         f"INSERT INTO jobs ({', '.join(JOB_COLUMNS)}, first_seen_at, last_seen_at, "
-        f"role_fingerprint, role_key, content_hash, evergreen_text) "
+        f"role_fingerprint, role_key, content_hash, evergreen_text, scam_signals) "
         f"VALUES ({placeholders}) "
         f"ON CONFLICT(source, source_job_id) DO UPDATE SET {set_clause}, "
         f"last_seen_at=excluded.last_seen_at, closed_at=NULL, "
@@ -432,6 +438,11 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
         # still there, preserved, one column over.
         f"evergreen_text=CASE WHEN excluded.description_text IS NOT NULL "
         f"THEN excluded.evergreen_text ELSE jobs.evergreen_text END, "
+        # Same rule, same reason: a shallow refresh carries no description, and
+        # recomputing from nothing would clear the flag off a posting whose
+        # description is still stored one column over.
+        f"scam_signals=CASE WHEN excluded.description_text IS NOT NULL "
+        f"THEN excluded.scam_signals ELSE jobs.scam_signals END, "
         # A reopen clears accumulated liveness strikes, so the two-strike grace
         # survives it. Without this a posting that was closed, came back, and
         # then returned one transient death signal would close again instantly
@@ -446,7 +457,8 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
         values = (
             [row.get(c) for c in JOB_COLUMNS]
             + [stamp, stamp, fp.role_fingerprint(job), fp.role_key(job), fp.content_hash(job),
-               staleness.has_evergreen_text(job.description_text)]
+               staleness.has_evergreen_text(job.description_text),
+               ",".join(scam.scam_signals(job.description_text))]
         )
         exists = conn.execute(
             "SELECT 1 FROM jobs WHERE source=? AND source_job_id=?",

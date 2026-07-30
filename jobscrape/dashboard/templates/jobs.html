@@ -98,6 +98,8 @@
             {% if row.staleness == 'likely_evergreen' %}<span class="tag warn"
               title="Old, mass-posted, or worded as a standing advert — probably not a live opening">likely evergreen</span>
             {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
+            {% if row.scam_signals %}<span class="tag critical"
+              title="{{ row.scam_signals | scamreasons }}">possible scam</span>{% endif %}
             {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
           </div>
         </td>

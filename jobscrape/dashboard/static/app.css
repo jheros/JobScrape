@@ -223,6 +223,7 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 /* The tag always carries its own word ("likely evergreen"), so the colour is
    reinforcement rather than the signal itself — readable without colour vision. */
 .tag.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.tag.critical { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 55%, transparent); }
 
 /* --- live log ----------------------------------------------------------- */
 
