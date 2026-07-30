@@ -17,6 +17,7 @@ from . import (
     adzuna,
     bamboohr,
     breezy,
+    cornerstone,
     greenhouse,
     hackernews,
     himalayas,
@@ -28,6 +29,7 @@ from . import (
     jooble,
     lever,
     oracle,
+    paycom,
     personio,
     pinpoint,
     recruitee,
@@ -65,6 +67,11 @@ BOARD_SOURCES: dict[str, BoardSource] = {
         oracle.Oracle(),
         ukg.UKG(),
         adp.ADP(),
+        # Bootstrap-then-search boards: one page fetch for a session token,
+        # then a normal JSON API. Added after the ats-scrapers review corrected
+        # an earlier call that both of these were auth-gated and unreachable.
+        cornerstone.Cornerstone(),
+        paycom.Paycom(),
         # HTML/sitemap boards whose postings carry schema.org data, so they are
         # as reliable as the JSON sources.
         jazzhr.JazzHR(),

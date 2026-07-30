@@ -182,6 +182,23 @@ _SALARY_CONTEXT = re.compile(
 )
 _HOURLY_HINT = re.compile(r"(per\s+hour|/\s?hour|hourly|/\s?hr|an\s+hour)", re.I)
 
+#: Hours in a US full-time year (40 × 52). Hourly ranges are converted with it
+#: so ``salary_min`` means one thing everywhere.
+#:
+#: Before this, an hourly posting stored its raw rate — 488 of 29,898 salaried
+#: rows across 11 sources held a number like ``22.0`` in the same column as
+#: ``220000.0``, with no ``salary_period`` to tell them apart. Every filter,
+#: sort and export therefore compared hourly rates against annual ones, and the
+#: hourly ones sorted to the bottom as if they paid nothing. The two adapters
+#: added alongside this (Paycom, Indeed) are heavily hourly, so the share was
+#: about to grow sharply.
+#:
+#: The conversion is an estimate — it assumes full-time — but a *consistent*
+#: estimate beats a column that silently means two things. ``salary_raw`` keeps
+#: the text as published, so what the employer actually said is never lost and
+#: the conversion stays auditable.
+HOURS_PER_YEAR = 2080.0
+
 
 def _to_amount(number: str, k_suffix: str | None) -> float | None:
     try:
@@ -196,9 +213,15 @@ def _to_amount(number: str, k_suffix: str | None) -> float | None:
 def parse_salary(text: str | None) -> tuple[float | None, float | None, str | None, str | None]:
     """Extract a plausible pay range from prose.
 
-    Returns ``(min, max, currency, matched_text)``. Ranges are validated against
-    realistic annual and hourly bands so that unrelated dollar figures — funding
-    rounds, revenue targets, bonuses — are not mistaken for compensation.
+    Returns ``(min, max, currency, matched_text)``, with **min/max always
+    annualised** — an hourly range is multiplied by :data:`HOURS_PER_YEAR` so
+    the two numbers mean the same thing as every other row's. ``matched_text``
+    is the range exactly as it was written, so the original is still on record.
+
+    Ranges are validated against realistic annual and hourly bands (the band
+    checked depends on which one the surrounding words indicate) so that
+    unrelated dollar figures — funding rounds, revenue targets, discounts — are
+    not mistaken for compensation.
 
     Must be run on plain text, not HTML: entity-encoded dollar signs and dashes
     (``&#36;``, ``&mdash;``) and inline tags routinely break the match.
@@ -216,10 +239,12 @@ def parse_salary(text: str | None) -> tuple[float | None, float | None, str | No
         window = text[max(0, match.start() - 120) : match.end() + 120]
         hourly = _HOURLY_HINT.search(window) is not None
         if hourly:
-            plausible = 7.0 <= low <= 500.0 and high <= 1000.0
-        else:
-            plausible = 20_000 <= low <= 2_000_000 and high <= 5_000_000
-        if not plausible:
+            # Plausibility is judged on the rate as written, before scaling —
+            # the bands describe what an hourly rate looks like.
+            if not (7.0 <= low <= 500.0 and high <= 1000.0):
+                continue
+            low, high = low * HOURS_PER_YEAR, high * HOURS_PER_YEAR
+        elif not (20_000 <= low <= 2_000_000 and high <= 5_000_000):
             continue
         # Prefer a range that sits near explicit compensation wording.
         if _SALARY_CONTEXT.search(window) or best is None:
