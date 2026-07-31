@@ -158,6 +158,17 @@ class Oracle(BoardSource):
                 job_url=f"https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{job_id}",
                 apply_url=f"https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{job_id}/apply",
                 location_raw=item.get("PrimaryLocation") or detail.get("PrimaryLocation"),
+                # Oracle states the arrangement outright — "Hybrid" / "Remote" /
+                # "On-site" — and puts it on the LIST response as well as the
+                # detail, so it costs no extra request. Measured across two live
+                # boards: 91 of 198 listings carry a value.
+                #
+                # The human-readable field, deliberately, not `WorkplaceTypeCode`:
+                # `classify_workplace` substring-matches the hint, and while
+                # ORA_HYBRID happens to contain "hybrid", a code such as
+                # ORA_FULL_TIME_OFFICE would match the "office" branch by
+                # accident. An empty string is falsy and simply falls through.
+                workplace_hint=item.get("WorkplaceType") or detail.get("WorkplaceType"),
                 employment_type=item.get("ContractType") or detail.get("ContractType"),
                 department=item.get("JobFamily") or item.get("Department"),
                 posted_at=item.get("PostedDate") or detail.get("PostedDate"),

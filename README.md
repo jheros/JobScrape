@@ -323,7 +323,7 @@ Measured across open, non-duplicate postings:
 | skills | 79% overall — **87%** of full (>1500 char) postings |
 | salary | 63% |
 | seniority | 56% |
-| mode | 51% |
+| mode | 61% |
 | *all nine at once* | *15%* |
 
 **Nothing is guessed to fill a gap, and nothing is dropped for having one.** A blank means
@@ -340,6 +340,19 @@ python -m jobscrape export --complete-only --format csv
 `manager` / `director` / `executive` / `unknown`, read from the title by a precedence
 ladder. First match wins, which is what makes "Senior Staff Engineer" staff and "Principal
 Engineering Manager" a manager.
+
+**`workplace_type`** — `remote` / `hybrid` / `onsite` / `unknown`, from a four-tier
+cascade: the ATS's own field, then a structured boolean, then wording in the first 1,500
+characters, then a final permissive sweep that marks a posting remote if *any* remote word
+appears anywhere in it. That sweep runs last and only fills blanks, so a posting that
+explicitly says hybrid or onsite keeps that answer.
+
+The sweep is intentionally loose, to surface as many remote roles as possible. It matches
+literally, with no negation guard, so a posting saying *"100% onsite (no hybrid or remote
+options)"* will read as remote — about 24% of what it adds. The word `virtual` is the
+largest single source of error (mostly "virtual interviews"); removing it from
+`REMOTE_MENTION` in `jobscrape/models.py` is a one-line change if the remote count ever
+looks inflated.
 
 **`skills`** — a comma-separated list from a closed 133-term vocabulary of languages,
 frameworks, clouds, datastores and practices. Every pattern is word-boundary anchored,

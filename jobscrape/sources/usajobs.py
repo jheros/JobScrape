@@ -19,6 +19,15 @@ API = "https://data.usajobs.gov/api/search"
 PAGE_SIZE = 500  # the API's documented maximum
 
 
+def _remote_indicator(value: Any) -> bool | None:
+    """USAJobs sends ``RemoteIndicator`` as the *string* "true"/"false"."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    return None
+
+
 class USAJobs(GlobalSource):
     name = "usajobs"
     requires_key = True
@@ -126,6 +135,11 @@ class USAJobs(GlobalSource):
             apply_url=(descriptor.get("ApplyURI") or [None])[0],
             location_raw=location_raw or None,
             country="US",
+            # A string "true"/"false", not a boolean. Present on essentially
+            # every federal posting and previously unread, which is why 116 of
+            # this source's 117 rows sat at "unknown". Used only as a fallback
+            # inside `classify_workplace`, so wording in the posting still wins.
+            is_remote=_remote_indicator(detail.get("RemoteIndicator")),
             employment_type=", ".join(
                 t.get("Name", "") for t in descriptor.get("PositionSchedule") or []
             )

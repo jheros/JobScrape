@@ -243,8 +243,23 @@ what the liveness probe exists to cover.
 - **Salary** → parsed from description text where no structured field exists, validated
   against realistic annual and hourly bands so funding announcements and discounts are
   not mistaken for compensation.
-- **`workplace_type`** → `remote` / `hybrid` / `onsite` / `unknown`, trusting a source's
-  own field first, then a structured boolean, then wording in title/location.
+- **`workplace_type`** → `remote` / `hybrid` / `onsite` / `unknown`, decided by a
+  four-tier cascade in `classify_workplace`, first tier to answer wins:
+  1. **The source's own field** (Lever/Ashby `workplaceType`, Workday `remoteType`,
+     Oracle `WorkplaceType`, Pinpoint `workplace_type`). Highest trust — the employer said
+     it. Oracle puts it on the *list* response, so it costs no extra request.
+  2. **A structured boolean** (SmartRecruiters `location.remote`, Workable `telecommuting`,
+     USAJobs `RemoteIndicator`).
+  3. **Wording** in title + location + the first **1,500 characters** of the description.
+     Hybrid is matched before remote, because "hybrid remote" and "remote-friendly" are
+     hybrid. The 1,500 cap is load-bearing: widening it to 6,000 resolves ~24% more
+     postings but roughly **half of those are wrong**, including inversions — "This is not
+     a remote position" reads as remote, "On-site gym" as onsite.
+  4. **A permissive remote sweep** over the *whole* posting: any word in
+     `models.REMOTE_MENTION` makes it remote. Deliberately loose, and deliberately **last**
+     — it only ever fills a blank, so an explicit hybrid or onsite verdict is never
+     overwritten. Applied globally it would flip 33% of hybrid and 22% of onsite rows,
+     since hybrid postings routinely say "2 days remote".
 - **`seniority`** → `intern` / `entry` / `mid` / `senior` / `staff` / `principal` / `lead` /
   `manager` / `director` / `executive` / `unknown`, from a precedence ladder over the
   **title only** (`jobscrape/seniority.py`). First match wins, which is the whole design:
@@ -362,7 +377,7 @@ description and link**. Measured across open, non-duplicate postings:
 | skills | 78.5% overall, **87.1%** of full (>1500 char) postings | aggregator snippets are the gap |
 | salary | 63.4% | most employers do not publish one |
 | seniority | 56.0% | most titles do not name a level |
-| mode | 51.1% | |
+| mode | 61.4% | tier 4 lifted this from 51.1% |
 
 **Nothing is inferred to close those gaps and nothing is dropped for having one.** A blank
 means the employer did not state it, which is information in itself; guessing would make
