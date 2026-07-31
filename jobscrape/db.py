@@ -1004,10 +1004,6 @@ def record_liveness(conn: Connection, job_id: int, strikes: int, close: bool) ->
         )
 
 
-def mark_duplicate(conn: Connection, job_id: int, canonical_id: int) -> None:
-    conn.execute("UPDATE jobs SET duplicate_of = ? WHERE id = ?", (canonical_id, job_id))
-
-
 def clear_duplicate(conn: Connection, job_id: int) -> None:
     """Reverse a mis-cluster: the row returns to the queue with its triage intact."""
     conn.execute("UPDATE jobs SET duplicate_of = NULL WHERE id = ?", (job_id,))
