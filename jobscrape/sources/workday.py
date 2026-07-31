@@ -16,7 +16,7 @@ from typing import Any
 
 from .. import config
 from ..http import Fetcher, gather_limited
-from ..models import Job, html_to_text
+from ..models import Job, classify_hint, html_to_text
 from .base import BoardSource, DEFAULT_QUERIES, Prefilter, shallow_refresh
 
 CXS = "https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
@@ -285,7 +285,14 @@ class Workday(BoardSource):
                     apply_url=f"{site_url}{path}/apply",
                     location_raw=location,
                     country=country,
-                    is_remote="remote" in str(remote_type or "").lower() or None,
+                    # Not `"remote" in remote_type`: Workday ships the value
+                    # "Remote work is not available", which contains the word
+                    # and so set this flag True — the strongest signal the
+                    # classifier has, asserting the exact opposite of what the
+                    # field says. `classify_hint` maps by value and checks
+                    # negations first, so it is the only thing that should read
+                    # this string.
+                    is_remote=(classify_hint(remote_type) == "remote") or None,
                     workplace_hint=remote_type,
                     employment_type=detail.get("timeType"),
                     posted_at=detail.get("startDate"),

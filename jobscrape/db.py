@@ -447,10 +447,31 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
     # Descriptions are expensive to obtain; never overwrite a good one with NULL.
     preserve = {"description_html", "description_text", "posted_at", "salary_min",
                 "salary_max", "salary_currency", "raw_json"}
-    set_clause = ", ".join(
-        f"{c}=COALESCE(excluded.{c}, jobs.{c})" if c in preserve else f"{c}=excluded.{c}"
-        for c in updatable
-    )
+    #: Columns where a *value* means "I could not tell", so it must be treated
+    #: like NULL rather than like an answer.
+    #:
+    #: `workplace_type` is derived at construction from the description, the
+    #: source's own workplace field and the structured remote flag — all three of
+    #: which a shallow refresh strips, and the first of which is COALESCE-
+    #: preserved above. So a cheap re-check recomputed "unknown" from nothing and
+    #: overwrote the verdict a deep pass had already established. Measured: 178
+    #: Workday postings stored `remoteType: Hybrid` in their payload and read
+    #: `unknown`, and migration 0006 had already fixed those same rows once
+    #: before a later sweep ate them again.
+    #:
+    #: Same class of bug as `evergreen_text`, `scam_signals` and `skills`, each of
+    #: which carries a guard further down this statement. This one is expressed
+    #: as NULLIF because the sentinel is a value, not a NULL.
+    unknown_is_not_an_answer = {"workplace_type": "unknown"}
+    def _assign(c: str) -> str:
+        if c in preserve:
+            return f"{c}=COALESCE(excluded.{c}, jobs.{c})"
+        if c in unknown_is_not_an_answer:
+            sentinel = unknown_is_not_an_answer[c]
+            return f"{c}=COALESCE(NULLIF(excluded.{c}, '{sentinel}'), jobs.{c})"
+        return f"{c}=excluded.{c}"
+
+    set_clause = ", ".join(_assign(c) for c in updatable)
     placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 8))
     sql = (
         f"INSERT INTO jobs ({', '.join(JOB_COLUMNS)}, first_seen_at, last_seen_at, "

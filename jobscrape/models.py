@@ -132,24 +132,103 @@ _RE_ONSITE = re.compile(
 #: * ~24% of matches are negations. "This position is expected to be 100%
 #:   onsite (no hybrid or remote options)" contains "remote" and so reads as
 #:   remote.
-#: * ``virtual`` contributes 333 of those 2,433 and is overwhelmingly "virtual
-#:   interviews" — the hiring process, not the work arrangement. It is the
-#:   single largest systematic error here.
-#:
-#: If the remote count ever looks inflated, deleting ``"virtual"`` from this
-#: tuple is the first thing to try; it is one line and needs no other change.
+#: * ``virtual`` used to be in this tuple and has been removed. Re-measured on
+#:   the live archive, 211 of 3,063 remote postings rested on that word alone,
+#:   overwhelmingly "virtual interviews" — the hiring process, not the work
+#:   arrangement. It was always the weakest term here and was the single largest
+#:   systematic error. Nothing else about the rule changed.
 REMOTE_MENTION = (
     "remote",
     "work from home",
     "wfh",
     "telecommute",
-    "virtual",
     "home-based",
     "home based",
     "fully distributed",
     "work from anywhere",
     "remote-first",
 )
+
+
+#: Anchored phrases, matched against the WHOLE description.
+#:
+#: Borrowed from freehire (MIT), which splits its work-mode vocabulary by the
+#: noise level of the field it reads: loose tokens are safe in a one-line
+#: location string and disastrous in long prose, where "remote team", "hybrid
+#: cloud" and "distributed systems" all appear innocently. Its design note is
+#: worth quoting, because it describes the bug this fixes:
+#:
+#:   > a bare "remote"/"hybrid"/"in office" matches far too much ... so every
+#:   > phrase is anchored to an unambiguous work-arrangement statement
+#:
+#: Two reasons this earns its place rather than duplicating the tier above it.
+#: The wording tier reads only the first 1,500 characters, and a work
+#: arrangement is often stated at the very end of a posting. And the permissive
+#: sweep below can only ever produce ``remote`` — hybrid and onsite had no
+#: whole-document tier at all, which is why a posting saying "3 days in the
+#: office" that mentioned "remote" once anywhere read as remote.
+#:
+#: Order is hybrid, then onsite, then remote: a posting stating both a hybrid
+#: schedule and remote work is hybrid.
+ANCHORED_WORKPLACE = (
+    ("hybrid", (
+        "hybrid role", "hybrid work", "hybrid schedule", "hybrid model",
+        "hybrid setup", "hybrid arrangement", "hybrid position",
+        "days in the office", "days a week in the office", "days per week in the office",
+        "days in office", "days onsite", "days on-site",
+    )),
+    ("onsite", (
+        "onsite only", "on-site only", "on site only", "fully onsite", "fully on-site",
+        "100% onsite", "100% on-site", "must be onsite", "must be on-site",
+        "onsite position", "on-site position", "in-office position",
+        "work from our office", "based in our office", "based in the office",
+        "onsite role", "on-site role",
+    )),
+    ("remote", (
+        "fully remote", "fully-remote", "100% remote", "100 % remote",
+        "remote-first", "remote first", "work from anywhere", "work-from-anywhere",
+        "remote position", "remote role", "remote job", "remote opportunity",
+        "this position is remote", "role is remote", "position is remote",
+    )),
+)
+
+
+#: A source's own workplace field, mapped by value.
+#:
+#: Substring matching on these is unsafe and was wrong in production: Workday
+#: ships ``"Remote work is not available"``, which contains "remote" and so read
+#: as remote — both here and in the adapter's `is_remote` flag. Negations are
+#: therefore checked first, against the whole normalised value.
+#:
+#: The rest are matched by substring *after* that, which is what lets one entry
+#: cover "Onsite", "On Site", "Onsite Only" and "Onsite Customer". Hybrid
+#: outranks remote so "Remote/Hybrid" and "Fully Remote or Hybrid if Local"
+#: resolve hybrid — the same precedence the wording tier uses, and what stops a
+#: "2 days remote" arrangement reading as fully remote.
+_HINT_NEGATIONS = (
+    "remote work is not available",
+    "no remote",
+    "not available for remote",
+    "remote not available",
+)
+
+
+def classify_hint(hint: str | None) -> str | None:
+    """Map a source's own workplace field to a verdict, or None if it says nothing."""
+    if not hint:
+        return None
+    lowered = " ".join(str(hint).strip().lower().split())
+    if not lowered:
+        return None
+    if any(neg in lowered for neg in _HINT_NEGATIONS):
+        return "onsite"
+    if "hybrid" in lowered or "flexible" in lowered or "flex" in lowered:
+        return "hybrid"
+    if "remote" in lowered or "telecommute" in lowered or "home-based" in lowered:
+        return "remote"
+    if "onsite" in lowered or "on-site" in lowered or "on site" in lowered or "office" in lowered:
+        return "onsite"
+    return None
 
 
 def classify_workplace(
@@ -166,51 +245,58 @@ def classify_workplace(
     ``location.remote``, Workable ``telecommuting``) and is trusted next.
 
     ``full_text`` is the *whole* posting — title, location and the complete
-    description, not the truncated ``text`` signal. It is read only by the final
-    sweep, which fires when every other tier has given up: any word in
-    :data:`REMOTE_MENTION` occurring anywhere then makes the posting remote.
+    description, not the truncated ``text`` signal. Two tiers read it: the
+    anchored-phrase pass (:data:`ANCHORED_WORKPLACE`), then the permissive remote
+    sweep (:data:`REMOTE_MENTION`).
 
-    That sweep runs **last on purpose**. A posting the ATS field, the structured
-    flag, or the wording already classified keeps that answer, so an explicit
-    hybrid or onsite verdict is never overwritten — hybrid postings routinely
-    say "2 days remote", and letting the sweep win would erase the distinction.
-    It only ever fills a blank.
+    Five tiers, in descending order of how much the evidence is worth:
+
+    1. the source's own workplace field, mapped by value (:func:`classify_hint`)
+    2. a structured ``is_remote`` boolean
+    3. wording in title + location + the first 1,500 characters
+    4. **anchored phrases anywhere in the posting** — "fully remote", "hybrid
+       schedule", "3 days in the office", "must be on-site"
+    5. any word in :data:`REMOTE_MENTION` anywhere, taken at face value
+
+    Tier 4 sits above tier 5 deliberately, and that ordering does real work: the
+    sweep can only ever answer "remote", so before it existed a posting stating
+    "3 days in the office" that mentioned remote once anywhere read as remote.
+    Both fill blanks only — a posting an earlier tier already classified keeps
+    that answer.
 
     Purely descriptive — nothing is filtered on this value. "unknown" is the
-    honest answer for a bare city with no workplace wording, and is common.
+    honest answer for a bare city with no workplace wording, and it is the
+    common case: of 11,110 unknown postings measured, 10,808 had a full
+    description stored and simply never stated an arrangement.
     """
-    if hint:
-        lowered = hint.strip().lower()
-        if "hybrid" in lowered:
-            return "hybrid"
-        if "remote" in lowered or "telecommute" in lowered:
-            return "remote"
-        if "onsite" in lowered or "on-site" in lowered or "office" in lowered:
-            return "onsite"
+    from_hint = classify_hint(hint)
+    if from_hint:
+        return from_hint
 
     if is_remote is True:
         return "remote"
 
     body = text or ""
-    if not body:
-        # An explicit False flag is still evidence, just weaker than wording.
-        return "onsite" if is_remote is False else "unknown"
+    if body:
+        # Hybrid first: "hybrid remote" and "remote-friendly" are hybrid, not remote.
+        if _RE_HYBRID.search(body):
+            return "hybrid"
+        if _RE_ONSITE.search(body):
+            return "onsite"
+        if _RE_REMOTE.search(body):
+            return "remote"
 
-    # Hybrid first: "hybrid remote" and "remote-friendly" are hybrid, not remote.
-    if _RE_HYBRID.search(body):
-        return "hybrid"
-    if _RE_ONSITE.search(body):
-        return "onsite"
-    if _RE_REMOTE.search(body):
-        return "remote"
-
-    # Last resort: nothing above could tell. Sweep the entire posting for any
-    # mention of remote work and take it at face value.
     if full_text:
         lowered = full_text.lower()
+        # Tier 4: anchored phrases, safe on full text in a way bare tokens are not.
+        for mode, phrases in ANCHORED_WORKPLACE:
+            if any(p in lowered for p in phrases):
+                return mode
+        # Tier 5: the permissive sweep. Any mention of remote work, at face value.
         if any(word in lowered for word in REMOTE_MENTION):
             return "remote"
 
+    # An explicit False flag is still evidence, just weaker than any wording.
     return "onsite" if is_remote is False else "unknown"
 
 

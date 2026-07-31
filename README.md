@@ -369,11 +369,30 @@ it** — every job is collected regardless — so you can slice the dataset your
 psql jobscrape -c "SELECT title, company, job_url FROM jobs WHERE workplace_type='remote' AND duplicate_of IS NULL"
 ```
 
-A source's own field is trusted first (Lever, Ashby, SmartRecruiters, Workable, Workday,
-Recruitee and Pinpoint all publish one), then a structured boolean, then wording in the
-title/location. `unknown` is the honest answer for a bare city with no workplace wording
-and is the largest bucket — it is not a failure, and guessing "onsite" there would be
-inventing data.
+Five tiers, in descending order of what the evidence is worth:
+
+1. **The source's own workplace field**, mapped **by value** — Lever, Ashby,
+   SmartRecruiters, Workable, Workday, Oracle, Apple, Recruitee and Pinpoint all publish
+   one. Negations are checked first: Workday ships `"Remote work is not available"`, which
+   substring matching read as *remote*.
+2. **A structured boolean** (`is_remote`).
+3. **Wording** in the title, location and the first 1,500 characters.
+4. **Anchored phrases anywhere in the posting** — "fully remote", "hybrid schedule",
+   "3 days in the office", "must be on-site". Anchored because a bare token is safe in a
+   one-line location and disastrous in prose, where "remote team", "hybrid cloud" and
+   "distributed systems" all appear innocently. *(Idea borrowed from
+   [freehire](https://github.com/strelov1/freehire), MIT.)*
+5. **The permissive sweep** — any word in `REMOTE_MENTION` anywhere, taken at face value.
+   It can only ever answer "remote", which is why tier 4 sits above it: a posting saying
+   "3 days in the office" would otherwise read remote because the word appears once in a
+   benefits list.
+
+Tiers 4 and 5 fill blanks only; an earlier tier's verdict is never overwritten.
+
+`unknown` is the honest answer for a bare city with no workplace wording, and it is the
+largest bucket by a wide margin — **of 11,110 unknown postings measured, 10,808 had a full
+description stored and simply never stated an arrangement**. That is not a failure of the
+classifier, and guessing "onsite" there would be inventing data for ~9,500 rows.
 
 `description_html` is omitted unless you pass `--include-html`, since it dominates
 file size. Salary is parsed out of the description text when a source has no

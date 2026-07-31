@@ -244,22 +244,43 @@ what the liveness probe exists to cover.
   against realistic annual and hourly bands so funding announcements and discounts are
   not mistaken for compensation.
 - **`workplace_type`** → `remote` / `hybrid` / `onsite` / `unknown`, decided by a
-  four-tier cascade in `classify_workplace`, first tier to answer wins:
+  five-tier cascade in `classify_workplace`, first tier to answer wins:
   1. **The source's own field** (Lever/Ashby `workplaceType`, Workday `remoteType`,
-     Oracle `WorkplaceType`, Pinpoint `workplace_type`). Highest trust — the employer said
-     it. Oracle puts it on the *list* response, so it costs no extra request.
+     Oracle `WorkplaceType`, Apple `homeOffice`, Pinpoint `workplace_type`). Highest trust
+     — the employer said it. Oracle puts it on the *list* response, so it costs no extra
+     request. Mapped **by value** via `classify_hint`, with negations checked first:
+     Workday ships `"Remote work is not available"`, and substring matching read that as
+     remote — in the classifier *and* in the adapter's `is_remote` flag, which is the
+     strongest signal there is.
   2. **A structured boolean** (SmartRecruiters `location.remote`, Workable `telecommuting`,
-     USAJobs `RemoteIndicator`).
+     USAJobs `RemoteIndicator`, Apple `homeOffice`).
   3. **Wording** in title + location + the first **1,500 characters** of the description.
      Hybrid is matched before remote, because "hybrid remote" and "remote-friendly" are
      hybrid. The 1,500 cap is load-bearing: widening it to 6,000 resolves ~24% more
      postings but roughly **half of those are wrong**, including inversions — "This is not
      a remote position" reads as remote, "On-site gym" as onsite.
-  4. **A permissive remote sweep** over the *whole* posting: any word in
+  4. **Anchored phrases** (`models.ANCHORED_WORKPLACE`) over the *whole* posting —
+     "fully remote", "hybrid schedule", "3 days in the office", "must be on-site".
+     Anchored is what makes full-text safe where tier 3's cap exists: a bare token matches
+     "remote team", "hybrid cloud" and "distributed systems", a phrase does not. Idea from
+     [freehire](https://github.com/strelov1/freehire) (MIT), whose design note draws the
+     same line between a one-line location field and long prose.
+  5. **A permissive remote sweep** over the whole posting: any word in
      `models.REMOTE_MENTION` makes it remote. Deliberately loose, and deliberately **last**
      — it only ever fills a blank, so an explicit hybrid or onsite verdict is never
      overwritten. Applied globally it would flip 33% of hybrid and 22% of onsite rows,
-     since hybrid postings routinely say "2 days remote".
+     since hybrid postings routinely say "2 days remote". Tier 4 sits above it for the same
+     reason: the sweep can only answer "remote", so a posting stating "3 days in the
+     office" read as remote whenever the word appeared once in a benefits list.
+
+  `unknown` dominates and is honest: of 11,110 unknown postings measured, **10,808 had a
+  full description stored** and never stated an arrangement at all.
+
+  The column is **derived but stored**, which made it vulnerable to a bug worth naming.
+  A shallow refresh strips the description, the hint and the boolean, so it recomputed
+  `unknown` — and the upsert wrote that over the verdict a deep pass had established.
+  `upsert_jobs` now treats `'unknown'` like NULL for this column, the same guard
+  `evergreen_text`, `scam_signals` and `skills` each carry.
 - **`seniority`** → `intern` / `entry` / `mid` / `senior` / `staff` / `principal` / `lead` /
   `manager` / `director` / `executive` / `unknown`, from a precedence ladder over the
   **title only** (`jobscrape/seniority.py`). First match wins, which is the whole design:

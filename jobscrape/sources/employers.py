@@ -337,6 +337,16 @@ class Apple(GlobalSource):
             apply_url=f"{APPLE_BASE}/en-us/details/{position}",
             location_raw="; ".join(dict.fromkeys(names)) or None,
             country=next(iter(countries), None) if len(countries) == 1 else None,
+            # Apple's own remote flag. Fed as the boolean rather than as a
+            # `workplace_hint` on purpose: the classifier treats a False here as
+            # weak evidence used last, so a posting whose description states a
+            # hybrid schedule still reads hybrid. A True is definite.
+            #
+            # Checked before trusting it, because a field that never varies
+            # carries no information: all 993 stored Apple rows read False, and
+            # only a live fetch settled it — 2 of 417 came back True. Rare, but
+            # real, which matches how few remote roles Apple advertises.
+            is_remote=row.get("homeOffice") if isinstance(row.get("homeOffice"), bool) else None,
             department=row.get("team", {}).get("teamName")
             if isinstance(row.get("team"), dict) else None,
             # `postDateInGMT` is a real timestamp; `postingDate` is display text.

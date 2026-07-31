@@ -141,7 +141,7 @@ def test_workplace_type_is_exported(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     "word",
-    ["remote", "work from home", "wfh", "telecommute", "virtual",
+    ["remote", "work from home", "wfh", "telecommute",
      "home-based", "fully distributed", "work from anywhere", "remote-first"],
 )
 def test_any_remote_word_anywhere_marks_an_otherwise_unknown_posting(word: str) -> None:
@@ -152,6 +152,21 @@ def test_any_remote_word_anywhere_marks_an_otherwise_unknown_posting(word: str) 
         description_text="Filler. " * 900 + f"We offer {word} arrangements.",
     )
     assert job.workplace_type == "remote"
+
+
+def test_virtual_was_removed_from_the_sweep() -> None:
+    """It used to be in the list above, and was measurably its worst member.
+
+    Re-measured on the live archive: 211 of 3,063 remote postings rested on
+    "virtual" alone, overwhelmingly "virtual interviews" — the hiring process,
+    not the work arrangement. Nothing else about the rule changed.
+    """
+    job = Job(
+        source="t", source_job_id="1", title="Software Engineer", company="Acme",
+        job_url="https://x/1", location_raw="Austin, TX",
+        description_text="Filler. " * 900 + "We conduct virtual interviews.",
+    )
+    assert job.workplace_type == "unknown"
 
 
 def test_the_sweep_only_fills_blanks() -> None:

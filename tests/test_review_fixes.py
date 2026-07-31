@@ -191,3 +191,219 @@ def test_the_qmark_trap_is_documented() -> None:
     header = text[: text.index("_QMARK_RE = re.compile")]
     assert "jsonb_exists" in header, "the JSONB workaround is not documented"
     assert "literal" in header, "the string-literal trap is not documented"
+
+
+# --- "unknown" was overwriting a definite workplace verdict -----------------
+#
+# `workplace_type` is derived at construction from the description, the source's
+# own workplace field and the structured remote flag. A shallow refresh strips
+# all three, so it recomputed "unknown" from nothing — and unlike the other
+# derived columns, nothing stopped that being written over a good answer.
+#
+# Invisible because every existing test on shallow refresh asserted the columns
+# it is *known* to preserve, and `workplace_type` is not one of them: it is
+# recomputed, not carried. Migration 0006 fixed the affected rows once and a
+# later sweep ate them again, which is what a data bug looks like from outside.
+# 178 Workday postings stored `remoteType: Hybrid` in their payload and read
+# `unknown`.
+
+
+def test_a_shallow_refresh_cannot_erase_a_workplace_verdict(_isolated_db) -> None:
+    conn = _isolated_db
+    deep = Job(
+        source="workday", source_job_id="42", title="Staff Engineer",
+        company="acme", job_url="https://x/42", location_raw="Austin, TX",
+        workplace_hint="Hybrid",
+        description_text="You will work a hybrid schedule, 3 days in the office.",
+    )
+    assert deep.workplace_type == "hybrid", "precondition: the deep pass classifies it"
+    db.upsert_jobs(conn, [deep])
+
+    shallow = shallow_refresh(Job(
+        source="workday", source_job_id="42", title="Staff Engineer",
+        company="acme", job_url="https://x/42", location_raw="Austin, TX",
+    ))
+    assert shallow.workplace_type == "unknown", "precondition: a shallow pass knows nothing"
+    db.upsert_jobs(conn, [shallow])
+
+    stored = conn.execute(
+        "SELECT workplace_type FROM jobs WHERE source_job_id = ?", ("42",)
+    ).fetchone()["workplace_type"]
+    assert stored == "hybrid", "a shallow refresh erased the stored workplace verdict"
+
+
+def test_a_better_informed_pass_still_wins(_isolated_db) -> None:
+    """The guard must not freeze the column — only "unknown" is refused."""
+    conn = _isolated_db
+    db.upsert_jobs(conn, [Job(
+        source="workday", source_job_id="43", title="Engineer", company="acme",
+        job_url="https://x/43", workplace_hint="Onsite",
+    )])
+    db.upsert_jobs(conn, [Job(
+        source="workday", source_job_id="43", title="Engineer", company="acme",
+        job_url="https://x/43", workplace_hint="Remote",
+    )])
+    stored = conn.execute(
+        "SELECT workplace_type FROM jobs WHERE source_job_id = ?", ("43",)
+    ).fetchone()["workplace_type"]
+    assert stored == "remote", "a definite new verdict must replace the old one"
+
+
+# --- a source's own workplace field, mapped by value not by substring -------
+
+
+def test_the_workday_negation_is_not_read_as_remote() -> None:
+    """Workday ships "Remote work is not available".
+
+    It contains the word, so substring matching set `is_remote=True` — the
+    strongest signal the classifier has — asserting the exact opposite of what
+    the field says. Both the adapter and the classifier had this bug.
+    """
+    from jobscrape.models import classify_hint, classify_workplace
+
+    assert classify_hint("Remote work is not available") == "onsite"
+    assert classify_workplace("Engineer", None, "Remote work is not available") == "onsite"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("Remote work is not available", "onsite"),
+        ("Onsite", "onsite"), ("On Site", "onsite"),
+        ("Onsite Only", "onsite"), ("Onsite Customer", "onsite"),
+        ("Hybrid", "hybrid"), ("Remote/Hybrid", "hybrid"),
+        ("Office Tech-Flexible", "hybrid"), ("Office - Flexible", "hybrid"),
+        ("Fully Remote or Hybrid if Local", "hybrid"),
+        ("Remote", "remote"), ("Remote Home-Based", "remote"),
+        ("Remote Customer-Based", "remote"),
+    ],
+)
+def test_every_observed_workday_remote_type(value: str, expected: str) -> None:
+    """The full set of values seen in the archive, so a new one is noticed."""
+    from jobscrape.models import classify_hint
+
+    assert classify_hint(value) == expected
+
+
+def test_the_workday_adapter_does_not_flag_the_negation_remote() -> None:
+    """The adapter sets `is_remote` from the same mapping, not from a substring.
+
+    Asserted against the real adapter source rather than a re-implementation of
+    its expression, because the bug was that the two disagreed.
+    """
+    import inspect
+
+    from jobscrape.sources import workday
+
+    source = inspect.getsource(workday)
+    assert '"remote" in str(remote_type' not in source, (
+        "the adapter is substring-matching remoteType again"
+    )
+    assert "classify_hint(remote_type)" in source, (
+        "the adapter must reuse the classifier's value mapping"
+    )
+
+
+# --- anchored phrases beat the permissive sweep -----------------------------
+
+
+def test_an_anchored_hybrid_phrase_outranks_a_stray_remote() -> None:
+    """Why the anchored tier sits above the sweep.
+
+    The sweep can only ever answer "remote", so before this tier existed a
+    posting stating a hybrid schedule read as remote if the word appeared once
+    anywhere in it — and it usually does, in a benefits list or an EEO block.
+    """
+    from jobscrape.models import classify_workplace
+
+    posting = ("Staff Engineer. We are a remote-friendly employer. "
+               "This role works 3 days in the office each week.")
+    assert classify_workplace("Staff Engineer", None, None, full_text=posting) == "hybrid"
+
+
+@pytest.mark.parametrize(
+    "phrase,expected",
+    [
+        ("This is a fully remote position.", "remote"),
+        ("We are 100% remote.", "remote"),
+        ("A remote-first company.", "remote"),
+        ("You will spend 2 days in the office.", "hybrid"),
+        ("We run a hybrid schedule.", "hybrid"),
+        ("This role is on-site only.", "onsite"),
+        ("Candidates must be on-site in Austin.", "onsite"),
+        ("An in-office position based in our office.", "onsite"),
+    ],
+)
+def test_anchored_phrases_read_the_whole_posting(phrase: str, expected: str) -> None:
+    """Deliberately placed past the 1,500-character window the wording tier reads.
+
+    A work arrangement is often stated at the very end of a posting, after the
+    responsibilities and the benefits.
+    """
+    from jobscrape.models import classify_workplace
+
+    padded = ("Engineering at our company. " * 90) + phrase
+    assert len(padded) > 1500
+    assert classify_workplace("Engineer", None, None, full_text=padded) == expected
+
+
+# --- the permissive sweep, minus one word ----------------------------------
+
+
+def test_a_virtual_interview_is_not_a_remote_job() -> None:
+    """211 of 3,063 remote postings rested on this word alone.
+
+    "virtual" was always the weakest term in `REMOTE_MENTION` and the comment
+    beside it named removing it as the first thing to try.
+    """
+    from jobscrape.models import REMOTE_MENTION, classify_workplace
+
+    assert "virtual" not in REMOTE_MENTION
+    posting = "Engineer. We conduct virtual interviews for all candidates."
+    assert classify_workplace("Engineer", None, None, full_text=posting) == "unknown"
+
+
+def test_the_permissive_sweep_is_otherwise_unchanged() -> None:
+    """The rule as asked for: a mention of remote anywhere means remote."""
+    from jobscrape.models import classify_workplace
+
+    posting = "Engineer in Austin. Our team collaborates with remote colleagues."
+    assert classify_workplace("Engineer", None, None, full_text=posting) == "remote"
+
+
+# --- Apple's homeOffice field ----------------------------------------------
+
+
+def test_apple_reads_its_own_remote_flag() -> None:
+    """Checked before being trusted, because a constant carries no information.
+
+    All 993 stored Apple rows read False, which is what a vestigial field looks
+    like. Only a live fetch settled it: 2 of 417 came back True. Rare but real,
+    which matches how few remote roles Apple advertises — so the field is worth
+    reading, and a False is worth treating as weak evidence rather than proof.
+    """
+    from jobscrape.sources.employers import Apple
+
+    remote = Apple()._parse({"positionId": "1", "postingTitle": "Engineer",
+                             "homeOffice": True})
+    assert remote is not None and remote.is_remote is True
+    assert remote.workplace_type == "remote"
+
+    office = Apple()._parse({"positionId": "2", "postingTitle": "Engineer",
+                             "homeOffice": False})
+    assert office is not None and office.is_remote is False
+    assert office.workplace_type == "onsite"
+
+    absent = Apple()._parse({"positionId": "3", "postingTitle": "Engineer"})
+    assert absent is not None and absent.is_remote is None
+
+
+def test_a_false_home_office_is_weak_evidence_not_proof() -> None:
+    """Any positive wording still wins, which is why it is fed as the boolean."""
+    from jobscrape.sources.employers import Apple
+
+    job = Apple()._parse({
+        "positionId": "4", "postingTitle": "Engineer", "homeOffice": False,
+        "jobSummary": "This role follows a hybrid schedule, 3 days in the office.",
+    })
+    assert job is not None and job.workplace_type == "hybrid"
