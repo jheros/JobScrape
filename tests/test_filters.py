@@ -114,7 +114,7 @@ def test_genuinely_ambiguous_words_still_take_department_confirmation() -> None:
         "Distributed Systems Engineer", "Kernel Developer", "Release Engineer",
         "Mainframe Engineer", "COBOL Programmer",
         "Rails Developer", "Flutter Developer", "Engineer, Platform",
-        "New Grad Software Engineer", "Solidity Developer", "ETL Developer",
+        "Solidity Developer", "ETL Developer",
         # Rescued when the bare word stopped qualifying: these were carried by
         # it alone and had to be named to survive.
         "UI Developer", "UI Engineer", "UI/UX Engineer", "Mobile App Developer",
@@ -224,6 +224,247 @@ def test_forward_deployed_engineer_survives() -> None:
     """The one customer-adjacent title that stays: it writes code."""
     assert is_software_role("Forward Deployed Engineer") is True
     assert is_software_role("Senior Forward Deployed Engineer") is True
+
+
+def test_pre_sales_outranks_the_forward_deployed_accept() -> None:
+    """When both rules apply, the blocklist wins — and should.
+
+    "Forward Deployed Engineer | Pre-sales" names the accept pattern and the
+    blocked one. The work is pre-sales, so the block is the right answer; this
+    pins the precedence rather than leaving it to list order.
+    """
+    assert is_software_role("Forward Deployed Engineer | Pre-sales") is False
+
+
+# --- the blocklist's adjacency, fixed to match the accept list's -----------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Mechanical Reliability Engineer",
+        "Hardware Integration Engineer",
+        "Senior Hardware Reliability Engineer",
+        "Senior VLSI Integration Engineer",
+        "Senior RTL Integration Engineer",
+        "SoC Silicon Reliability Engineer",
+        "IC Packaging Integration Engineer",
+        "Senior Electrical Product Engineer - Datacenter",
+        "Optical Design Engineer",
+        "Senior Silicon Reliability Engineer",
+    ],
+)
+def test_a_hardware_discipline_reaches_the_role_noun(title: str) -> None:
+    """`_NOT_SOFTWARE_TERMS` used to require its discipline word to touch.
+
+    It matched "Mechanical Engineer" and missed "Mechanical Reliability
+    Engineer". Harmless while a bare "Engineer" qualified on its own; once the
+    allowlist began accepting generic role nouns — `integration engineer`,
+    `reliability engineer`, `performance engineer` — that gap became the way
+    hardware got in. 85 postings.
+    """
+    assert is_software_role(title) is False
+    assert is_software_role(title, "Engineering") is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Optical Software Engineer",
+        "Senior VLSI CAD Software Engineer",
+        "Silicon Validation Software Engineer: CPU and Memory Hierarchy",
+        "Analog Mixed-Signal Modeling Software Engineer",
+        "VLSI Design Automation Software Engineer",
+        "Software Development Engineer - Silicon Development Infrastructure",
+    ],
+)
+def test_software_engineers_on_hardware_teams_survive(title: str) -> None:
+    """The exemption that makes the rule above safe rather than harmful.
+
+    Eight of those 85 say "Software Engineer" outright. They write software for
+    hardware teams, and they are the difference between the rule removing 77
+    wrong rows and removing 85 including 8 right ones. Only the explicit
+    spelling counts — "Optical Design Engineer" names no software role.
+    """
+    assert is_software_role(title) is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A discipline an intervening word genuinely can make software. These
+        # stay adjacency-only, which is why the gap uses a curated subset.
+        "Validation Platform Engineer",
+        "Field Reliability Software Engineer",
+        "Energy Data Platform Engineer",
+        "Transportation Data Engineer",
+        "Manufacturing Data Platform Engineer",
+    ],
+)
+def test_the_gap_uses_a_curated_subset_not_the_whole_blocklist(title: str) -> None:
+    """`_NOT_SOFTWARE_TERMS` names validation, field, energy, transportation and
+    manufacturing too. Those keep requiring adjacency, because an intervening
+    word genuinely can make them software — which is why the gap runs over a
+    curated list of physical disciplines rather than the whole blocklist."""
+    assert is_software_role(title) is True
+
+
+# --- roles that route around a removed accept ------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Strategy and governance, same family as Solutions Architect.
+        "Enterprise Architect", "Senior Enterprise Architect", "Business Architect",
+        "Enterprise Architect Java", "IT Enterprise Architect",
+        # The vendor accept was removed last round; these came back in through
+        # `technical architect` and `tech lead`, which ask for no qualifier.
+        "Salesforce Technical Architect", "Salesforce Technical Lead",
+        "ServiceNow Senior Tech Lead", "NetSuite Architect",
+        "SAP S/4HANA Technical Lead - ABAP & Fiori",
+        "Senior Technical Consultant - Salesforce DevOps",
+        # Pre-sales in a role noun other than "engineer".
+        "Technical Architect (Pre-Sales)", "Pre-Sales Data and AI Architect",
+        "Partner Technical Architect - Agentforce",
+        # Churned-listing tell: seniority words run together.
+        "SeniorStaffPrincipal Software Consultant FullStack Morning Shift",
+        "PrincipalStaff Test Consultant Playwright Azure DevOps",
+    ],
+)
+def test_titles_that_routed_around_a_removed_accept(title: str) -> None:
+    assert is_software_role(title) is False
+    assert is_software_role(title, "Engineering") is False
+
+
+def test_genuine_consultancies_and_shift_work_survive() -> None:
+    """No shift-word rule was built, and this is what would break if one were.
+
+    A shift in the title matched 16 postings but only 2 of the body-shop
+    listings it was aimed at; three were real SRE and DevOps rotations. The
+    mashed-seniority half of the rule ships; the shift half does not.
+    """
+    for title in (
+        "Cloud Operations Engineer (2nd Shift, Weekend)",
+        "Site Reliability Engineer (Tu-Sat, night shift)",
+        "Quantitative Technologist (Full-Time - DevOps - Night Shift)",
+        "Senior Consultant, Full Stack Engineer (Node.js/React/Typescript/AWS)",
+        "Senior Consultant, Mobile App Engineer",
+    ):
+        assert is_software_role(title) is True, title
+
+
+# --- the bare `programmer` accept, qualified -------------------------------
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "CNC Programmer", "CNC Programmer II, Second Shift", "Lead CMM Programmer",
+        "NC Programmer - Senior", "CNC / NC Programmer",
+        "Instrumentation and Controls Programmer",
+        "Engineering Tech - Laser and Tool Room Programmer 1st Shift",
+        "Lead Metering Programmer",
+        "Metrology Engineer/CMM Programmer, Maritime Division",
+        "Programmer Analyst II", "Senior Programmer Analyst-Oracle",
+    ],
+)
+def test_machinist_and_clerical_programmers_are_not_software(title: str) -> None:
+    """28 machinists were sitting in a software archive.
+
+    Found by probing a rule that turned out to be wrong for its own purpose —
+    a shift-word filter matched them, which is how they surfaced at all.
+    """
+    assert is_software_role(title) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Engine Programmer", "Sound Programmer", "C++ Programmer",
+        "Senior UI Programmer", "Senior Language Programmer",
+        "Research Programmer II", "Senior Scientific Programmer",
+        "High Performance Low Level Programmer",
+    ],
+)
+def test_programmer_stays_a_software_word(title: str) -> None:
+    """Games and research use "Programmer" as the ordinary word for the job.
+
+    Which is why the machining senses are blocked by name rather than the accept
+    being removed.
+    """
+    assert is_software_role(title) is True
+
+
+# --- early career and flight: two more preference categories ---------------
+
+
+@pytest.mark.parametrize(
+    "title,category",
+    [
+        ("Software Engineering Intern", "early_career"),
+        ("Software Engineer Intern", "early_career"),
+        ("Software Developer Intern", "early_career"),
+        ("Software Engineer (New Grad)", "early_career"),
+        ("New Grad Software Engineer", "early_career"),
+        ("Data Science Intern", "early_career"),
+        ("Software Engineering Co-op", "early_career"),
+        ("Senior Flight Software Engineer", "flight"),
+        ("Flight Software Engineer II", "flight"),
+        ("Space Flight Software Engineer, C++", "flight"),
+        ("Avionics Integration Engineer", "flight"),
+        ("Avionics Production Engineer", "flight"),
+    ],
+)
+def test_the_new_categories_round_trip(title: str, category: str) -> None:
+    """Excluded by default, restored by their own flag.
+
+    The round-trip is the point: an exclusion whose accept pattern does not name
+    the same titles gives a flag that silently half-works. "Data Science Intern"
+    is here because it caught exactly that — the accept list spelled
+    "data scientist" but not "data science".
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == category
+    assert is_software_role(title) is False
+    assert is_software_role(title, allow_roles=[category]) is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Internal Tools Engineer", "Senior Software Engineer, Internal Tools",
+        "Software Engineer, Internal Platforms",
+        "Internationalization Software Engineer, Input Experience",
+        "International Payments Software Engineer",
+    ],
+)
+def test_early_career_does_not_catch_internal_or_international(title: str) -> None:
+    """The trap in this rule, and the reason it is word-anchored.
+
+    A bare `intern` substring matches "internal" and "internationalization"; 13
+    titles in the archive carry one or the other.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) != "early_career"
+
+
+def test_flight_engineer_is_a_different_job_from_flight_software() -> None:
+    """Both excluded, for different reasons that should not be conflated.
+
+    "Flight Engineer" is cockpit crew and has always been in the blocklist —
+    not a software job at all. "Flight Software Engineer" is genuine C++ work,
+    excluded by preference as embedded, and restorable with a flag. Only the
+    second belongs to the category.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role("Flight Engineer") is None
+    assert is_software_role("Flight Engineer", allow_roles=["flight"]) is False
+    assert is_excluded_role("Flight Software Engineer") == "flight"
+    assert is_software_role("Flight Software Engineer", allow_roles=["flight"]) is True
 
 
 def test_blocklist_beats_allowlist() -> None:
@@ -491,7 +732,11 @@ def test_exclusions_do_not_re_admit_non_software_roles() -> None:
         ("Systems Engineer", "systems"),
         ("Senior Systems Engineer", "systems"),
         ("IT Systems Engineer", "systems"),
-        ("Avionics Systems Engineer", "systems"),
+        # "Avionics Systems Engineer" used to live here. It is now held by
+        # `flight` as well, so `--include-roles systems` alone cannot restore it
+        # — correctly, since it is an avionics role. Two categories overlapping
+        # is fine; asserting a single-flag round-trip on such a title is not.
+        ("Spacecraft Data Systems Engineer", "systems"),
 
         ("Systems Architect", "systems"),
         ("Security Engineer", "security"),
@@ -579,6 +824,8 @@ def test_each_flag_re_admits_only_its_own_category() -> None:
         "network": "Network Engineer", "systems": "Systems Engineer",
         "security": "Security Engineer", "analyst": "Data Analyst",
         "firmware": "Firmware Engineer",
+        "early_career": "Software Engineering Intern",
+        "flight": "Flight Software Engineer",
     }
     assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
     for category, title in sample.items():

@@ -400,8 +400,18 @@ row is dropped rather than allowed to pollute the dataset.
   for that is one line in `_SOFTWARE_TERMS`.
 
   The blocklist is still checked first and still matters, for titles that name something
-  real but wrong: "Sales Engineer", "Solutions Engineer", "Mechanical Engineer",
-  "Business Developer", "Technical Recruiter".
+  real but wrong: "Sales Engineer", "Solutions Engineer", "Enterprise Architect",
+  "Mechanical Engineer", "Business Developer", "Technical Recruiter", "CNC Programmer".
+
+  Both lists allow up to two words between a qualifier and the role noun, so "iOS
+  Frameworks Engineer" is kept and "Mechanical Reliability Engineer" is rejected. The
+  accept side runs that gap over qualifiers no middle word can make non-software
+  (`software`, `iOS`, `machine learning`, `cloud`), and the block side over physical
+  disciplines no middle word can make software (`mechanical`, `silicon`, `VLSI`, `optical`).
+  Words where the middle of the title decides — `design`, `systems`, `data`, `validation` —
+  are on neither list and keep requiring adjacency. One exemption outranks the block side:
+  a title saying **"Software Engineer" outright** is kept regardless, which is what
+  separates "Optical Software Engineer" from "Optical Design Engineer".
 
   A department alone never rescues a title. `Engineering` is the department nearly every
   engineering board files postings under, so it is no evidence that an engineer is a
@@ -434,9 +444,21 @@ row is dropped rather than allowed to pollute the dataset.
   | `security` | security engineer / analyst / architect, **application & product security**, cyber security, InfoSec, SecOps, penetration testing | `--include-roles security` |
   | `analyst` | data analyst, **analytics engineer** | `--include-roles analyst` |
   | `firmware` | firmware and embedded — Firmware Engineer, Embedded Software Engineer, Embedded Developer | `--include-roles firmware` |
+  | `early_career` | intern, internship, co-op, apprentice, trainee, new grad, university/college grad | `--include-roles early_career` |
+  | `flight` | flight software, flight control/test/systems, avionics — embedded software on a vehicle | `--include-roles flight` |
 
   `--include-roles` is repeatable. `--include-qa` and `--include-management` remain as
   shorthand for the first two.
+
+  Every exclusion pattern is spelled to match an accept pattern that names the same
+  titles. Without that the flag half-works — it catches a spelling the accept list does
+  not name, so nothing restores it and no error says why. `early_career` needed
+  "data science" adding for exactly this reason, and it is word-anchored throughout
+  because a bare `intern` substring also matches "internal" and "international".
+
+  Note `flight` is a *preference*: "Flight Software Engineer" is genuine C++ work,
+  excluded as embedded on the same reasoning as `firmware`. "Flight Engineer" is a
+  different job entirely — cockpit crew — and is in the blocklist, not this table.
 
   The category word does not have to sit next to the role noun — up to two words may
   come between, so "Systems **Integration** Engineer" and "Lead Systems **Operations**

@@ -27,7 +27,11 @@ _SOFTWARE_TERMS = [
     r"\bmobile\s+(engineer|developer)", r"\b(ios|android)\s+(engineer|developer)",
     r"\b(devops|sre|site\s+reliability)\b",
     r"\bplatform\s+engineer", r"\binfrastructure\s+engineer", r"\bcloud\s+engineer",
-    r"\bdata\s+(engineer|scientist)", r"\banalytics\s+engineer",
+    # "science" as well as "scientist": "Data Science Intern" and "Data Science
+    # Manager" name the field rather than the person, and without it
+    # `--include-roles early_career` could not restore the intern postings it
+    # excludes — the half-working-flag shape.
+    r"\bdata\s+(engineer|scientist|science)", r"\banalytics\s+engineer",
     r"\b(machine\s+learning|ml|ai|deep\s+learning)\s+(engineer|scientist|researcher)",
     r"\bresearch\s+(engineer|scientist)\b",
     r"\bsecurity\s+engineer", r"\bapplication\s+security", r"\bappsec\b",
@@ -165,6 +169,42 @@ _NOT_SOFTWARE_TERMS = [
     # department-confirmable word in `_GENERIC_TECH` — dropping the accept alone
     # let "Solutions Architect" back in under an Engineering department.
     r"\bsolutions?\s+(engineer|architect)\b",
+    # Same family as "Solutions Architect": strategy and governance rather than
+    # building anything. "enterprise" is in the architect qualifier list in
+    # `_SOFTWARE_TERMS`, so this has to be blocked rather than un-accepted.
+    r"\b(enterprise|business|information)\s+architect\b",
+    # Vendor-platform work routing around the removed enterprise-stack accept.
+    # "Salesforce Technical Architect" and "ServiceNow Senior Tech Lead" match
+    # `technical architect` / `tech lead`, neither of which asks for a software
+    # qualifier, so dropping the vendor accept alone did not remove them.
+    # Two lookaheads from the start rather than one after the vendor name: the
+    # role word sits on either side in real titles ("Salesforce Technical
+    # Architect" but also "Senior Technical Consultant - Salesforce DevOps"),
+    # and a trailing-only lookahead silently missed the second shape.
+    r"^(?=.*\b(salesforce|servicenow|sap|abap|siebel|sharepoint|peoplesoft|"
+    r"workday|netsuite|dynamics\s+365)\b)"
+    r"(?=.*\b(architect|tech(nical)?\s+lead|consultant)\b)",
+    # Pre-sales in any role noun. `pre-sales engineer` was already blocked above;
+    # the architect spelling was not, so "Technical Architect (Pre-Sales)" and
+    # "Pre-Sales Data and AI Architect" came through. This also outranks the
+    # `forward deployed engineer` accept for "Forward Deployed Engineer |
+    # Pre-sales", which is the correct precedence — the work is pre-sales.
+    r"\bpre[\s-]?sales\b", r"\bpartner\s+(technical\s+)?architect\b",
+    # Two or more seniority words run together with no separator
+    # ("SeniorStaffPrincipal Software Consultant", "PrincipalStaff Test
+    # Consultant"). Not a title anyone writes; it is a churned-listing tell.
+    r"\b(?:senior|staff|principal|lead|junior|associate|sr|jr)"
+    r"(?:senior|staff|principal|lead|junior|associate)+\b",
+    # Machining and IT-clerical senses of "programmer", which the bare
+    # `\bprogrammer\b` accept admits. Deliberately narrow: games and research use
+    # "Programmer" as the ordinary word for a software engineer, so "Engine
+    # Programmer", "Sound Programmer" and "C++ Programmer" must survive.
+    # Two words of slack: "Instrumentation and Controls Programmer" and
+    # "Laser and Tool Room Programmer" are the real shapes, and requiring
+    # adjacency here would repeat the very bug this round is fixing elsewhere.
+    r"\b(cnc|cmm|nc|machine\s+tool|laser|mill|lathe|tool\s+room|metering|"
+    r"metrology|instrumentation)\b(?:\s+\w+){0,2}\s+programmer\b",
+    r"\bprogrammer\s+analyst\b",
     # Recruiting / admin roles that mention engineering.
     r"\bengineer(ing)?\s+(technician|technologist|aide|assistant|clerk|"
     r"intern(ship)?\s+program\s+coordinator|manager\s+of\s+facilities)",
@@ -316,6 +356,50 @@ _QUALIFIED_SOFTWARE_RE = re.compile(
     re.I,
 )
 
+#: And the same adjacency fix on the *blocklist*, which never got it.
+#:
+#: `_NOT_SOFTWARE_TERMS` spells its disciplines as `(mechanical|...)\s+engineer`,
+#: so it catches "Mechanical Engineer" and misses "Mechanical Reliability
+#: Engineer". Once the allowlist began accepting generic role nouns on their own
+#: — `integration engineer`, `reliability engineer`, `performance engineer` —
+#: that gap became the way hardware got in. 85 postings: "Hardware Integration
+#: Engineer", "Senior VLSI Integration Engineer", "SoC Silicon Reliability
+#: Engineer", "IC Packaging Integration Engineer".
+#:
+#: A curated subset of the disciplines, not the whole list. `_NOT_SOFTWARE_TERMS`
+#: also names "validation", "process", "distribution", "energy" and "field",
+#: which an intervening word genuinely can make software ("Content Distribution
+#: Engineer", "Process Automation Engineer") — those keep requiring adjacency.
+#: Listed here are only the physical disciplines where no middle word can change
+#: the answer.
+_HARDWARE_DISCIPLINE = (
+    r"mechanical|civil|structural|electrical|chemical|aerospace|petroleum|"
+    r"mining|nuclear|biomedical|geotechnical|hardware|optical|photonic|"
+    r"packaging|materials|thermal|acoustic|automotive|marine|agricultural|"
+    r"metallurgical|metallurgy|foundry|boiler|elevator|refrigeration|pipeline|"
+    r"drilling|subsea|hydraulic|pneumatic|corrosion|ceramics|polymer|"
+    r"asic|fpga|rtl|vlsi|silicon|semiconductor|analog|\bpcb\b|\brf\b"
+)
+_HARDWARE_NEAR_RE = re.compile(
+    rf"\b(?:{_HARDWARE_DISCIPLINE})\b{_GAP}(?:engineer|developer)\b",
+    re.I,
+)
+
+#: The exemption that makes the rule above safe rather than harmful.
+#:
+#: Eight of those 85 say "Software Engineer" outright — "Optical Software
+#: Engineer", "Senior VLSI CAD Software Engineer", "Silicon Validation Software
+#: Engineer", "Analog Mixed-Signal Modeling Software Engineer". They write
+#: software for hardware teams, and they are the difference between this rule
+#: removing 77 wrong rows and removing 85 including 8 right ones.
+#:
+#: Only the explicit spelling counts. "Optical Design Engineer" names no software
+#: role and stays blocked.
+_EXPLICIT_SOFTWARE_RE = re.compile(
+    r"\bsoftware\s+(engineer|developer|dev)\b|\bsde\b|\bswe\b",
+    re.I,
+)
+
 #: Networking infrastructure.
 _NETWORK_RE = re.compile(
     rf"\bnetwork(?:ing)?\b{_GAP}{_ROLE_NOUN}\b",
@@ -379,6 +463,34 @@ _ANALYST_RE = re.compile(r"\bdata\s+analyst\b|\banalytics\s+engineer\b", re.I)
 #: rather than one job title vs another. ~750 postings.
 _FIRMWARE_RE = re.compile(r"\bfirmware\b|\bembedded\b", re.I)
 
+#: Internships, co-ops, apprenticeships and new-grad postings.
+#:
+#: Word-anchored throughout, and that is the whole difficulty: a bare `intern`
+#: substring also matches "internal" and "international", which 13 titles in the
+#: archive carry ("Internal Tools Engineer", "International Payments"). ~349
+#: postings.
+_EARLY_CAREER_RE = re.compile(
+    r"\bintern(ship)?s?\b|\bco-?ops?\b|\bapprentice(ship)?\b|\btrainee\b|"
+    r"\bnew\s+grad(uate)?\b|\b(university|college)\s+grad(uate)?\b|"
+    r"\bearly\s+career\b|\bcampus\s+hire\b",
+    re.I,
+)
+
+#: Flight software and avionics.
+#:
+#: "Senior Flight Software Engineer" is genuine C++ work, so this is a
+#: preference rather than a not-software judgement — which is why it lives here
+#: and not in `_NOT_SOFTWARE_TERMS`. It is embedded software on a vehicle, and
+#: the same reasoning that excluded `firmware` excludes it. The avionics
+#: production and test roles caught alongside are hardware regardless. ~54.
+#:
+#: `\bflight\s+engineer` is separately in `_NOT_SOFTWARE_TERMS` — that one is a
+#: cockpit crew role, a different job that happens to share the words.
+_FLIGHT_RE = re.compile(
+    r"\bflight\s+(software|control|test|systems?|dynamics)\b|\bavionics\b",
+    re.I,
+)
+
 #: Category name -> matcher. A registry rather than one boolean parameter per
 #: category: with six of them, separate flags would mean six booleans threaded
 #: through five function signatures and the CLI, and wiring one to only half the
@@ -397,6 +509,8 @@ EXCLUDED_ROLES: dict[str, Any] = {
     "security": lambda text: bool(_SECURITY_RE.search(text)),
     "analyst": lambda text: bool(_ANALYST_RE.search(text)),
     "firmware": lambda text: bool(_FIRMWARE_RE.search(text)),
+    "early_career": lambda text: bool(_EARLY_CAREER_RE.search(text)),
+    "flight": lambda text: bool(_FLIGHT_RE.search(text)),
 }
 
 #: Stable order for the CLI's `choices` and for anything that reports by
@@ -463,6 +577,11 @@ def is_software_role(
     if is_excluded_role(text, allow_roles):
         return False
     if _NOT_SOFTWARE_RE.search(text):
+        return False
+    # A hardware discipline a word or two from the role noun, unless the title
+    # says "Software Engineer" outright — that exemption is what keeps "Optical
+    # Software Engineer" while dropping "Optical Design Engineer".
+    if _HARDWARE_NEAR_RE.search(text) and not _EXPLICIT_SOFTWARE_RE.search(text):
         return False
     if _SOFTWARE_RE.search(text) or _QUALIFIED_SOFTWARE_RE.search(text):
         return True
@@ -715,6 +834,8 @@ def cheap_prefilter(
     if is_excluded_role(text, allow_roles):
         return False
     if _NOT_SOFTWARE_RE.search(text):
+        return False
+    if _HARDWARE_NEAR_RE.search(text) and not _EXPLICIT_SOFTWARE_RE.search(text):
         return False
     # `_GENERIC_TECH` alone is enough to pass here, deliberately without the
     # department confirmation `is_software_role` requires of it: a listing often

@@ -288,9 +288,14 @@ what the liveness probe exists to cover.
   every other engineering profession and no blocklist can enumerate them all — the rule
   that accepted it admitted 5,035 of 22,839 postings, four fifths hardware or generic. A
   blocklist still runs first, for titles that name something real but wrong ("Sales
-  Engineer", "Solutions Engineer", "Mechanical Engineer"). A department confirms only
-  genuinely ambiguous words (`Scientist`, `Architect`, `Intern`) — never a bare
-  `Engineer`, since `Engineering` is the department almost every posting carries.
+  Engineer", "Solutions Engineer", "Enterprise Architect", "Mechanical Engineer", "CNC
+  Programmer"). A department confirms only genuinely ambiguous words (`Scientist`,
+  `Architect`, `Intern`) — never a bare `Engineer`, since `Engineering` is the department
+  almost every posting carries. Both lists allow two words between a qualifier and the
+  role noun, over curated subsets in each direction; a title saying "Software Engineer"
+  outright outranks the block side, which is what keeps "Optical Software Engineer" while
+  dropping "Optical Design Engineer". Nine categories are then excluded by preference and
+  restorable with `--include-roles`.
 - **US eligibility** — a *can't-rule-it-out* test, not a guarantee. Bare `Remote`,
   missing locations and anything unrecognised are **accepted**; only a named non-US place
   or a region-locked remote scope (`Remote - EMEA`, `EU residents only`) is rejected.
