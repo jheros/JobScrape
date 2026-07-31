@@ -34,7 +34,6 @@ from jobscrape.models import Job
         "iOS Developer",
         "Principal Architect, Cloud Platform",
         "Python Developer",
-        "Embedded Firmware Engineer",
     ],
 )
 def test_software_titles_accepted(title: str) -> None:
@@ -416,20 +415,29 @@ def test_titles_the_filter_never_wanted_stay_rejected(title: str, category: str)
     assert is_software_role(title, allow_roles=[category]) is False
 
 
-def test_distributed_and_embedded_systems_are_software_not_systems_engineering() -> None:
-    """The one real piece of collateral in the "systems" category.
-
-    "Distributed Systems Engineer" is core backend work and "Embedded Systems
-    Engineer" is firmware; neither is the systems-engineering discipline being
-    excluded. 30 postings in the archive, and the suite already asserted the
-    first of these should be kept before this category existed.
-    """
+def test_distributed_systems_is_software_not_systems_engineering() -> None:
+    """Backend stays. Distributed systems is core backend work and systems
+    programming is OS/compiler work; neither is the systems-engineering
+    discipline being excluded, and the suite asserted the first of these should
+    be kept before the category existed."""
     from jobscrape.filters import is_excluded_role
 
     for title in ("Distributed Systems Engineer", "Senior Distributed Systems Engineer",
-                  "Embedded Systems Engineer", "Systems Programmer"):
+                  "Systems Programmer", "Senior Software Engineer - Distributed Systems"):
         assert is_excluded_role(title) is None, title
         assert is_software_role(title) is True, title
+
+
+def test_embedded_systems_is_firmware_and_no_longer_protected() -> None:
+    """Firmware goes. "Embedded Systems Engineer" was carved out of the systems
+    rule as a software discipline; it is firmware work, and firmware is now its
+    own excluded category."""
+    from jobscrape.filters import is_excluded_role
+
+    for title in ("Embedded Systems Engineer", "Embedded Software Engineer",
+                  "Firmware Engineer", "Embedded Developer"):
+        assert is_excluded_role(title) is not None, title
+        assert is_software_role(title) is False, title
 
 
 def test_each_flag_re_admits_only_its_own_category() -> None:
@@ -439,6 +447,7 @@ def test_each_flag_re_admits_only_its_own_category() -> None:
         "qa": "QA Engineer", "management": "Engineering Manager",
         "network": "Network Engineer", "systems": "Systems Engineer",
         "security": "Security Engineer", "analyst": "Data Analyst",
+        "firmware": "Firmware Engineer",
     }
     assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
     for category, title in sample.items():
@@ -468,3 +477,66 @@ def test_core_software_roles_survive_all_six_exclusions(title: str) -> None:
     """SRE, Platform, Infrastructure and Cloud are the ones a careless
     `systems` or `security` pattern would sweep up."""
     assert is_software_role(title) is True
+
+
+# --- the category word need not sit next to the role noun ------------------
+#
+# The original patterns required adjacency, so "Systems Engineer" was caught
+# while "Systems Integration Engineer" was not. Measured on 24,057 open
+# postings, 1,481 titles named a category and NONE were caught — every adjacent
+# form had already gone at fetch time, so what remained was entirely this shape.
+
+
+@pytest.mark.parametrize(
+    "title,category",
+    [
+        ("Systems Integration Engineer", "systems"),
+        ("System Design Engineer", "systems"),
+        ("System Verification Engineer", "systems"),
+        ("Lead Systems Operations Engineer", "systems"),
+        ("Sr. Systems Integration Engineer", "systems"),
+        ("Network Operations Engineer", "network"),
+        ("Network Infrastructure Engineer", "network"),
+        ("Security Systems Design Engineer", "systems"),
+        ("Security Operations Engineer", "security"),
+    ],
+)
+def test_an_interposed_word_does_not_let_a_role_through(title: str, category: str) -> None:
+    from jobscrape.filters import cheap_prefilter, is_excluded_role
+
+    assert is_excluded_role(title) == category
+    assert is_software_role(title) is False
+    assert cheap_prefilter(title) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Senior Software Engineer - Distributed Systems",
+        "Staff Software Engineer, Security",
+        "Machine Learning Engineer - Computer Vision & Data Systems",
+        "Software Development Engineer - Security, Enterprise Technology Services",
+        "Senior Backend Engineer, Payments Systems",
+    ],
+)
+def test_a_software_head_noun_survives_a_trailing_category(title: str) -> None:
+    """This is what separates the rule from a blanket keyword ban.
+
+    The head noun is software and the category names the team or domain, so the
+    posting is a software role that happens to mention systems or security.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) is None, title
+    assert is_software_role(title) is True, title
+
+
+def test_the_gap_is_bounded_at_two_words() -> None:
+    """Unbounded, a category word at one end of a title would bind to a role
+    noun at the other, which is how a targeted rule becomes a keyword ban."""
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role("Systems Integration Engineer") == "systems"       # 1 word
+    assert is_excluded_role("Systems Platform Integration Engineer") == "systems"  # 2
+    # Four words between: too far to be the same noun phrase.
+    assert is_excluded_role("Systems that support our growing team Engineer") is None

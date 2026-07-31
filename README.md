@@ -422,13 +422,21 @@ row is dropped rather than allowed to pollute the dataset.
   | `systems` | systems engineer / administrator / architect / analyst, sysadmin | `--include-roles systems` |
   | `security` | security engineer / analyst / architect, **application & product security**, cyber security, InfoSec, SecOps, penetration testing | `--include-roles security` |
   | `analyst` | data analyst, **analytics engineer** | `--include-roles analyst` |
+  | `firmware` | firmware and embedded — Firmware Engineer, Embedded Software Engineer, Embedded Developer | `--include-roles firmware` |
 
   `--include-roles` is repeatable. `--include-qa` and `--include-management` remain as
   shorthand for the first two.
 
-  **Distributed systems, embedded systems and systems programming are kept** — those are
-  software disciplines, not the systems-engineering one. Without that carve-out
-  "Distributed Systems Engineer" would be swept up by the `systems` rule.
+  The category word does not have to sit next to the role noun — up to two words may
+  come between, so "Systems **Integration** Engineer" and "Lead Systems **Operations**
+  Engineer" are caught, not just the adjacent form. That bound matters: unbounded, a
+  category word at one end of a title would bind to a role noun at the other, turning a
+  targeted rule into a keyword ban.
+
+  **A software head noun survives a trailing category.** "Senior Software Engineer —
+  Distributed Systems" and "Staff Software Engineer, Security" are software roles that name
+  a team, and they stay. **Distributed systems and systems programming** are also kept
+  outright as software disciplines; embedded systems is not, since it is firmware.
 
   Management is read from `jobscrape/seniority.py` rather than a second set of regexes,
   which is what gets the hard cases right: **"Chief Engineer" is kept** (in aerospace and

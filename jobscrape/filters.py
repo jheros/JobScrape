@@ -230,10 +230,27 @@ _QA_RE = re.compile("|".join(_QA_TERMS), re.I)
 #: Operations" and "VP Engineering" would otherwise still pass.
 MANAGEMENT_LEVELS = frozenset({"manager", "director", "executive"})
 
+#: The role nouns a category word can modify. Shared by the three patterns
+#: below so they widen together and cannot drift apart.
+_ROLE_NOUN = r"(?:engineer|architect|administrator|analyst|specialist|developer)"
+
+#: Up to two words may sit between the category word and the role noun.
+#:
+#: Without this the rules only fired when the two were adjacent, which is not
+#: how titles are actually written: "Systems Engineer" was caught while "Systems
+#: **Integration** Engineer", "System **Design** Engineer" and "Lead Systems
+#: **Operations** Engineer" all sailed through. Measured on 24,057 open
+#: postings, 1,481 titles named a category and *none* of them were caught,
+#: because every adjacent form had already been removed at fetch time.
+#:
+#: Two words, not unbounded: enough for the real shapes, while stopping a
+#: category word at one end of a long title from binding to a role noun at the
+#: other. "Senior Software Engineer - Distributed Systems" keeps its head noun.
+_GAP = r"(?:\s+\w+){0,2}\s+"
+
 #: Networking infrastructure.
 _NETWORK_RE = re.compile(
-    r"\bnetwork(ing)?\s+engineer\b"
-    r"|\bnetwork\s+(architect|administrator|specialist|analyst)\b",
+    rf"\bnetwork(?:ing)?\b{_GAP}{_ROLE_NOUN}\b",
     re.I,
 )
 
@@ -246,17 +263,23 @@ _NETWORK_RE = re.compile(
 #: cost is a handful of genuine software titles carrying the word, "Backend and
 #: System Engineer, Flows" being the clearest.
 _SYSTEMS_RE = re.compile(
-    r"\bsystems?\s+(engineer|administrator|architect|analyst)\b|\bsysadmin\b",
+    rf"\bsystems?\b{_GAP}{_ROLE_NOUN}\b|\bsysadmin\b",
     re.I,
 )
 
 #: "Systems" that names a *software* discipline rather than the systems
-#: engineering one. Distributed systems is core backend work and embedded
-#: systems is firmware — neither is what "no systems engineer" means, and the
-#: test suite already asserted "Distributed Systems Engineer" should be kept
-#: before this category existed. 30 postings in the archive.
+#: engineering one.
+#:
+#: Distributed systems is core backend work and systems programming is OS and
+#: compiler work; neither is what "no systems engineer" means, and the test
+#: suite asserted "Distributed Systems Engineer" should be kept before this
+#: category existed.
+#:
+#: **Embedded systems used to be here and is not any more** — it belongs to the
+#: `firmware` category now, which is excluded outright. Backend stays, firmware
+#: goes.
 _SOFTWARE_SYSTEMS_RE = re.compile(
-    r"\bdistributed\s+systems?\b|\bembedded\s+systems?\b|\bsystems?\s+programm",
+    r"\bdistributed\s+systems?\b|\bsystems?\s+programm",
     re.I,
 )
 
@@ -267,7 +290,7 @@ _SOFTWARE_SYSTEMS_RE = re.compile(
 #: AppSec is still security work". `\bsecurity\s+operations\b` catches SecOps
 #: without matching an unrelated "operations engineer".
 _SECURITY_RE = re.compile(
-    r"\bsecurity\s+(engineer|analyst|architect|specialist|operations)\b"
+    rf"\bsecurity\b{_GAP}{_ROLE_NOUN}\b|\bsecurity\s+operations\b"
     r"|\bapplication\s+security\b|\bappsec\b|\bproduct\s+security\b"
     r"|\bcyber\s*security\b|\binfosec\b|\bpenetration\s+test",
     re.I,
@@ -279,6 +302,14 @@ _SECURITY_RE = re.compile(
 #: Developer/Analyst", a software role with an unfortunate title, and every
 #: Business/Security/Systems Analyst that the other categories already handle.
 _ANALYST_RE = re.compile(r"\bdata\s+analyst\b|\banalytics\s+engineer\b", re.I)
+
+#: Firmware and embedded work.
+#:
+#: A bare word match on purpose — "Firmware Engineer", "Embedded Software
+#: Engineer", "Embedded Developer" and "Embedded Systems Engineer" are all the
+#: same kind of work, and the distinction you drew was backend vs firmware
+#: rather than one job title vs another. ~750 postings.
+_FIRMWARE_RE = re.compile(r"\bfirmware\b|\bembedded\b", re.I)
 
 #: Category name -> matcher. A registry rather than one boolean parameter per
 #: category: with six of them, separate flags would mean six booleans threaded
@@ -297,6 +328,7 @@ EXCLUDED_ROLES: dict[str, Any] = {
     ),
     "security": lambda text: bool(_SECURITY_RE.search(text)),
     "analyst": lambda text: bool(_ANALYST_RE.search(text)),
+    "firmware": lambda text: bool(_FIRMWARE_RE.search(text)),
 }
 
 #: Stable order for the CLI's `choices` and for anything that reports by
