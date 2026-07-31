@@ -10,6 +10,7 @@ from datetime import date
 import pytest
 
 from jobscrape.filters import (
+    EXCLUDED_ROLE_NAMES,
     apply_filters,
     in_window,
     is_software_role,
@@ -31,7 +32,6 @@ from jobscrape.models import Job
         "Machine Learning Engineer",
         "Data Engineer",
         "iOS Developer",
-        "Security Engineer, Application Security",
         "Principal Architect, Cloud Platform",
         "Python Developer",
         "Embedded Firmware Engineer",
@@ -84,7 +84,7 @@ def test_non_software_department_vetoes_a_bare_title() -> None:
     [
         "AI Engineer", "AI/ML Engineer", "Founding Engineer", "Production Engineer",
         "Product Engineer", "Web Engineer", "Implementations Engineer",
-        "Growth Engineer", "Data Analyst", "Platform Developer",
+        "Growth Engineer", "Platform Developer",
         "Reliability Engineer", "Member of Technical Staff", "MLOps Engineer",
         "LLM Engineer", "Computer Vision Engineer", "BI Engineer",
         "Distributed Systems Engineer", "Kernel Developer", "Release Engineer",
@@ -288,13 +288,13 @@ QA_ALREADY_REJECTED = [
 @pytest.mark.parametrize("title", QA_PREVIOUSLY_ACCEPTED)
 def test_qa_roles_excluded(title: str) -> None:
     assert is_software_role(title) is False
-    assert is_software_role(title, exclude_qa=False) is True
+    assert is_software_role(title, allow_roles=["qa"]) is True
 
 
 @pytest.mark.parametrize("title", QA_ALREADY_REJECTED)
 def test_qa_titles_the_filter_never_wanted_stay_rejected(title: str) -> None:
     assert is_software_role(title) is False
-    assert is_software_role(title, exclude_qa=False) is False
+    assert is_software_role(title, allow_roles=["qa"]) is False
 
 
 @pytest.mark.parametrize(
@@ -309,7 +309,7 @@ def test_qa_titles_the_filter_never_wanted_stay_rejected(title: str) -> None:
 )
 def test_management_roles_excluded(title: str) -> None:
     assert is_software_role(title) is False
-    assert is_software_role(title, exclude_management=False) is True
+    assert is_software_role(title, allow_roles=["management"]) is True
 
 
 @pytest.mark.parametrize(
@@ -332,13 +332,139 @@ def test_senior_ic_roles_are_kept(title: str) -> None:
 
 def test_the_two_exclusions_are_independent() -> None:
     """Each flag re-admits only its own category."""
-    assert is_software_role("QA Engineer", exclude_management=False) is False
-    assert is_software_role("Engineering Manager", exclude_qa=False) is False
+    assert is_software_role("QA Engineer", allow_roles=["management"]) is False
+    assert is_software_role("Engineering Manager", allow_roles=["qa"]) is False
 
 
 def test_exclusions_do_not_re_admit_non_software_roles() -> None:
     """--include-qa must not become a general "keep everything" switch."""
     for title in ("Mechanical Engineer", "Sales Engineer", "Registered Nurse"):
         assert is_software_role(
-            title, exclude_qa=False, exclude_management=False
+            title, allow_roles=EXCLUDED_ROLE_NAMES
         ) is False
+
+
+# --- network / systems / security / analyst --------------------------------
+#
+# Four more categories held out by preference, same mechanism as QA and
+# management. All four ARE software work under the accept lists; each is
+# individually reversible with `--include-roles`.
+
+
+@pytest.mark.parametrize(
+    "title,category",
+    [
+        ("Network Engineer", "network"),
+        ("Senior Network Engineer", "network"),
+        ("Networking Engineer", "network"),
+
+        ("Systems Engineer", "systems"),
+        ("Senior Systems Engineer", "systems"),
+        ("IT Systems Engineer", "systems"),
+        ("Avionics Systems Engineer", "systems"),
+
+        ("Systems Architect", "systems"),
+        ("Security Engineer", "security"),
+        ("Senior Security Engineer", "security"),
+        ("Application Security Engineer", "security"),
+        ("Product Security Engineer", "security"),
+        ("Cyber Security Engineer", "security"),
+        ("Cloud Security Engineer", "security"),
+
+        ("Data Analyst", "analyst"),
+        ("Senior Data Analyst", "analyst"),
+        ("Analytics Engineer", "analyst"),
+    ],
+)
+def test_excluded_categories(title: str, category: str) -> None:
+    """Excluded by default, re-admitted by its own flag.
+
+    Every title here was accepted by the filter before these categories
+    existed, so the round-trip is meaningful — it is what keeps the
+    corresponding accept patterns in `_SOFTWARE_TERMS` earning their place
+    rather than being dead weight to delete.
+    """
+    from jobscrape.filters import cheap_prefilter, is_excluded_role
+
+    assert is_excluded_role(title) == category
+    assert is_software_role(title) is False
+    # Both decision points must agree. The invariant test between them is
+    # one-directional, so it cannot catch a prefilter that forgot a category.
+    assert cheap_prefilter(title) is False
+    assert is_software_role(title, allow_roles=[category]) is True
+
+
+@pytest.mark.parametrize(
+    "title,category",
+    [
+        ("Network Architect", "network"),
+        ("Systems Administrator", "systems"),
+        ("Security Analyst", "security"),
+    ],
+)
+def test_titles_the_filter_never_wanted_stay_rejected(title: str, category: str) -> None:
+    """These match a category but were never in the accept list either.
+
+    `--include-roles` re-admits what the filter used to keep, not everything
+    the category's pattern happens to match — there is no accept pattern for
+    "Network Architect" or "Systems Administrator" to restore.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == category
+    assert is_software_role(title) is False
+    assert is_software_role(title, allow_roles=[category]) is False
+
+
+def test_distributed_and_embedded_systems_are_software_not_systems_engineering() -> None:
+    """The one real piece of collateral in the "systems" category.
+
+    "Distributed Systems Engineer" is core backend work and "Embedded Systems
+    Engineer" is firmware; neither is the systems-engineering discipline being
+    excluded. 30 postings in the archive, and the suite already asserted the
+    first of these should be kept before this category existed.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    for title in ("Distributed Systems Engineer", "Senior Distributed Systems Engineer",
+                  "Embedded Systems Engineer", "Systems Programmer"):
+        assert is_excluded_role(title) is None, title
+        assert is_software_role(title) is True, title
+
+
+def test_each_flag_re_admits_only_its_own_category() -> None:
+    from jobscrape.filters import EXCLUDED_ROLE_NAMES
+
+    sample = {
+        "qa": "QA Engineer", "management": "Engineering Manager",
+        "network": "Network Engineer", "systems": "Systems Engineer",
+        "security": "Security Engineer", "analyst": "Data Analyst",
+    }
+    assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
+    for category, title in sample.items():
+        assert is_software_role(title, allow_roles=[category]) is True
+        for other, other_title in sample.items():
+            if other != category:
+                assert is_software_role(other_title, allow_roles=[category]) is False
+
+
+def test_the_analyst_rule_is_not_a_bare_analyst_match() -> None:
+    """A bare `\banalyst\b` would take "Software Developer/Analyst" — a software
+    role with an unfortunate title — and duplicate the security/systems rules."""
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role("Software Developer/Analyst") is None
+    assert is_excluded_role("Business Analyst") is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Software Engineer", "Senior Backend Engineer", "Data Engineer",
+     "Data Scientist", "Machine Learning Engineer", "Platform Engineer",
+     "Site Reliability Engineer", "DevOps Engineer", "Infrastructure Engineer",
+     "Cloud Engineer", "Full Stack Developer", "iOS Developer"],
+)
+def test_core_software_roles_survive_all_six_exclusions(title: str) -> None:
+    """SRE, Platform, Infrastructure and Cloud are the ones a careless
+    `systems` or `security` pattern would sweep up."""
+    assert is_software_role(title) is True

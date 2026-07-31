@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Iterable
+from typing import Any, Iterable
 
 from . import seniority
 from .models import Job
@@ -230,37 +230,117 @@ _QA_RE = re.compile("|".join(_QA_TERMS), re.I)
 #: Operations" and "VP Engineering" would otherwise still pass.
 MANAGEMENT_LEVELS = frozenset({"manager", "director", "executive"})
 
+#: Networking infrastructure.
+_NETWORK_RE = re.compile(
+    r"\bnetwork(ing)?\s+engineer\b"
+    r"|\bnetwork\s+(architect|administrator|specialist|analyst)\b",
+    re.I,
+)
+
+#: Systems engineering and administration.
+#:
+#: The broad reading, deliberately. Sampling the archive, the large majority are
+#: aerospace and defence hardware roles — "Avionics Systems Engineer", "Fluids
+#: Systems Engineer", "Spacecraft Data Systems Engineer" — which were only ever
+#: in a software archive because "systems engineer" is in the accept list. The
+#: cost is a handful of genuine software titles carrying the word, "Backend and
+#: System Engineer, Flows" being the clearest.
+_SYSTEMS_RE = re.compile(
+    r"\bsystems?\s+(engineer|administrator|architect|analyst)\b|\bsysadmin\b",
+    re.I,
+)
+
+#: "Systems" that names a *software* discipline rather than the systems
+#: engineering one. Distributed systems is core backend work and embedded
+#: systems is firmware — neither is what "no systems engineer" means, and the
+#: test suite already asserted "Distributed Systems Engineer" should be kept
+#: before this category existed. 30 postings in the archive.
+_SOFTWARE_SYSTEMS_RE = re.compile(
+    r"\bdistributed\s+systems?\b|\bembedded\s+systems?\b|\bsystems?\s+programm",
+    re.I,
+)
+
+#: Security, including application and product security.
+#:
+#: AppSec and Product Security are genuine software-engineering disciplines and
+#: are excluded anyway: the reading chosen was "if you don't want security work,
+#: AppSec is still security work". `\bsecurity\s+operations\b` catches SecOps
+#: without matching an unrelated "operations engineer".
+_SECURITY_RE = re.compile(
+    r"\bsecurity\s+(engineer|analyst|architect|specialist|operations)\b"
+    r"|\bapplication\s+security\b|\bappsec\b|\bproduct\s+security\b"
+    r"|\bcyber\s*security\b|\binfosec\b|\bpenetration\s+test",
+    re.I,
+)
+
+#: Data analysis, including the engineering-flavoured Analytics Engineer.
+#:
+#: Note this is NOT a bare `\banalyst\b`: that would also take "Software
+#: Developer/Analyst", a software role with an unfortunate title, and every
+#: Business/Security/Systems Analyst that the other categories already handle.
+_ANALYST_RE = re.compile(r"\bdata\s+analyst\b|\banalytics\s+engineer\b", re.I)
+
+#: Category name -> matcher. A registry rather than one boolean parameter per
+#: category: with six of them, separate flags would mean six booleans threaded
+#: through five function signatures and the CLI, and wiring one to only half the
+#: call sites is exactly the failure the prefilter/filter split punishes
+#: silently.
+#:
+#: `management` has no regex — it reads the seniority ladder instead, which is
+#: why the values are callables rather than patterns.
+EXCLUDED_ROLES: dict[str, Any] = {
+    "qa": lambda text: bool(_QA_RE.search(text)),
+    "management": lambda text: seniority.classify(text) in MANAGEMENT_LEVELS,
+    "network": lambda text: bool(_NETWORK_RE.search(text)),
+    "systems": lambda text: bool(
+        _SYSTEMS_RE.search(text) and not _SOFTWARE_SYSTEMS_RE.search(text)
+    ),
+    "security": lambda text: bool(_SECURITY_RE.search(text)),
+    "analyst": lambda text: bool(_ANALYST_RE.search(text)),
+}
+
+#: Stable order for the CLI's `choices` and for anything that reports by
+#: category, so help text and logs don't reshuffle between runs.
+EXCLUDED_ROLE_NAMES: tuple[str, ...] = tuple(EXCLUDED_ROLES)
+
 
 def is_excluded_role(
     title: str | None,
-    *,
-    exclude_qa: bool = True,
-    exclude_management: bool = True,
-) -> bool:
-    """Is this a software role the archive deliberately does not collect?
+    allow: Iterable[str] = (),
+) -> str | None:
+    """Which excluded category this title falls into, or ``None``.
+
+    These are all roles that *are* software work — a QA engineer, a security
+    engineer and an engineering manager all qualify under the accept lists.
+    They are excluded by preference, and each preference is individually
+    reversible via ``allow``. That is why this is kept separate from
+    `_NOT_SOFTWARE_TERMS`, which means "not a software job at all": re-admitting
+    security roles must not also re-admit mechanical engineers.
 
     Checked *before* the accept lists by both :func:`is_software_role` and
     :func:`cheap_prefilter`. Those two are independent copies of the role
     decision and the prefilter runs before the expensive detail request, so an
     exclusion applied to only one of them half-works: the posting is downloaded
     and then discarded, or worse, kept.
+
+    Returns the category name so callers can report *why* something was
+    dropped without re-testing it.
     """
     text = (title or "").strip()
     if not text:
-        return False
-    if exclude_qa and _QA_RE.search(text):
-        return True
-    if exclude_management and seniority.classify(text) in MANAGEMENT_LEVELS:
-        return True
-    return False
+        return None
+    allowed = set(allow)
+    for name, matches in EXCLUDED_ROLES.items():
+        if name not in allowed and matches(text):
+            return name
+    return None
 
 
 def is_software_role(
     title: str | None,
     department: str | None = None,
     *,
-    exclude_qa: bool = True,
-    exclude_management: bool = True,
+    allow_roles: Iterable[str] = (),
 ) -> bool:
     """True when a posting is a software/engineering role.
 
@@ -279,8 +359,7 @@ def is_software_role(
     text = (title or "").strip()
     if not text:
         return False
-    if is_excluded_role(text, exclude_qa=exclude_qa,
-                        exclude_management=exclude_management):
+    if is_excluded_role(text, allow_roles):
         return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
@@ -517,8 +596,7 @@ def cheap_prefilter(
     location: str | None = None,
     country: str | None = None,
     *,
-    exclude_qa: bool = True,
-    exclude_management: bool = True,
+    allow_roles: Iterable[str] = (),
 ) -> bool:
     """Decide whether a listing deserves an expensive detail request.
 
@@ -540,8 +618,7 @@ def cheap_prefilter(
     text = (title or "").strip()
     if not text:
         return True
-    if is_excluded_role(text, exclude_qa=exclude_qa,
-                        exclude_management=exclude_management):
+    if is_excluded_role(text, allow_roles):
         return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
@@ -569,14 +646,13 @@ def apply_filters(
     until: date | None = None,
     software_only: bool = True,
     us_only: bool = True,
-    exclude_qa: bool = True,
-    exclude_management: bool = True,
+    allow_roles: Iterable[str] = (),
 ) -> list[Job]:
     """Apply role, location and date filters, enriching city/state as we go."""
     kept, _ = apply_filters_counted(
         jobs, since=since, until=until,
         software_only=software_only, us_only=us_only,
-        exclude_qa=exclude_qa, exclude_management=exclude_management,
+        allow_roles=allow_roles,
     )
     return kept
 
@@ -627,8 +703,7 @@ def apply_filters_counted(
     until: date | None = None,
     software_only: bool = True,
     us_only: bool = True,
-    exclude_qa: bool = True,
-    exclude_management: bool = True,
+    allow_roles: Iterable[str] = (),
 ) -> tuple[list[Job], FilterFunnel]:
     """Filter, and report why each rejected posting was rejected.
 
@@ -640,8 +715,7 @@ def apply_filters_counted(
     for job in jobs:
         funnel.seen += 1
         if software_only and not is_software_role(
-            job.title, job.department,
-            exclude_qa=exclude_qa, exclude_management=exclude_management,
+            job.title, job.department, allow_roles=allow_roles,
         ):
             funnel.dropped_role += 1
             continue

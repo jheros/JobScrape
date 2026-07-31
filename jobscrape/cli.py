@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import collections
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from .discovery import (
 )
 from . import filters as apply_filters_mod
 from .filters import (
+    EXCLUDED_ROLE_NAMES,
     FilterFunnel,
     apply_filters,
     apply_filters_counted,
@@ -41,6 +43,21 @@ from .sources import (
 from .sources.base import is_complete
 
 log = logging.getLogger("jobscrape")
+
+
+def _allowed_roles(args: argparse.Namespace) -> set[str]:
+    """Excluded categories the caller asked to re-admit.
+
+    `--include-roles` is the general form. `--include-qa` and
+    `--include-management` predate it, are documented in the README, and are
+    kept as aliases rather than broken.
+    """
+    allowed = set(getattr(args, "include_roles", None) or ())
+    if getattr(args, "include_qa", False):
+        allowed.add("qa")
+    if getattr(args, "include_management", False):
+        allowed.add("management")
+    return allowed
 
 
 def _command_line() -> str:
@@ -203,12 +220,11 @@ async def _fetch_boards(
 
     # Lets Ashby/SmartRecruiters/Workday skip detail requests for postings that
     # cannot pass the real filters — the single biggest speedup available.
+    allow_roles = _allowed_roles(args)
     relaxed_all = (args.all_roles and args.worldwide
-                   and args.include_qa and args.include_management)
+                   and allow_roles >= set(EXCLUDED_ROLE_NAMES))
     prefilter = None if relaxed_all else partial(
-        cheap_prefilter,
-        exclude_qa=not args.include_qa,
-        exclude_management=not args.include_management,
+        cheap_prefilter, allow_roles=allow_roles
     )
 
     # Postings already stored skip their detail request. Reading the ids costs
@@ -260,8 +276,7 @@ async def _fetch_boards(
         kept, board_funnel = apply_filters_counted(
             jobs, since=since, until=until,
             software_only=not args.all_roles, us_only=not args.worldwide,
-            exclude_qa=not args.include_qa,
-            exclude_management=not args.include_management,
+            allow_roles=allow_roles,
         )
         # Remember what we looked at and turned away, so the next sweep does
         # not pay for the same detail requests again.
@@ -379,8 +394,7 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                 kept_jobs, gfunnel = apply_filters_counted(
                     jobs, since=since, until=until,
                     software_only=not args.all_roles, us_only=not args.worldwide,
-                    exclude_qa=not args.include_qa,
-                    exclude_management=not args.include_management,
+                    allow_roles=_allowed_roles(args),
                 )
                 per_source[name] = gfunnel.as_dict()
                 if kept_jobs:
@@ -511,6 +525,7 @@ def cmd_purge(args: argparse.Namespace) -> int:
     archive-wide rules, so re-applying those here would delete rows that a past
     run legitimately kept for a window you asked for at the time.
     """
+    allow_roles = _allowed_roles(args)
     with db.session(args.db) as conn:
         rows = conn.execute(
             "SELECT source, source_job_id, title, department, company, posted_at FROM jobs"
@@ -519,9 +534,7 @@ def cmd_purge(args: argparse.Namespace) -> int:
         doomed = [
             r for r in rows
             if not apply_filters_mod.is_software_role(
-                r["title"], r["department"],
-                exclude_qa=not args.include_qa,
-                exclude_management=not args.include_management,
+                r["title"], r["department"], allow_roles=allow_roles,
             )
         ]
         if not doomed:
@@ -530,23 +543,17 @@ def cmd_purge(args: argparse.Namespace) -> int:
             return 0
 
         # Show what is going, grouped, before anything is destroyed.
-        by_reason: dict[str, int] = {"qa": 0, "management": 0, "other": 0}
+        # `is_excluded_role` returns the category, so this needs no re-testing.
+        by_reason: collections.Counter[str] = collections.Counter()
         for r in doomed:
-            if apply_filters_mod.is_excluded_role(
-                r["title"], exclude_qa=True, exclude_management=False
-            ):
-                by_reason["qa"] += 1
-            elif apply_filters_mod.is_excluded_role(
-                r["title"], exclude_qa=False, exclude_management=True
-            ):
-                by_reason["management"] += 1
-            else:
-                by_reason["other"] += 1
+            by_reason[
+                apply_filters_mod.is_excluded_role(r["title"], allow_roles) or "other"
+            ] += 1
 
         log.info("%s %d of %d stored postings (%.1f%%)",
                  "Would purge" if args.dry_run else "Purging",
                  len(doomed), len(rows), 100 * len(doomed) / len(rows))
-        for reason, count in by_reason.items():
+        for reason, count in by_reason.most_common():
             if count:
                 log.info("    %-12s %6d", reason, count)
         if args.sample:
@@ -816,14 +823,20 @@ def build_parser() -> argparse.ArgumentParser:
                        help="keep non-software roles too")
         p.add_argument("--worldwide", action="store_true",
                        help="keep non-US locations too")
+        p.add_argument("--include-roles", action="append", choices=EXCLUDED_ROLE_NAMES,
+                       metavar="CATEGORY",
+                       help="re-admit an excluded role category (repeatable). One of: "
+                            + ", ".join(EXCLUDED_ROLE_NAMES) + ". These are all genuine "
+                            "software roles held out by preference. Note this does not "
+                            "resurrect postings already turned away: those are recorded "
+                            "in posting_seen and skipped, so pair it with "
+                            "--refetch-details to re-evaluate them.")
+        # Shorthand that predates --include-roles and is documented in the
+        # README, so kept working rather than broken.
         p.add_argument("--include-qa", action="store_true",
-                       help="also keep QA/test/automation roles (excluded by default). "
-                            "Note this does not resurrect postings already turned away: "
-                            "those are recorded in posting_seen and skipped, so pair it "
-                            "with --refetch-details to re-evaluate them.")
+                       help="alias for --include-roles qa")
         p.add_argument("--include-management", action="store_true",
-                       help="also keep engineering manager/director/VP roles (excluded "
-                            "by default). Same caveat as --include-qa.")
+                       help="alias for --include-roles management")
 
     # discover
     p_disc = sub.add_parser("discover", help="harvest ATS company slugs from Common Crawl")
@@ -956,10 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
                          help="report what would be deleted without writing")
     p_purge.add_argument("--sample", type=int, default=0, metavar="N",
                          help="print N of the postings that would go")
+    p_purge.add_argument("--include-roles", action="append", choices=EXCLUDED_ROLE_NAMES,
+                         metavar="CATEGORY",
+                         help="spare a role category from the purge (repeatable). One of: "
+                              + ", ".join(EXCLUDED_ROLE_NAMES))
     p_purge.add_argument("--include-qa", action="store_true",
-                         help="keep QA/test/automation roles (i.e. do not purge them)")
+                         help="alias for --include-roles qa")
     p_purge.add_argument("--include-management", action="store_true",
-                         help="keep manager/director/VP roles (i.e. do not purge them)")
+                         help="alias for --include-roles management")
 
     p_dedupe = sub.add_parser("dedupe", help="collapse reposts and cross-source duplicates")
     p_dedupe.add_argument("--backfill", action="store_true",

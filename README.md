@@ -291,8 +291,8 @@ python -m jobscrape fetch --companies 50 --max-results 200
 # Keep non-software roles, or non-US locations
 python -m jobscrape fetch --all-roles --worldwide
 
-# QA and management are excluded by default; re-admit either
-python -m jobscrape fetch --include-qa --include-management
+# Six role categories are excluded by default; re-admit any of them
+python -m jobscrape fetch --include-roles security --include-roles systems
 
 # Query the archive on export
 python -m jobscrape export --state CA --search kubernetes --format xlsx
@@ -414,10 +414,21 @@ row is dropped rather than allowed to pollute the dataset.
 - **QA and management are excluded**, by preference rather than because they are not
   software roles. Two flags reverse them independently:
 
-  | Excluded | Covers | Flag |
+  | Excluded | Covers | Re-admit with |
   | --- | --- | --- |
-  | QA | QA / quality assurance, SDET, software engineer in test, tester, **test engineer**, **test automation**, **automation engineer** | `--include-qa` |
-  | Management | whatever the seniority ladder calls `manager`, `director` or `executive` | `--include-management` |
+  | `qa` | QA / quality assurance, SDET, software engineer in test, tester, **test engineer**, **test automation**, **automation engineer** | `--include-roles qa` |
+  | `management` | whatever the seniority ladder calls `manager`, `director` or `executive` | `--include-roles management` |
+  | `network` | network / networking engineer, network architect, administrator, specialist | `--include-roles network` |
+  | `systems` | systems engineer / administrator / architect / analyst, sysadmin | `--include-roles systems` |
+  | `security` | security engineer / analyst / architect, **application & product security**, cyber security, InfoSec, SecOps, penetration testing | `--include-roles security` |
+  | `analyst` | data analyst, **analytics engineer** | `--include-roles analyst` |
+
+  `--include-roles` is repeatable. `--include-qa` and `--include-management` remain as
+  shorthand for the first two.
+
+  **Distributed systems, embedded systems and systems programming are kept** — those are
+  software disciplines, not the systems-engineering one. Without that carve-out
+  "Distributed Systems Engineer" would be swept up by the `systems` rule.
 
   Management is read from `jobscrape/seniority.py` rather than a second set of regexes,
   which is what gets the hard cases right: **"Chief Engineer" is kept** (in aerospace and

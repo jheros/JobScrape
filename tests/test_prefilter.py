@@ -12,7 +12,9 @@ import itertools
 
 import pytest
 
-from jobscrape.filters import cheap_prefilter, is_software_role, is_us_location
+from jobscrape.filters import (
+    EXCLUDED_ROLE_NAMES, cheap_prefilter, is_software_role, is_us_location,
+)
 
 TITLES = [
     "Senior Software Engineer", "Staff Backend Engineer", "SDE II",
@@ -82,7 +84,7 @@ def test_prefilter_excludes_the_same_roles_as_the_full_filter(title: str) -> Non
     assert cheap_prefilter(title) is False
     assert is_software_role(title) is False
     # Both must relax together too.
-    assert cheap_prefilter(title, exclude_qa=False, exclude_management=False) is True
+    assert cheap_prefilter(title, allow_roles=EXCLUDED_ROLE_NAMES) is True
 
 
 def test_prefilter_accepts_bare_tech_titles_the_filter_accepts() -> None:
@@ -97,5 +99,5 @@ def test_prefilter_accepts_bare_tech_titles_the_filter_accepts() -> None:
     for title in ("VP Engineering", "Director of Engineering Operations",
                   "Engineering", "Dev"):
         assert cheap_prefilter(
-            title, exclude_qa=False, exclude_management=False
+            title, allow_roles=EXCLUDED_ROLE_NAMES
         ) is True, f"prefilter skipped {title!r}, which the filter accepts"

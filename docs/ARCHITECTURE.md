@@ -274,10 +274,12 @@ what the liveness probe exists to cover.
 
 ### 3d. Filtering
 
-- **Excluded by preference** — QA/test/automation and anything the seniority ladder calls
-  `manager`/`director`/`executive`. Distinct from the blocklist below, which means "not a
-  software job at all": these *are* software jobs, and each category is reversible with its
-  own flag (`--include-qa`, `--include-management`). The check runs in **both**
+- **Excluded by preference** — six categories held in a registry in `filters.py`:
+  `qa`, `management`, `network`, `systems`, `security`, `analyst`. Distinct from the
+  blocklist below, which means "not a software job at all": these *are* software jobs, and
+  each is individually reversible with `--include-roles CATEGORY`. `is_excluded_role`
+  returns the matching **category name**, so `purge` can report why a row went without
+  re-testing it. The check runs in **both**
   `is_software_role` and `cheap_prefilter` — they are independent copies of the role
   decision, and the invariant test between them is one-directional, so an exclusion applied
   to only one would silently download every QA posting before discarding it.
