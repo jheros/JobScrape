@@ -65,7 +65,10 @@ def test_prefilter_is_permissive_when_uncertain() -> None:
     assert cheap_prefilter(None) is True
     assert cheap_prefilter("") is True
     assert cheap_prefilter("Software Engineer", None, None) is True
-    assert cheap_prefilter("Engineer", None, None) is True
+    # A bare "Engineer" is no longer uncertain — the filter rejects it outright,
+    # so skipping it here is the prefilter doing its job rather than guessing.
+    assert cheap_prefilter("Engineer", None, None) is False
+    assert is_software_role("Engineer") is False
     # US-scoped remote must survive even though "Remote" alone would not.
     assert cheap_prefilter("Software Engineer", None, "Remote - US") is True
 
@@ -87,17 +90,46 @@ def test_prefilter_excludes_the_same_roles_as_the_full_filter(title: str) -> Non
     assert cheap_prefilter(title, allow_roles=EXCLUDED_ROLE_NAMES) is True
 
 
-def test_prefilter_accepts_bare_tech_titles_the_filter_accepts() -> None:
-    """Regression: the prefilter did not consult `_BARE_TECH`.
+def test_prefilter_never_skips_a_title_the_filter_would_keep() -> None:
+    """The direction that actually loses jobs.
 
-    `is_software_role` accepts a title carrying only the bare word, so
-    "VP Engineering" passed the filter while the prefilter skipped it — the
-    posting was never fetched at all. Invisible until a title of that shape was
-    tested, because the one-directional invariant above only fires when the full
-    filter would keep it, and nothing in TITLES had that shape.
+    A prefilter that is too *loose* wastes an HTTP call. A prefilter that is too
+    *strict* means the posting is never fetched at all, and nothing downstream
+    can recover it. This has gone wrong once already: "VP Engineering" was
+    accepted by the filter and skipped here, so it was silently never collected.
+
+    The titles below are ones the full filter keeps under some flag combination.
+    Each must survive the prefilter under the same flags.
     """
-    for title in ("VP Engineering", "Director of Engineering Operations",
-                  "Engineering", "Dev"):
-        assert cheap_prefilter(
-            title, allow_roles=EXCLUDED_ROLE_NAMES
-        ) is True, f"prefilter skipped {title!r}, which the filter accepts"
+    for title in ("VP Engineering", "Vice President of Engineering",
+                  "Director of Engineering Operations", "Engineering Manager",
+                  "Networking Engineer", "Chief Technology Officer of Engineering"):
+        if is_software_role(title, allow_roles=EXCLUDED_ROLE_NAMES):
+            assert cheap_prefilter(
+                title, allow_roles=EXCLUDED_ROLE_NAMES
+            ) is True, f"prefilter skipped {title!r}, which the filter accepts"
+
+
+def test_the_flags_restore_what_their_category_excludes() -> None:
+    """An exclusion pattern and its accept pattern must cover the same spellings.
+
+    Otherwise `--include-roles` silently half-works: the exclusion catches a
+    title the accept list does not name, so the flag cannot bring it back and
+    there is no error to explain why. "Networking Engineer" was exactly this —
+    excluded as `network`, but `_SOFTWARE_TERMS` only spelled "network engineer".
+    """
+    from jobscrape.filters import is_excluded_role
+
+    for title, category in (
+        ("Networking Engineer", "network"),
+        ("Network Engineer", "network"),
+        ("VP Engineering", "management"),
+        ("VP of Engineering", "management"),
+        ("Head of Engineering", "management"),
+    ):
+        assert is_excluded_role(title) == category, title
+        assert is_software_role(title) is False, title
+        assert is_software_role(title, allow_roles=[category]) is True, (
+            f"--include-roles {category} cannot restore {title!r}: it is "
+            f"excluded by the category but named by no accept pattern"
+        )

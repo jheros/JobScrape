@@ -61,21 +61,46 @@ def test_non_software_titles_rejected(title: str) -> None:
     assert is_software_role(title) is False
 
 
-def test_bare_engineer_and_developer_qualify_alone() -> None:
-    """Broadened deliberately so sparse titles are not missed."""
-    assert is_software_role("Engineer", "Engineering") is True
-    assert is_software_role("Engineer", None) is True
-    assert is_software_role("Developer", None) is True
-    assert is_software_role("Programmer", None) is True
+def test_the_bare_word_does_not_qualify_a_title() -> None:
+    """The filter is an allowlist: a title must NAME a software discipline.
+
+    "Engineer" alone used to be enough, with the blocklist expected to hold back
+    every other profession that uses the word. It could not — measured against
+    the archive that rule alone admitted 5,035 of 22,839 postings, four fifths of
+    them hardware or generic. The word is shared; naming is what carries meaning.
+    """
+    assert is_software_role("Engineer", None) is False
+    assert is_software_role("Developer", None) is False
+    assert is_software_role("Senior Engineer", None) is False
+    assert is_software_role("General Engineer", None) is False
 
 
-def test_non_software_department_vetoes_a_bare_title() -> None:
-    """A known-irrelevant department is evidence and should be used."""
-    assert is_software_role("Engineer", "Facilities") is False
-    assert is_software_role("Engineer", "Manufacturing") is False
-    assert is_software_role("Developer", "Business Development") is False
-    # An unknown department must never cause a rejection.
-    assert is_software_role("Engineer", "Some New Team") is True
+def test_a_software_department_cannot_rescue_a_bare_title() -> None:
+    """The department is not evidence that an engineer is a *software* engineer.
+
+    This is the hole that made the first attempt at the inversion useless.
+    `_GENERIC_TECH` contained the bare words and `_SOFTWARE_DEPTS` matches
+    "Engineering" — which is the department nearly every engineering board files
+    its postings under — so "Design Engineer" walked straight back in through the
+    department fallback. It re-admitted 1,459 rows.
+    """
+    for title in ("Engineer", "Design Engineer", "Chief Engineer",
+                  "Electronics Engineer", "Simulation Engineer"):
+        assert is_software_role(title, "Engineering") is False, title
+        assert is_software_role(title, "Software") is False, title
+
+
+def test_genuinely_ambiguous_words_still_take_department_confirmation() -> None:
+    """What the department fallback is actually for.
+
+    "Scientist" and "Architect" are ambiguous rather than generic — a research
+    biologist and a building architect are the competing readings, and neither
+    appears in the hardware titles above. So the department still decides these.
+    """
+    assert is_software_role("Scientist", "Machine Learning") is True
+    assert is_software_role("Scientist", None) is False
+    assert is_software_role("Architect", "Platform Engineering") is True
+    assert is_software_role("Architect", "Facilities") is False
 
 
 @pytest.mark.parametrize(
@@ -87,10 +112,14 @@ def test_non_software_department_vetoes_a_bare_title() -> None:
         "Reliability Engineer", "Member of Technical Staff", "MLOps Engineer",
         "LLM Engineer", "Computer Vision Engineer", "BI Engineer",
         "Distributed Systems Engineer", "Kernel Developer", "Release Engineer",
-        "Salesforce Developer", "ServiceNow Developer", "SAP ABAP Developer",
-        "Siebel Developer", "Mainframe Engineer", "COBOL Programmer",
+        "Mainframe Engineer", "COBOL Programmer",
         "Rails Developer", "Flutter Developer", "Engineer, Platform",
         "New Grad Software Engineer", "Solidity Developer", "ETL Developer",
+        # Rescued when the bare word stopped qualifying: these were carried by
+        # it alone and had to be named to survive.
+        "UI Developer", "UI Engineer", "UI/UX Engineer", "Mobile App Developer",
+        "Mobile Application Developer", "DevSecOps Engineer",
+        "Applications Developer", "Agile Developer",
     ],
 )
 def test_expanded_titles_accepted(title: str) -> None:
@@ -109,8 +138,41 @@ def test_expanded_titles_accepted(title: str) -> None:
     ],
 )
 def test_broadened_rules_still_reject_non_software(title: str) -> None:
-    """The blocklist carries the weight now that bare titles match."""
+    """These are blocked by name, independently of the allowlist."""
     assert is_software_role(title) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Configuration and customisation of a vendor platform, not product
+        # engineering. These used to be accepted as a named group.
+        "Salesforce Developer", "Salesforce Engineer", "ServiceNow Developer",
+        "SAP ABAP Developer", "Siebel Developer", "Workday Developer",
+        "PeopleSoft Developer", "SharePoint Developer",
+        # Pre-sales and consulting wearing the word "engineer".
+        "Solutions Engineer", "Solutions Architect", "Senior Solutions Architect",
+        "AI Solutions Engineer", "Cloud Solutions Architect",
+        # Hardware and generic, which the bare word used to carry in.
+        "Design Engineer", "Mechanical Design Engineer", "Simulation Engineer",
+        "Device Engineer", "Design Verification Engineer", "FPGA Engineer",
+        "Electronics Engineer", "Chief Engineer", "Field Service Engineer",
+    ],
+)
+def test_titles_the_inversion_removes(title: str) -> None:
+    """The roles this change exists to exclude, with a department to prove it.
+
+    Passing a software department is the point — that is how the first attempt
+    let them all back in.
+    """
+    assert is_software_role(title) is False
+    assert is_software_role(title, "Engineering") is False
+
+
+def test_forward_deployed_engineer_survives() -> None:
+    """The one customer-adjacent title that stays: it writes code."""
+    assert is_software_role("Forward Deployed Engineer") is True
+    assert is_software_role("Senior Forward Deployed Engineer") is True
 
 
 def test_blocklist_beats_allowlist() -> None:
@@ -314,10 +376,6 @@ def test_management_roles_excluded(title: str) -> None:
 @pytest.mark.parametrize(
     "title",
     [
-        # "Chief Engineer" is the case a naive \bchief\b rule gets wrong: in
-        # aerospace and defence it is a senior individual contributor, and 69
-        # postings in the archive carry it.
-        "Chief Engineer", "Deputy Chief Engineer, Autonomous Flight",
         # Leads are individual contributors at most companies.
         "Tech Lead, Payments", "Technical Lead", "Engineering Lead",
         # And the ordinary senior IC ladder is untouched.
@@ -327,6 +385,28 @@ def test_management_roles_excluded(title: str) -> None:
 )
 def test_senior_ic_roles_are_kept(title: str) -> None:
     assert is_software_role(title) is True
+
+
+def test_chief_engineer_is_dropped_on_discipline_not_misread_as_management() -> None:
+    """Two different reasons a title can be excluded, and only one applies here.
+
+    "Chief Engineer" is a senior individual contributor in aerospace and
+    defence, and the seniority module still says so — a naive `\\bchief\\b` rule
+    would call it management and be wrong. It leaves the archive anyway, because
+    the allowlist asks a different question: the title names no software
+    discipline. That is the intended outcome for the ~69 postings carrying it,
+    which were hardware.
+
+    Worth pinning because the two layers could drift into agreeing for the wrong
+    reason, and the seniority classification is used elsewhere.
+    """
+    from jobscrape import seniority
+    from jobscrape.filters import MANAGEMENT_LEVELS, is_excluded_role
+
+    for title in ("Chief Engineer", "Deputy Chief Engineer, Autonomous Flight"):
+        assert seniority.classify(title) not in MANAGEMENT_LEVELS, title
+        assert is_excluded_role(title) is None, title
+        assert is_software_role(title, "Engineering") is False, title
 
 
 def test_the_two_exclusions_are_independent() -> None:

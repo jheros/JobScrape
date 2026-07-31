@@ -34,9 +34,15 @@ _SOFTWARE_TERMS = [
     r"\b(qa|quality\s+assurance|test)\s+(engineer|automation)",
     r"\bautomation\s+engineer",
     r"\bembedded\s+(engineer|software)", r"\bfirmware\s+engineer",
-    r"\bsystems?\s+engineer", r"\bnetwork\s+engineer",
+    # `network(ing)?` and the `of`-less management forms below are spelled
+    # loosely on purpose: these titles are excluded by default, and the accept
+    # pattern is what `--include-roles` restores them through. If the exclusion
+    # regex matches a spelling the accept regex does not, the flag silently
+    # fails to bring it back — `--include-roles network` restoring "Network
+    # Engineer" but not "Networking Engineer" is the bug that shape produces.
+    r"\bsystems?\s+engineer", r"\bnetwork(ing)?\s+engineer",
     r"\bdatabase\s+(engineer|administrator)", r"\bdba\b",
-    r"\bsolutions?\s+architect", r"\btechnical\s+architect",
+    r"\btechnical\s+architect",
     # "Principal Architect, Cloud Platform" and friends: a bare "architect"
     # only counts when a technical qualifier sits on either side of it.
     r"\b(cloud|software|data|platform|security|systems?|enterprise|application|"
@@ -44,12 +50,17 @@ _SOFTWARE_TERMS = [
     r"\barchitect\b[\s,–—-]+(cloud|platform|data|software|security|infrastructure|"
     r"engineering|systems?|application)",
     r"\bengineering\s+manager", r"\bdirector\s+of\s+engineering",
-    r"\bvp\s+of\s+engineering", r"\bhead\s+of\s+engineering",
+    r"\b(vp|vice\s+president|head)\s+(of\s+)?engineering",
     r"\bcompiler\s+engineer", r"\bgraphics\s+engineer", r"\bgame\s+(engineer|programmer)",
     r"\bblockchain\s+(engineer|developer)", r"\brobotics\s+(engineer|software)",
     r"\bperformance\s+engineer", r"\bintegration\s+engineer",
     r"\bapi\s+engineer", r"\bdeveloper\s+advocate", r"\bdeveloper\s+relations",
-    r"\bsolutions?\s+engineer", r"\bforward\s+deployed\s+engineer",
+    # "Solutions Engineer" and "Solutions Architect" are deliberately absent:
+    # both are usually pre-sales and consulting rather than building the
+    # product. "Sales Engineer" was already blocked for exactly this reason —
+    # these two carried the same work in on a different word. "Forward Deployed
+    # Engineer" stays: that one does write code, against a customer deployment.
+    r"\bforward\s+deployed\s+engineer",
     r"\bcomputer\s+(scientist|vision)",
     # --- explicitly requested titles ---
     r"\bai\s*/?\s*ml\s+(engineer|developer|scientist)",
@@ -82,8 +93,12 @@ _SOFTWARE_TERMS = [
     r"\b(software|engineering)\s+(intern|internship|apprentice|new\s+grad)",
     r"\b(new\s+grad|early\s+career|university\s+grad)\s+(engineer|developer|software)",
     # --- enterprise / stack-named developers ---
-    r"\b(salesforce|servicenow|sap|abap|siebel|sharepoint|oracle|peoplesoft|"
-    r"dynamics|workday)\s+(developer|engineer|architect)",
+    #
+    # Salesforce, ServiceNow, SAP, Siebel, SharePoint, PeopleSoft, Dynamics and
+    # Workday used to be accepted here as a group. They are configuration and
+    # customisation of a vendor platform rather than product engineering, so the
+    # whole group is gone. Mainframe, COBOL, ETL and integration developers stay
+    # — legacy stacks, but they write code.
     r"\bmainframe\s+(engineer|developer|programmer)", r"\bcobol\b",
     r"\betl\s+(developer|engineer)", r"\bintegration\s+developer",
     # --- more stacks ---
@@ -96,18 +111,32 @@ _SOFTWARE_TERMS = [
     r"infrastructure|data|security|mobile|web|cloud|api|systems?|software|ml|ai|devops|qa)",
     # Common language/stack-named roles.
     r"\b(python|java|golang|go|rust|c\+\+|c#|\.net|ruby|php|scala|kotlin|swift|typescript|javascript|node|react|angular)\s+(engineer|developer)",
+    # --- rescued when the bare-word rule was removed ---
+    #
+    # These are genuine software titles that used to qualify only because they
+    # contained the word "engineer" or "developer". Once that rule went they had
+    # to stand on their own name, and measuring the archive is how they were
+    # found: ~314 postings that would otherwise have been lost with the 5,035.
+    r"\bui\b(\s*/\s*ux)?\s+(engineer|developer)",
+    r"\bmobile\s+app(lication)?s?\s+(engineer|developer)",
+    r"\bdevsecops\b",
+    r"\bagile\s+developer\b", r"\bapplications?\s+developer\b",
 ]
 _SOFTWARE_RE = re.compile("|".join(_SOFTWARE_TERMS), re.I)
 
-# Titles that qualify on their own once the blocklist has had its say. You asked
-# for bare "Developer"; the same reasoning extends to "Engineer". This is the
-# broadest rule in the file, which is exactly why _NOT_SOFTWARE_RE is checked
-# first and carries the weight.
-_BARE_TECH = re.compile(
-    r"\b(engineer|engineering|developer|programmer|coder|"
-    r"sde|swe|sdet|dev)\b",
-    re.I,
-)
+# There used to be a `_BARE_TECH` rule here that accepted any title containing
+# the bare word "engineer" or "developer", with `_NOT_SOFTWARE_RE` expected to
+# carry the weight of keeping non-software out. It could not: a blocklist has to
+# anticipate every discipline that uses the word, and the archive kept finding
+# ones nobody had listed. Measured, it alone admitted 5,035 of 22,839 open
+# postings — 1,279 hardware (Design Verification, Electronics, Mechanical, FPGA)
+# and 3,442 generic (Design Engineer, General Engineer, "Engineer"), against 314
+# genuine software titles now named explicitly in `_SOFTWARE_TERMS` above.
+#
+# So the filter is an allowlist: a title is kept because it *names* a software
+# discipline, never because it merely contains the word. The failure mode is now
+# a missed real title rather than an unbounded stream of unrelated ones, and the
+# fix for that is one line in the list above.
 
 # Non-software disciplines that also use "engineer"/"developer". These are
 # rejected outright, even if a software term also matched (checked first).
@@ -131,6 +160,11 @@ _NOT_SOFTWARE_TERMS = [
     r"\b(sales|account|customer\s+success|customer\s+support|pre[\s-]?sales|"
     r"post[\s-]?sales|partner|channel|revenue|support|implementation|training|"
     r"marketing|proposal|bid|estimating|procurement|purchasing|contracts)\s+engineer",
+    # Same job as "Sales Engineer", different word. Blocked rather than merely
+    # left out of `_SOFTWARE_TERMS`, because "architect" is still a
+    # department-confirmable word in `_GENERIC_TECH` — dropping the accept alone
+    # let "Solutions Architect" back in under an Engineering department.
+    r"\bsolutions?\s+(engineer|architect)\b",
     # Recruiting / admin roles that mention engineering.
     r"\bengineer(ing)?\s+(technician|technologist|aide|assistant|clerk|"
     r"intern(ship)?\s+program\s+coordinator|manager\s+of\s+facilities)",
@@ -164,27 +198,27 @@ _SOFTWARE_DEPTS = re.compile(
     re.I,
 )
 
-# Departments that make a bare "Engineer" almost certainly non-software. Used
-# only to *veto* a broad title match — an unknown department never rejects
-# anything, so recall is unaffected where the data is silent.
-_NON_SOFTWARE_DEPTS = re.compile(
-    r"\b(facilities|maintenance|janitorial|custodial|groundskeeping|"
-    r"sales|business\s+development|marketing|communications|public\s+relations|"
-    r"human\s+resources|people\s+ops|recruiting|talent|finance|accounting|payroll|"
-    r"legal|compliance|audit|procurement|purchasing|supply\s+chain|logistics|"
-    r"warehouse|manufacturing|production\s+floor|assembly|fabrication|machine\s+shop|"
-    r"construction|field\s+service|field\s+operations|fleet|transportation|driver|"
-    r"clinical|nursing|patient|pharmacy|laboratory\s+services|"
-    r"food\s+service|hospitality|housekeeping|retail|merchandising|"
-    r"customer\s+service|call\s+center|claims|underwriting|"
-    r"environmental\s+health|safety|security\s+guard|physical\s+security)\b",
-    re.I,
-)
+# `_NON_SOFTWARE_DEPTS` lived here: a list of departments (facilities, sales,
+# nursing, warehouse) used to *veto* a bare "Engineer". It existed only because
+# that title was accepted in the first place. With the allowlist, "Engineer"
+# under Facilities is rejected on its title alone and the veto has nothing left
+# to do.
 
 # Generic titles that only qualify when the department confirms them.
+#
+# Bare "engineer" and "developer" are deliberately NOT here. They were, and it
+# silently undid the allowlist: `_SOFTWARE_DEPTS` matches the department
+# "Engineering", which is what almost every engineering board files its postings
+# under, so "Design Engineer" and "Chief Engineer" walked straight back in
+# through this line. Measured at 1,459 rows — the department is simply not
+# evidence that an engineer is a *software* engineer.
+#
+# What is left is the set the docstring below always meant: words that are
+# genuinely ambiguous rather than merely generic. A "Scientist" or "Architect"
+# under an Engineering department really is more likely to be technical, and
+# neither word appears in the hardware titles this change exists to remove.
 _GENERIC_TECH = re.compile(
-    r"\b(engineer|developer|architect|scientist|technical\s+lead|tech\s+lead|"
-    r"staff\s+engineer|principal\s+engineer|intern|co-?op)\b",
+    r"\b(architect|scientist|technical\s+lead|tech\s+lead|intern|co-?op)\b",
     re.I,
 )
 
@@ -221,13 +255,13 @@ _QA_RE = re.compile("|".join(_QA_TERMS), re.I)
 #:
 #: Read from `jobscrape.seniority` rather than restated as regexes here. That
 #: module already resolves the cases a naive `\bchief\b` or `\bmanager\b` gets
-#: wrong — "Chief Engineer" is a senior IC title in aerospace and defence (69
-#: postings in the archive) and stays; "Principal Engineering Manager" is a
-#: manager despite the IC word; "Tech Lead" is an IC and stays.
+#: wrong — "Principal Engineering Manager" is a manager despite the IC word, and
+#: "Tech Lead" is an IC, so it stays.
 #:
-#: This also catches what removing the explicit accept patterns would not:
-#: `_BARE_TECH` matches the bare word "engineering", so "Director of Engineering
-#: Operations" and "VP Engineering" would otherwise still pass.
+#: This layer still matters under the allowlist, because `_SOFTWARE_TERMS` names
+#: "engineering manager", "director of engineering", "vp of engineering" and
+#: "head of engineering" explicitly — they are kept there so `--include-roles
+#: management` can restore them, and this is what removes them by default.
 MANAGEMENT_LEVELS = frozenset({"manager", "director", "executive"})
 
 #: The role nouns a category word can modify. Shared by the three patterns
@@ -376,17 +410,18 @@ def is_software_role(
 ) -> bool:
     """True when a posting is a software/engineering role.
 
-    Order matters, and the blocklist comes first: bare "Engineer" and
-    "Developer" now qualify on their own, so "Sales Engineer",
-    "Mechanical Engineer" and "Business Developer" are only kept out because
-    they are rejected before the broad rules ever run.
+    This is an **allowlist**: a title has to name a software discipline. Bare
+    "Engineer" or "Developer" is not enough, because that word is shared with
+    every other engineering profession and no blocklist can enumerate them all
+    — see the note where `_BARE_TECH` used to be.
 
-    Tuned for recall over precision — you would rather review a few wrong rows
-    than never see a real job.
-
-    QA and management roles are excluded by default even though both *are*
-    software roles — see :func:`is_excluded_role`. The accept patterns for both
-    are deliberately left in the lists below so the two flags can re-admit them.
+    Two layers, doing different jobs. `_SOFTWARE_RE` decides what counts as
+    software at all. `EXCLUDED_ROLES` then removes the software roles that are
+    named but unwanted — QA, management, network, systems, security, analyst,
+    firmware. The second layer is not made redundant by the first: `_SOFTWARE_RE`
+    accepts "systems engineer", "security engineer", "qa engineer" and
+    "engineering manager" by name, so every one of them would pass the allowlist
+    on its own. The accept patterns stay so `--include-roles` can restore them.
     """
     text = (title or "").strip()
     if not text:
@@ -396,13 +431,6 @@ def is_software_role(
     if _NOT_SOFTWARE_RE.search(text):
         return False
     if _SOFTWARE_RE.search(text):
-        return True
-    # Bare "Engineer" / "Developer" / "Programmer" count by themselves — unless
-    # the department says otherwise. "Engineer" under Facilities is a facilities
-    # engineer; ignoring that evidence would be sloppy rather than generous.
-    if _BARE_TECH.search(text):
-        if department and _NON_SOFTWARE_DEPTS.search(department):
-            return False
         return True
     # Genuinely ambiguous words (scientist, architect, analyst, intern) still
     # need a department to confirm them — on their own they are as likely to be
@@ -654,16 +682,13 @@ def cheap_prefilter(
         return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
-    # `_BARE_TECH` belongs here even though it is the broadest rule, because
-    # `is_software_role` accepts on it: without it this function was *stricter*
-    # than the full filter for titles carrying only the bare word — "VP
-    # Engineering" was accepted by the filter and skipped by the prefilter, so
-    # the posting was never fetched at all. Deliberately without the
-    # non-software-department veto that `is_software_role` applies: a listing
-    # often has no department yet at prefilter time, and a wasted request costs
-    # one HTTP call while a wrongly skipped one loses the job permanently.
-    if not (_SOFTWARE_RE.search(text) or _GENERIC_TECH.search(text)
-            or _BARE_TECH.search(text)):
+    # `_GENERIC_TECH` alone is enough to pass here, deliberately without the
+    # department confirmation `is_software_role` requires of it: a listing often
+    # has no department yet at prefilter time, and a wasted request costs one
+    # HTTP call while a wrongly skipped one loses the job permanently. That also
+    # keeps this function strictly looser than the full filter, which is the
+    # contract — the invariant test only catches the opposite mistake.
+    if not (_SOFTWARE_RE.search(text) or _GENERIC_TECH.search(text)):
         return False
     # Delegate the location call so the two can never disagree.
     if (location or country) and not is_us_eligible(location, country):

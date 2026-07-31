@@ -153,8 +153,9 @@ def test_purge_removes_qa_and_management_and_keeps_the_rest(_isolated_db) -> Non
     db.upsert_jobs(conn, [
         _job("a", "Senior Software Engineer"),
         _job("b", "Staff Backend Engineer"),
-        _job("c", "Chief Engineer"),          # senior IC, must survive
+        _job("c", "Platform Engineer"),       # named discipline, must survive
         _job("d", "Tech Lead, Payments"),     # IC, must survive
+        _job("hw", "Chief Engineer"),         # senior IC, but not software
         _job("qa", "QA Engineer"),
         _job("test", "Test Engineer"),
         _job("mgr", "Engineering Manager"),
