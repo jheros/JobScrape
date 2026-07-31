@@ -451,6 +451,117 @@ def test_early_career_does_not_catch_internal_or_international(title: str) -> No
     assert is_excluded_role(title) != "early_career"
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Chip design reaching a software word two positions away.
+        "Senior AI Chip Design Engineer", "SoC Machine Learning Design Engineer",
+        "AI CPU Design Engineer", "Senior AI Design Engineer",
+        "SoC Physical Design Engineer", "Senior Digital Design Engineer",
+        "2026 Campus - SoC Backend Design Engineer",
+        # Device management and modelling.
+        "Mobile Device Engineer", "Mobile Device Engineer II",
+        "MTS Lead DRAM Device Engineer",
+        "Modeling and Simulation Engineer - Data Analytics",
+        "Senior Machine Learning and Simulation Engineer - Autonomous Vehicles",
+        # A slash is not enough to make a chip role software.
+        "Hardware/Software Co-Design Engineer",
+        "Senior Hardware/Software Design Engineer (HSDE-3)",
+    ],
+)
+def test_design_simulation_and_device_are_blocked_wherever_they_appear(
+    title: str,
+) -> None:
+    """The accept side's own gap was binding these to a software word.
+
+    "Senior AI Chip Design Engineer" qualified on `ai`, "SoC Machine Learning
+    Design Engineer" on `machine learning`, "Mobile Device Engineer" on
+    `mobile` — all two positions away, all chip design or device management.
+    Leaving the three nouns out of the accept list is not enough; they have to
+    be blocked.
+    """
+    assert is_software_role(title) is False
+    assert is_software_role(title, "Engineering") is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "SAI Software Design Engineer",
+        "Software Product Design Engineer",
+        "Senior Software Simulation Engineer",
+        "Senior Software Design Engineer - Engine Controls",
+    ],
+)
+def test_the_software_word_rescues_a_design_title(title: str) -> None:
+    """`software` with no `hardware` is the exemption, not just "Software Engineer".
+
+    None of these has the qualifier touching the noun, so the strict spelling
+    alone would drop all four.
+    """
+    assert is_software_role(title) is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Salesforce Platform Engineer", "Salesforce DevOps Engineer",
+        "Salesforce Full Stack Engineer", "Salesforce Integration Developer-CRM",
+        "Salesforce Marketing Cloud Developer", "Senior Salesforce Software Engineer",
+        "Software Engineer - Salesforce Platform", "Sr. Software Engineer- Salesforce",
+        "Software Engineering MTS, Salesforce Engineer",
+        "Systems Engineering Associate - GovCloud [Salesforce National Security]",
+    ],
+)
+def test_salesforce_engineers_are_blocked_from_either_side(title: str) -> None:
+    """You named Salesforce; the vendor accept going was not enough.
+
+    They came back through `platform engineer`, `devops`, `full stack` and
+    `software engineer`. The word sits on either side of the role noun, so this
+    tests both orders — and `engineering` as well as `engineer`, which one
+    posting used.
+    """
+    assert is_software_role(title) is False
+
+
+def test_salesforce_as_an_employer_is_not_salesforce_as_a_platform() -> None:
+    """The ambiguity in the rule above, and where the line falls.
+
+    "Research Scientist - Salesforce AI Research" is AI research *at* Salesforce
+    — no engineer or developer in the title, so the two-lookahead form leaves it
+    alone. That is the intended behaviour, not an oversight.
+    """
+    assert is_software_role("Research Scientist - Salesforce AI Research") is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Devops/ Java/OBIEE/Salesforce  training and placement",
+        "ETL Informatica/ Networking/ Salesforce/Devops training and placemt",
+    ],
+)
+def test_bootcamp_adverts_are_not_job_postings(title: str) -> None:
+    """`plac\\w+` rather than a spelled-out "placement": these listings are
+    typo-ridden, and one in the archive reads "placemt"."""
+    assert is_software_role(title) is False
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Software Engineer - 2027 New Grads",
+        "Member of Technical Staff - Machine Learning Capabilities, New Graduates",
+        "New College Graduates Welcome",
+    ],
+)
+def test_early_career_catches_plurals(title: str) -> None:
+    """Three postings escaped the first version of the rule on a trailing "s"."""
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == "early_career"
+
+
 def test_flight_engineer_is_a_different_job_from_flight_software() -> None:
     """Both excluded, for different reasons that should not be conflated.
 

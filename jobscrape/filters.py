@@ -184,6 +184,22 @@ _NOT_SOFTWARE_TERMS = [
     r"^(?=.*\b(salesforce|servicenow|sap|abap|siebel|sharepoint|peoplesoft|"
     r"workday|netsuite|dynamics\s+365)\b)"
     r"(?=.*\b(architect|tech(nical)?\s+lead|consultant)\b)",
+    # Salesforce additionally blocks on engineer/developer, which you named
+    # directly. "Salesforce Platform Engineer", "Salesforce DevOps Engineer" and
+    # "Software Engineer - Salesforce" are all Salesforce engineers; the vendor
+    # accept was removed but they came back via `platform engineer`, `devops`
+    # and `software engineer`. Deliberately not extended to SAP and Workday:
+    # "Lead Software Engineer, Workday Finance Integrations" is ordinary backend
+    # work at a normal company, and only Salesforce was named.
+    #
+    # Two lookaheads again, since "Salesforce" sits on either side. This leaves
+    # "Research Scientist - Salesforce AI Research" alone, which is right —
+    # there Salesforce is the employer, not the platform.
+    r"^(?=.*\bsalesforce\b)(?=.*\b(engineer(ing)?|developer)\b)",
+    # Bootcamp and body-shop adverts, not job postings. `plac\w+` rather than a
+    # spelled-out "placement" because these listings are typo-ridden — one in
+    # the archive reads "training and placemt".
+    r"\btraining\s+and\s+plac\w+\b|\bplacement\s+program\b",
     # Pre-sales in any role noun. `pre-sales engineer` was already blocked above;
     # the architect spelling was not, so "Technical Architect (Pre-Sales)" and
     # "Pre-Sales Data and AI Architect" came through. This also outranks the
@@ -381,7 +397,14 @@ _HARDWARE_DISCIPLINE = (
     r"asic|fpga|rtl|vlsi|silicon|semiconductor|analog|\bpcb\b|\brf\b"
 )
 _HARDWARE_NEAR_RE = re.compile(
-    rf"\b(?:{_HARDWARE_DISCIPLINE})\b{_GAP}(?:engineer|developer)\b",
+    rf"\b(?:{_HARDWARE_DISCIPLINE})\b{_GAP}(?:engineer|developer)\b"
+    # The three role nouns named as unwanted. Blocked wherever they appear
+    # rather than merely left out of the accept list, because the accept side's
+    # qualifier gap binds them to a software word two positions away: "Senior AI
+    # Chip Design Engineer", "SoC Machine Learning Design Engineer" and "Mobile
+    # Device Engineer" all qualified on `ai` / `machine learning` / `mobile`
+    # while being chip design and device management. 34 postings.
+    rf"|\b(?:design|simulation|device)\s+(?:engineer|developer)\b",
     re.I,
 )
 
@@ -395,10 +418,30 @@ _HARDWARE_NEAR_RE = re.compile(
 #:
 #: Only the explicit spelling counts. "Optical Design Engineer" names no software
 #: role and stays blocked.
+#:
 _EXPLICIT_SOFTWARE_RE = re.compile(
     r"\bsoftware\s+(engineer|developer|dev)\b|\bsde\b|\bswe\b",
     re.I,
 )
+_SOFTWARE_WORD_RE = re.compile(r"\bsoftware\b", re.I)
+_HARDWARE_WORD_RE = re.compile(r"\bhardware\b", re.I)
+
+
+def _names_software(text: str) -> bool:
+    """Whether a title claims to be software work, for the exemption above.
+
+    Two ways to qualify. The strict spelling ("Software Engineer", "SDE"), or
+    the bare word `software` with no `hardware` anywhere — which is what rescues
+    "SAI Software Design Engineer" and "Senior Software Simulation Engineer",
+    whose qualifier does not touch the noun, while still dropping "Hardware/
+    Software Co-Design Engineer", where the co-design is the hardware half.
+
+    The `hardware` clause is doing real work: without it a single slash in a
+    title would be enough to rescue a chip role.
+    """
+    if _EXPLICIT_SOFTWARE_RE.search(text):
+        return True
+    return bool(_SOFTWARE_WORD_RE.search(text) and not _HARDWARE_WORD_RE.search(text))
 
 #: Networking infrastructure.
 _NETWORK_RE = re.compile(
@@ -471,7 +514,9 @@ _FIRMWARE_RE = re.compile(r"\bfirmware\b|\bembedded\b", re.I)
 #: postings.
 _EARLY_CAREER_RE = re.compile(
     r"\bintern(ship)?s?\b|\bco-?ops?\b|\bapprentice(ship)?\b|\btrainee\b|"
-    r"\bnew\s+grad(uate)?\b|\b(university|college)\s+grad(uate)?\b|"
+    # Plurals matter: "Software Engineer - 2027 New Grads" and "New College
+    # Graduates Welcome" are how three postings escaped the first version.
+    r"\bnew\s+grad(uate)?s?\b|\b(university|college)\s+grad(uate)?s?\b|"
     r"\bearly\s+career\b|\bcampus\s+hire\b",
     re.I,
 )
@@ -581,7 +626,7 @@ def is_software_role(
     # A hardware discipline a word or two from the role noun, unless the title
     # says "Software Engineer" outright — that exemption is what keeps "Optical
     # Software Engineer" while dropping "Optical Design Engineer".
-    if _HARDWARE_NEAR_RE.search(text) and not _EXPLICIT_SOFTWARE_RE.search(text):
+    if _HARDWARE_NEAR_RE.search(text) and not _names_software(text):
         return False
     if _SOFTWARE_RE.search(text) or _QUALIFIED_SOFTWARE_RE.search(text):
         return True
@@ -835,7 +880,7 @@ def cheap_prefilter(
         return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
-    if _HARDWARE_NEAR_RE.search(text) and not _EXPLICIT_SOFTWARE_RE.search(text):
+    if _HARDWARE_NEAR_RE.search(text) and not _names_software(text):
         return False
     # `_GENERIC_TECH` alone is enough to pass here, deliberately without the
     # department confirmation `is_software_role` requires of it: a listing often
