@@ -283,10 +283,14 @@ what the liveness probe exists to cover.
   `is_software_role` and `cheap_prefilter` — they are independent copies of the role
   decision, and the invariant test between them is one-directional, so an exclusion applied
   to only one would silently download every QA posting before discarding it.
-- **Role** — ~100 title patterns. A blocklist is checked **first**, so "Sales Engineer",
-  "Mechanical Engineer" and "Business Developer" never qualify on a shared word. Bare
-  `Engineer` / `Developer` do qualify on their own; a clearly irrelevant department
-  (Facilities, Manufacturing) vetoes them, but an *unknown* department never rejects.
+- **Role** — an **allowlist** of ~100 title patterns: a title must *name* a software
+  discipline. Bare `Engineer` / `Developer` is not enough, because the word is shared with
+  every other engineering profession and no blocklist can enumerate them all — the rule
+  that accepted it admitted 5,035 of 22,839 postings, four fifths hardware or generic. A
+  blocklist still runs first, for titles that name something real but wrong ("Sales
+  Engineer", "Solutions Engineer", "Mechanical Engineer"). A department confirms only
+  genuinely ambiguous words (`Scientist`, `Architect`, `Intern`) — never a bare
+  `Engineer`, since `Engineering` is the department almost every posting carries.
 - **US eligibility** — a *can't-rule-it-out* test, not a guarantee. Bare `Remote`,
   missing locations and anything unrecognised are **accepted**; only a named non-US place
   or a region-locked remote scope (`Remote - EMEA`, `EU residents only`) is rejected.

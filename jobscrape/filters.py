@@ -282,6 +282,40 @@ _ROLE_NOUN = r"(?:engineer|architect|administrator|analyst|specialist|developer)
 #: other. "Senior Software Engineer - Distributed Systems" keeps its head noun.
 _GAP = r"(?:\s+\w+){0,2}\s+"
 
+#: The same adjacency fix, applied to the *accept* side.
+#:
+#: Nearly every pattern in `_SOFTWARE_TERMS` requires its qualifier to touch the
+#: role noun. That was survivable while a bare "Engineer" qualified on its own —
+#: the broad rule caught whatever the specific ones missed. Once the filter
+#: became an allowlist it stopped being survivable, and the first purge dry-run
+#: showed it plainly: "iOS Frameworks Engineer", "Machine Learning Video
+#: Processing Engineer", "Senior Software Advanced Developer" and "Senior API
+#: Developer" were all headed for deletion, purely because a word sat in the
+#: middle.
+#:
+#: Only qualifiers that an intervening word cannot turn non-software are listed.
+#: "design" and "systems" are deliberately absent — those are exactly the words
+#: where the middle of the title decides the discipline. "data" is absent too:
+#: with a gap it matches "Data Center Engineer", which is facilities.
+_STRONG_QUALIFIER = (
+    r"software|machine\s+learning|deep\s+learning|artificial\s+intelligence|"
+    r"\bml\b|\bai\b|\bllm\b|\bnlp\b|\bios\b|android|mobile|"
+    r"back[\s-]?end|front[\s-]?end|full[\s-]?stack|devops|cloud|\bapi\b|\bweb\b|"
+    r"compiler|inference|distributed|kubernetes"
+)
+#: Like `_GAP`, but the intervening tokens may carry punctuation. Real titles
+#: are full of it — "Artificial Intelligence (AI) Engineer" was rejected because
+#: `_GAP` only crosses word characters and could not get past the brackets.
+#: Deliberately used on the accept side only: a looser gap here can at worst keep
+#: a job that should have gone, while the same looseness on the exclusion side
+#: would let a category word bind across a punctuation boundary it should not.
+_QUALIFIER_GAP = r"(?:\W+\w+){0,2}\W+"
+
+_QUALIFIED_SOFTWARE_RE = re.compile(
+    rf"(?:{_STRONG_QUALIFIER}){_QUALIFIER_GAP}(?:engineer|developer|programmer)\b",
+    re.I,
+)
+
 #: Networking infrastructure.
 _NETWORK_RE = re.compile(
     rf"\bnetwork(?:ing)?\b{_GAP}{_ROLE_NOUN}\b",
@@ -430,7 +464,7 @@ def is_software_role(
         return False
     if _NOT_SOFTWARE_RE.search(text):
         return False
-    if _SOFTWARE_RE.search(text):
+    if _SOFTWARE_RE.search(text) or _QUALIFIED_SOFTWARE_RE.search(text):
         return True
     # Genuinely ambiguous words (scientist, architect, analyst, intern) still
     # need a department to confirm them — on their own they are as likely to be
@@ -688,7 +722,8 @@ def cheap_prefilter(
     # HTTP call while a wrongly skipped one loses the job permanently. That also
     # keeps this function strictly looser than the full filter, which is the
     # contract — the invariant test only catches the opposite mistake.
-    if not (_SOFTWARE_RE.search(text) or _GENERIC_TECH.search(text)):
+    if not (_SOFTWARE_RE.search(text) or _QUALIFIED_SOFTWARE_RE.search(text)
+            or _GENERIC_TECH.search(text)):
         return False
     # Delegate the location call so the two can never disagree.
     if (location or country) and not is_us_eligible(location, country):

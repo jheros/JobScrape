@@ -169,6 +169,57 @@ def test_titles_the_inversion_removes(title: str) -> None:
     assert is_software_role(title, "Engineering") is False
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "iOS Frameworks Engineer - Services Special Project",
+        "iOS SpringBoard Engineer - Graphic Wallpapers",
+        "Machine Learning Video Processing Engineer",
+        "Machine Learning Ops Engineer",
+        "Senior Software Advanced Developer",
+        "Software Integrity Engineer, Sensing & Connectivity",
+        "Senior API / Microservices Developer",
+        "Cloud Operations Engineer",
+        "AI Agent Engineer",
+        "Artificial Intelligence (AI) Engineer",
+        "Senior Inference Engineer, GPU Kernel Optimization",
+    ],
+)
+def test_a_word_between_the_qualifier_and_the_noun_does_not_lose_the_job(
+    title: str,
+) -> None:
+    """The failure mode the allowlist introduces, and the fix for it.
+
+    Nearly every accept pattern requires its qualifier to touch the role noun.
+    That was survivable while a bare "Engineer" qualified on its own — the broad
+    rule caught what the specific ones missed. As an allowlist it is not: the
+    first purge dry-run had all of these queued for deletion because a word sat
+    in the middle. Same adjacency bug the exclusion categories had, same bounded
+    gap fixes it.
+    """
+    assert is_software_role(title) is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # The gap must not reach across a title to bind a stray word.
+        "Design Engineer", "Mechanical Design Engineer", "Data Center Engineer",
+        "Hardware Design Engineer", "Design Verification Engineer",
+        "Electronics Engineer", "Field Service Engineer", "Simulation Engineer",
+    ],
+)
+def test_the_gap_does_not_re_admit_hardware(title: str) -> None:
+    """"design", "systems" and "data" are kept OUT of the qualifier list.
+
+    Those are exactly the words where the middle of a title decides the
+    discipline — with a gap, "data" alone matches "Data Center Engineer", which
+    is facilities.
+    """
+    assert is_software_role(title) is False
+    assert is_software_role(title, "Engineering") is False
+
+
 def test_forward_deployed_engineer_survives() -> None:
     """The one customer-adjacent title that stays: it writes code."""
     assert is_software_role("Forward Deployed Engineer") is True

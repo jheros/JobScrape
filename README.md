@@ -385,18 +385,29 @@ announcements and discounts are not mistaken for compensation.
 Two classifiers decide what is kept. Both are deliberately conservative — an ambiguous
 row is dropped rather than allowed to pollute the dataset.
 
-- **Software role**: ~100 title patterns covering engineer / developer / SRE / ML / AI /
-  data / security / QA, seniority variants (Staff, Principal, Member of Technical Staff,
-  New Grad), enterprise stacks (Salesforce, SAP ABAP, Siebel, Mainframe, COBOL) and
-  language-named roles. Bare `Engineer`, `Developer` and `Programmer` qualify **on their
-  own**, tuned for recall.
+- **Software role**: an **allowlist** of ~100 title patterns covering backend / frontend /
+  full stack / platform / SRE / DevOps / cloud / ML / AI / LLM / data / mobile, seniority
+  variants (Staff, Principal, Member of Technical Staff, New Grad), legacy stacks
+  (Mainframe, COBOL, ETL) and language-named roles. A title has to **name** one of these.
 
-  Because those bare rules are so broad, the blocklist carries the weight and is checked
-  *first*: "Sales Engineer", "Mechanical Engineer", "Water Engineer", "Audio Engineer",
-  "Business Developer", "Technical Recruiter" and "Landscape Architect" are all rejected
-  before the broad rules ever run. A department that is clearly irrelevant
-  (Facilities, Manufacturing, Sales) also vetoes a bare title — but an *unknown*
-  department never rejects anything.
+  Bare `Engineer` or `Developer` is deliberately **not** enough. It used to be, with the
+  blocklist expected to hold back every other profession that shares the word — but a
+  blocklist has to anticipate every discipline in advance, and each sweep surfaced ones
+  nobody had listed. Measured against the archive, that one rule admitted 5,035 of 22,839
+  open postings, four fifths of them hardware ("Design Verification Engineer",
+  "FPGA Engineer") or generic ("General Engineer", "Chief Engineer"). The failure mode is
+  now a missed real title rather than an unbounded stream of unrelated ones, and the fix
+  for that is one line in `_SOFTWARE_TERMS`.
+
+  The blocklist is still checked first and still matters, for titles that name something
+  real but wrong: "Sales Engineer", "Solutions Engineer", "Mechanical Engineer",
+  "Business Developer", "Technical Recruiter".
+
+  A department alone never rescues a title. `Engineering` is the department nearly every
+  engineering board files postings under, so it is no evidence that an engineer is a
+  *software* engineer. It confirms only genuinely ambiguous words — `Scientist`,
+  `Architect`, `Tech Lead`, `Intern` — where the competing reading is a research biologist
+  or a building architect rather than a hardware engineer.
 - **US eligibility**: a *can't-rule-it-out* test rather than a guarantee. It accepts
   unless the listing gives positive evidence it cannot hire in the US. So a bare
   `Remote`, a `Worldwide` scope, a **missing** location, and anything unrecognized are
@@ -439,11 +450,21 @@ row is dropped rather than allowed to pollute the dataset.
   outright as software disciplines; embedded systems is not, since it is firmware.
 
   Management is read from `jobscrape/seniority.py` rather than a second set of regexes,
-  which is what gets the hard cases right: **"Chief Engineer" is kept** (in aerospace and
-  defence it is a senior individual contributor, not C-suite), as are "Tech Lead", "Staff
-  Engineer" and "Principal Engineer". It also catches what deleting the obvious patterns
-  would miss — the bare-word rule matches "engineering" on its own, so "Director of
-  Engineering Operations" and "VP Engineering" would otherwise still pass.
+  which is what gets the hard cases right: "Tech Lead", "Staff Engineer" and "Principal
+  Engineer" are individual contributors and stay, while "Principal Engineering Manager"
+  is a manager despite the IC word. "Chief Engineer" is also correctly read as a senior
+  IC rather than C-suite — it leaves the archive anyway, for the separate reason that it
+  names no software discipline, which is the right outcome for the ~69 aerospace and
+  defence postings that carried it.
+
+  These exclusion categories are **not** made redundant by the allowlist, which is worth
+  saying because it looks like they should be. `_SOFTWARE_TERMS` names "systems engineer",
+  "network engineer", "security engineer", "qa engineer" and "engineering manager"
+  explicitly, so each would pass the allowlist on its own — the accept patterns are kept
+  precisely so `--include-roles` can restore them, and this layer is what removes them by
+  default. Each exclusion pattern is spelled to match its accept pattern; otherwise the
+  flag silently half-works, which is how `--include-roles network` came to restore
+  "Network Engineer" but not "Networking Engineer".
 
   The QA list deliberately takes the broad reading, which also removes hardware test roles
   ("Flight Test Engineer", "Propulsion Test Engineer") and a few software titles that merely
