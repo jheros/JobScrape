@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any
 
 from .. import config
 from ..http import Fetcher

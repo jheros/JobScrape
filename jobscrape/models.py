@@ -541,7 +541,21 @@ class Job:
 
     def to_row(self) -> dict[str, Any]:
         row = asdict(self)
-        row["raw_json"] = json.dumps(row.pop("raw"), default=str)[:400_000]
+        raw = row.pop("raw")
+        # An EMPTY payload must serialise to NULL, not to the string "{}".
+        #
+        # `raw_json` is in `upsert_jobs`'s COALESCE preserve set and `raw` is in
+        # `PRESERVED_ON_REFRESH`, so the intent is that a shallow re-observation
+        # keeps the payload captured by the earlier deep pass. Writing "{}"
+        # defeated that: it is not NULL, so COALESCE took it and overwrote good
+        # data. Every repeat sweep of a board whose adapter emits `raw={} if not
+        # with_details` therefore erased what it had already stored — 771 rows
+        # in the archive when this was found, 13% of Ashby's.
+        #
+        # That is not a cosmetic loss. The payload is the only copy of fields no
+        # column holds, and its absence is what made Oracle's native
+        # `WorkplaceType` unbackfillable.
+        row["raw_json"] = json.dumps(raw, default=str)[:400_000] if raw else None
         # An input to classification, not a stored column.
         row.pop("workplace_hint", None)
         return row

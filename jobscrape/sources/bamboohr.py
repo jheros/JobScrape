@@ -70,7 +70,7 @@ class BambooHR(BoardSource):
             fetched = await gather_limited(
                 [self._detail(fetcher, slug, str(i["id"])) for i in needs_detail], limit=4
             )
-            for item, result in zip(needs_detail, fetched):
+            for item, result in zip(needs_detail, fetched, strict=True):
                 if isinstance(result, dict) and result:
                     details[str(item["id"])] = result
 

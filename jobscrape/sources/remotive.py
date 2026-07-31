@@ -13,7 +13,6 @@ is.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
 
 from ..http import Fetcher
 from ..models import Job

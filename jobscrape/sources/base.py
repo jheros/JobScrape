@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 from ..http import Fetcher
 from ..models import Job

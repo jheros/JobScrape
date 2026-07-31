@@ -99,7 +99,7 @@ def health() -> dict[str, Any]:
             last_run = conn.execute(
                 "SELECT ended_at FROM runs WHERE status = 'ok' ORDER BY id DESC LIMIT 1"
             ).fetchone()
-    except Exception as exc:  # noqa: BLE001 - a health check must never raise
+    except Exception as exc:
         healthy = False
         checks["database"] = {"ok": False, "error": str(exc)}
 

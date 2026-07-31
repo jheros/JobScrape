@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from urllib.parse import urlsplit
 
 from ..http import Fetcher
 from ..models import Job, html_to_text

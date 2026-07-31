@@ -26,13 +26,11 @@ from . import filters as apply_filters_mod
 from .filters import (
     EXCLUDED_ROLE_NAMES,
     FilterFunnel,
-    apply_filters,
     apply_filters_counted,
     cheap_prefilter,
     parse_date,
 )
 from .http import Fetcher
-from .models import Job
 from .sources import (
     ALL_SOURCE_NAMES,
     BOARD_SOURCES,
@@ -185,7 +183,7 @@ async def _fetch_boards(
         for slug in probes:
             try:
                 probed = await source.fetch_board(fetcher, slug, with_details=False)
-            except Exception:  # noqa: BLE001 - a failed probe is just no evidence
+            except Exception:
                 probed = None
             if probed is not None:
                 cleared = db.clear_ats_cooldowns(conn, ats)
@@ -244,7 +242,7 @@ async def _fetch_boards(
                 jobs = await source.fetch_board(
                     fetcher, slug, prefilter=prefilter, known_ids=known
                 )
-            except Exception as exc:  # noqa: BLE001 - isolate per-company failures
+            except Exception as exc:
                 log.debug("%s/%s failed: %s", ats, slug, exc)
                 async with lock:
                     db.mark_board_failure(conn, ats, slug)
@@ -388,7 +386,7 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                     jobs = await source.fetch(
                         fetcher, since=since, until=until, max_results=args.max_results
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     log.warning("%-16s failed: %s", name, exc)
                     continue
                 kept_jobs, gfunnel = apply_filters_counted(

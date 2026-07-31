@@ -87,7 +87,7 @@ class Teamtailor(BoardSource):
                     company=org_name or company,
                     company_slug=slug,
                     job_url=item.get("url") or "",
-                    apply_url=posting.get("directApply") and item.get("url")
+                    apply_url=(posting.get("directApply") and item.get("url"))
                     or item.get("url"),
                     location_raw=_location_from_schema(posting),
                     # schema.org marks remote roles with this flag.

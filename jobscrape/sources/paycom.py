@@ -346,7 +346,7 @@ class Paycom(BoardSource):
             fetched = await gather_limited(
                 [self._detail(fetcher, service, headers, j) for j in needed], limit=4
             )
-            for job_id, result in zip(needed, fetched):
+            for job_id, result in zip(needed, fetched, strict=True):
                 if isinstance(result, dict):
                     details[job_id] = result
 

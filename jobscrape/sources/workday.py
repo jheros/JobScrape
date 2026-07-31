@@ -262,7 +262,7 @@ class Workday(BoardSource):
             fetched = await gather_limited(
                 [self._detail(fetcher, base, p) for p in paths], limit=4
             )
-            for path, result in zip(paths, fetched):
+            for path, result in zip(paths, fetched, strict=True):
                 if isinstance(result, dict):
                     details[path] = result
 

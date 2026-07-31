@@ -43,7 +43,7 @@ import logging
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterator
 
 log = logging.getLogger("jobscrape.tenant_lists")
 

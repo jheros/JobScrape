@@ -292,7 +292,7 @@ async def gather_limited(coros: list[Any], limit: int = 16) -> list[Any]:
         async with sem:
             try:
                 return await coro
-            except Exception as exc:  # noqa: BLE001 - isolation is the point
+            except Exception as exc:
                 log.debug("task failed: %s", exc)
                 return None
 

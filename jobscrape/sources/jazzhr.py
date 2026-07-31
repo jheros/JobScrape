@@ -101,7 +101,7 @@ class JazzHR(BoardSource):
                     apply_url=candidates[token],
                 )))
 
-        for token, posting in zip(tokens, postings):
+        for token, posting in zip(tokens, postings, strict=True):
             url = candidates[token]
             if not isinstance(posting, dict):
                 continue

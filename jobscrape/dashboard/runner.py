@@ -70,6 +70,14 @@ class RunManager:
         self.db_path = database_url
         self._active: dict[str, ActiveRun] = {}
         self._lock = asyncio.Lock()
+        #: Strong references to the log-consumer tasks.
+        #:
+        #: asyncio keeps only a WEAK reference to a running task, so a task
+        #: nobody holds can be garbage-collected mid-flight. `_consume` is what
+        #: streams a run's output into `run_events` and marks the run finished,
+        #: so losing it would stop the live log dead and leave the run stuck at
+        #: "running" forever — with no error anywhere to explain it.
+        self._consumers: set[asyncio.Task[None]] = set()
 
     # -- state -------------------------------------------------------------
     def active(self) -> list[dict[str, Any]]:
@@ -124,7 +132,9 @@ class RunManager:
                 conn.execute("UPDATE runs SET pid = ? WHERE id = ?", (process.pid, run_id))
                 conn.commit()
 
-        asyncio.create_task(self._consume(run))
+        consumer = asyncio.create_task(self._consume(run))
+        self._consumers.add(consumer)
+        consumer.add_done_callback(self._consumers.discard)
         return {"run_id": run_id, "stage": stage, "pid": process.pid}
 
     async def stop(self, stage: str) -> bool:
@@ -159,7 +169,7 @@ class RunManager:
                 if len(buffer) >= 10:
                     self._flush(run, buffer)
                     buffer = []
-        except Exception as exc:  # noqa: BLE001 - never let log capture kill the run
+        except Exception as exc:
             log.debug("stream ended for run %s: %s", run.run_id, exc)
 
         if buffer:

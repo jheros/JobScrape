@@ -22,6 +22,33 @@ API = "https://{slug}.pinpointhq.com/postings.json"
 _DATE_POSTED_RE = re.compile(r'"datePosted"\s*:\s*"([^"]+)"')
 
 
+def _num(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pay(value: Any, frequency: Any, visible: bool) -> float | None:
+    """Annualise one pay figure, honouring the board's visibility flag.
+
+    Module level rather than a closure inside the row loop. Defined in the loop
+    it captured `frequency` and `visible` late, which is correct only because it
+    happens to be called within the same iteration — hoisting it removes that
+    dependence on call timing, and the per-row redefinition with it.
+    """
+    if not visible:
+        return None
+    scaled = annualise(value, frequency)
+    if scaled is not None:
+        return scaled
+    # No frequency stated. Every visible-pay posting in a 39-board sample
+    # carried one, but dropping the figure when it is absent would lose real
+    # data; magnitude settles it without guessing, since no annual salary is
+    # under $1,000 and no hourly rate reaches it.
+    return annualise(value, "year" if _num(value) >= 1000 else "hour")
+
+
 def _description(item: dict[str, Any]) -> str:
     """Pinpoint splits a posting across several labelled HTML blocks."""
     parts: list[str] = []
@@ -93,7 +120,7 @@ class Pinpoint(BoardSource):
             fetched = await gather_limited(
                 [self._posted_at(fetcher, i.get("url")) for i in needs_detail], limit=4
             )
-            for item, posted in zip(needs_detail, fetched):
+            for item, posted in zip(needs_detail, fetched, strict=True):
                 if posted:
                     dates[str(item["id"])] = posted
 
@@ -124,25 +151,6 @@ class Pinpoint(BoardSource):
             # nothing to respect a publisher's stated intent directly.
             visible = item.get("compensation_visible") is not False
 
-            def _pay(value: Any) -> float | None:
-                if not visible:
-                    return None
-                scaled = annualise(value, frequency)
-                if scaled is not None:
-                    return scaled
-                # No frequency stated. Every visible-pay posting in a 39-board
-                # sample carried one, but dropping the figure when it is absent
-                # would lose real data; magnitude settles it without guessing,
-                # since no annual salary is under $1,000 and no hourly rate
-                # reaches it.
-                return annualise(value, "year" if _num(value) >= 1000 else "hour")
-
-            def _num(value: Any) -> float:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    return 0.0
-
             job = Job(
                     source=self.name,
                     source_job_id=str(item["id"]),
@@ -163,8 +171,8 @@ class Pinpoint(BoardSource):
                     posted_at=dates.get(str(item["id"]))
                     or item.get("published_at")
                     or item.get("created_at"),
-                    salary_min=_pay(item.get("compensation_minimum")),
-                    salary_max=_pay(item.get("compensation_maximum")),
+                    salary_min=_pay(item.get("compensation_minimum"), frequency, visible),
+                    salary_max=_pay(item.get("compensation_maximum"), frequency, visible),
                     salary_currency=item.get("compensation_currency") if visible else None,
                     # Kept even when the numbers are dropped: "$25 - $30 / hour"
                     # is what the employer published, and it is the evidence

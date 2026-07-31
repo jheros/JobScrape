@@ -45,7 +45,7 @@ async def validate_ats(
         async with sem:
             try:
                 status, count = await source.probe(fetcher, slug)
-            except Exception as exc:  # noqa: BLE001 - one bad board must not stop the sweep
+            except Exception as exc:
                 log.debug("probe %s/%s failed: %s", ats, slug, exc)
                 status, count = "dead", 0
         async with lock:

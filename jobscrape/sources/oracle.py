@@ -124,7 +124,7 @@ class Oracle(BoardSource):
             fetched = await gather_limited(
                 [self._detail(fetcher, host, site, jid) for jid in needed], limit=4
             )
-            for jid, result in zip(needed, fetched):
+            for jid, result in zip(needed, fetched, strict=True):
                 if isinstance(result, dict):
                     details[jid] = result
 

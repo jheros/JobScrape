@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from typing import Iterable
 
 from ..http import Fetcher
@@ -123,7 +122,7 @@ async def discover_domain(fetcher: Fetcher, domain: str) -> set[str]:
     ):
         try:
             slugs = await provider(fetcher, domain)
-        except Exception as exc:  # noqa: BLE001 - one provider must not stop the rest
+        except Exception as exc:
             log.debug("%s failed for %s: %s", name, domain, exc)
             continue
         new = slugs - found

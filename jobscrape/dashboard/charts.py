@@ -23,7 +23,7 @@ four-way categorical set it fails the normal-vision floor (warning↔serious
 from __future__ import annotations
 
 import html
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 # Categorical slots, in the fixed order the palette defines. Never cycled: a
 # fifth category folds into "Other" rather than reusing slot 1.

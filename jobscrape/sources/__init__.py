@@ -132,7 +132,12 @@ def restricted_board_sources() -> dict[str, BoardSource]:
 ALL_SOURCE_NAMES = sorted(set(BOARD_SOURCES) | set(GLOBAL_SOURCES))
 
 __all__ = [
-    "Source", "BoardSource", "GlobalSource",
-    "BOARD_SOURCES", "GLOBAL_SOURCES", "ALL_SOURCE_NAMES",
-    "restricted_sources", "restricted_board_sources",
+    "ALL_SOURCE_NAMES",
+    "BOARD_SOURCES",
+    "GLOBAL_SOURCES",
+    "BoardSource",
+    "GlobalSource",
+    "Source",
+    "restricted_board_sources",
+    "restricted_sources",
 ]

@@ -225,6 +225,20 @@ JOB_COLUMNS = [
 # Genuinely Postgres-only syntax (`::date` casts, `ON CONFLICT`, `RETURNING`)
 # is written directly against `?` positions the same way — only the
 # placeholder syntax is being adapted, not the SQL dialect.
+#
+# THE ONE TRAP: **every** `?` in the string becomes a bound parameter, including
+# one inside a quoted literal and Postgres's own `?` operators. So these do not
+# work through this Connection:
+#
+#     WHERE raw_json ? 'WorkplaceType'      -- JSONB key-exists operator
+#     WHERE title ~ '^Eng(ineer)?$'         -- a `?` inside a regex literal
+#     WHERE note = 'why?'                   -- a `?` inside any string literal
+#
+# The failure is loud rather than silent — SQLAlchemy raises "A value is
+# required for bind parameter 'pN'" — but the message says nothing about the
+# cause, which has cost real debugging time more than once. Workarounds:
+# `jsonb_exists(raw_json, 'key')` for the JSONB operator, and passing any
+# literal containing a `?` as a bound parameter instead of inlining it.
 
 _QMARK_RE = re.compile(r"\?")
 
@@ -931,7 +945,7 @@ def set_job_status(
 
 
 def status_counts(conn: Connection) -> dict[str, int]:
-    counts = {s: 0 for s in JOB_STATUSES}
+    counts = dict.fromkeys(JOB_STATUSES, 0)
     for row in conn.execute("SELECT status, COUNT(*) c FROM job_status GROUP BY status"):
         counts[row["status"]] = row["c"]
     # Anything never triaged is implicitly 'new'.
