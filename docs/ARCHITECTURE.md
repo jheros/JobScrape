@@ -287,11 +287,33 @@ what the liveness probe exists to cover.
   5.8% of real titles name two levels, so "Senior Staff Engineer" is staff and "Principal
   Engineering Manager" is a manager. Classifies **56.0%** of open postings; the rest name
   no level and are honestly `unknown`.
-- **`skills`** → a comma-separated list drawn from a closed 133-term vocabulary
+- **`skills`** → a comma-separated list drawn from a closed **722-term** vocabulary
   (`jobscrape/skills.py`), every pattern word-boundary anchored. That anchoring is not a
   refinement: without it `rust` matched 1,677 of 4,000 descriptions instead of 305
   (*trustworthiness*, *thrust*) and `scala` 1,543 instead of 137 (*scalable*,
   *escalation*) — both outranking `java`, which is how the problem was noticed.
+
+  **Twenty-two names carry hand-written patterns** because they are ordinary English more
+  often than products — measured bare-word rates over 8,000 descriptions: `make` 48%,
+  `foundation` 11%, `less` 4.8%, `claude` 4.5%, `combine` 3.8%, `kind` 3.4%, `room` and
+  `harness` 2.4%, then `mode`/`ray`/`puppet`/`black`/`chef`/`vault`/`hive`/`fiber`/
+  `temporal`/`stripe`/`jax`/`robot`/`segment`/`gemini` near 1%. Qualification cut `make`
+  from 2,686 matches to 62 and `foundation` from 734 to 3.
+
+  **Extraction is prefiltered**, which is what makes a vocabulary this size affordable at
+  all — it runs on every upsert, so its cost is paid on every fetch. Each pattern's
+  branches are reduced to the literal they must begin with, and the pattern is skipped
+  unless one of those literals appears as a plain substring. 722 terms now cost 12.6 ms
+  per description against 15.8 ms for the old 133.
+
+  The derivation has to be *sound*, and two plausible versions are not: taking the longest
+  literal run picks `framework` out of `\bspring\s*(?:boot|framework|mvc)\b` where only
+  `spring` is required, and taking the leading run whole picks `llms` out of `\bllms?\b`
+  where the trailing `s` is optional — that one produced 80 wrong answers over 1,500 real
+  descriptions. What holds is the leading run minus its last character when a `?` or `*`
+  follows, and `tests/test_skills.py` asserts it across the whole vocabulary rather than
+  trusting the comment. A combined single-alternation regex was measured too and is
+  **2.8× slower** than one pattern per term, because Python backtracks through it.
 - **`employment_type`** → `full_time` / `part_time` / `contract` / `internship` / NULL,
   from `classify_employment_type` in `models.py`. This one **replaces** the adapter's
   value rather than filling a blank: the raw value is the classifier's *input*. Before it

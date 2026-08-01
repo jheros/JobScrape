@@ -354,12 +354,25 @@ largest single source of error (mostly "virtual interviews"); removing it from
 `REMOTE_MENTION` in `jobscrape/models.py` is a one-line change if the remote count ever
 looks inflated.
 
-**`skills`** — a comma-separated list from a closed 133-term vocabulary of languages,
-frameworks, clouds, datastores and practices. Every pattern is word-boundary anchored,
-which is load-bearing rather than tidy: unanchored, `rust` matched 1,677 of 4,000 real
-descriptions instead of 305 (*trustworthiness*, *thrust*) and `scala` 1,543 instead of 137
-(*scalable*, *escalation*) — both outranking `java`. The skills gap is mostly structural:
-Adzuna and Jooble serve ~500-character snippets, and a snippet rarely names a stack.
+**`skills`** — a comma-separated list from a closed **722-term** vocabulary of languages,
+frontend and backend frameworks, mobile, datastores, cloud services, DevOps and platform
+tooling, data engineering, AI/ML, testing, security and observability.
+
+Every pattern is word-boundary anchored, which is load-bearing rather than tidy:
+unanchored, `rust` matched 1,677 of 4,000 real descriptions instead of 305
+(*trustworthiness*, *thrust*) and `scala` 1,543 instead of 137 (*scalable*, *escalation*)
+— both outranking `java`.
+
+Twenty-two names are ordinary English more often than they are products and carry
+hand-written patterns requiring context. Measured as bare words over 8,000 descriptions:
+`make` 48%, `foundation` 11%, `claude` 4.5%, `less` 4.8%, `combine` 3.8%, `kind` 3.4%,
+`room` 2.4%. A bare `\bmake\b` would have tagged half the archive.
+
+Extraction skips a pattern entirely unless one of the literals its branches must begin
+with is present as a plain substring. That is why 722 terms extract *faster* than 133 did
+— 12.6 ms per description against 15.8 — and it is what makes the vocabulary cheap to
+extend. The remaining skills gap is structural: Adzuna and Jooble serve ~500-character
+snippets, and a snippet rarely names a stack.
 
 `workplace_type` is `remote` / `hybrid` / `onsite` / `unknown`. **Nothing is filtered on
 it** — every job is collected regardless — so you can slice the dataset yourself:
