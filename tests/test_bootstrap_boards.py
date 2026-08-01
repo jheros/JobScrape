@@ -91,7 +91,7 @@ async def test_cornerstone_parses_and_uses_the_regional_host_from_the_page() -> 
     assert job.source_job_id == "acme:REQ0"
     assert job.title == "Engineer 0"
     assert job.location_raw == "Tulsa, OK, United States"
-    assert job.country == "United States"
+    assert job.country == "US"   # normalized from Cornerstone's "United States"
     assert job.department == "Engineering"
     # US-locale M/D/YYYY, not ISO.
     assert job.posted_at.startswith("2026-07-29")
@@ -247,7 +247,7 @@ async def test_paycom_hourly_pay_is_annualised_from_the_prose_field() -> None:
     assert job.salary_raw == "$22.00 - $24.00 Hourly"
     assert job.company == "Acme Clinic"
     assert job.country == "US"
-    assert job.employment_type == "Full-time"
+    assert job.employment_type == "full_time"   # normalized from Paycom's "Full-time"
     assert job.posted_at.startswith("2026-07-29")
 
 

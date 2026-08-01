@@ -40,12 +40,18 @@ def test_csv_roundtrip(populated) -> None:
     assert "description_text" in parsed[0]
 
 
-def test_csv_can_include_html(populated) -> None:
+def test_exports_never_carry_html(populated) -> None:
+    """`--include-html` existed to serve a column that no longer exists.
+
+    `description_text` holds the same content and is what every format emits;
+    the flag and the column went together rather than leaving a no-op switch.
+    """
     conn, tmp_path = populated
     rows = db.query_jobs(conn)
-    target = export.to_csv(rows, tmp_path / "out.csv", include_html=True)
+    target = export.to_csv(rows, tmp_path / "out.csv")
     parsed = list(csv.DictReader(target.open(encoding="utf-8")))
-    assert "description_html" in parsed[0]
+    assert "description_html" not in parsed[0]
+    assert "description_text" in parsed[0]
 
 
 def test_jsonl(populated) -> None:

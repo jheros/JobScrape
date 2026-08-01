@@ -183,7 +183,7 @@ async def test_personio_xml_parsing() -> None:
     assert job.posted_at is not None and job.posted_at.startswith("2026-06-25")
     assert "Build APIs" in job.description_text
     assert "Your profile" in job.description_text
-    assert job.employment_type == "permanent, full-time"
+    assert job.employment_type == "full_time"   # normalized from "permanent, full-time"
 
 
 async def test_personio_malformed_xml_is_not_fatal() -> None:
@@ -263,7 +263,7 @@ async def test_breezy_handles_object_valued_fields() -> None:
     assert jobs is not None and len(jobs) == 1
     job = jobs[0]
     assert job.company == "RightBlue Labs Inc"  # unwrapped from the dict
-    assert job.employment_type == "Contract"
+    assert job.employment_type == "contract"    # normalized from "Contract"
     assert job.country == "CA"
     assert job.workplace_type == "remote"
     assert job.posted_at is not None and job.posted_at.startswith("2026-06-26")

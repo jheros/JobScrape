@@ -300,6 +300,169 @@ def classify_workplace(
     return "onsite" if is_remote is False else "unknown"
 
 
+# --- country normalization -------------------------------------------------
+
+#: Spellings of the same country, collapsed to the ISO 3166-1 alpha-2 code.
+#:
+#: The archive held three spellings of the United States at once — "US" (11,074
+#: rows), "USA" (998) and "United States of America" (1,068) — because each
+#: adapter stored whatever its API happened to say. Workday was the worst
+#: offender: it stored the free-text `country.descriptor` while the ISO code sat
+#: in `alpha2Code` in the same payload.
+#:
+#: Only unambiguous full names and shorthands are listed. A two-letter code that
+#: is already an ISO code passes through untouched.
+_COUNTRY_ALIASES = {
+    "usa": "US", "u.s.": "US", "u.s.a.": "US", "us": "US",
+    "united states": "US", "united states of america": "US",
+    "america": "US",
+    "uk": "GB", "u.k.": "GB", "great britain": "GB",
+    "united kingdom": "GB", "england": "GB", "scotland": "GB", "wales": "GB",
+    "canada": "CA", "mexico": "MX", "germany": "DE", "france": "FR",
+    "spain": "ES", "italy": "IT", "netherlands": "NL", "the netherlands": "NL",
+    "ireland": "IE", "poland": "PL", "portugal": "PT", "sweden": "SE",
+    "india": "IN", "australia": "AU", "japan": "JP", "singapore": "SG",
+    "brazil": "BR", "argentina": "AR", "israel": "IL", "switzerland": "CH",
+}
+
+#: The United States named outright in a free-text location string.
+#:
+#: Word-anchored on purpose: a bare `US` substring matches "Austin" and
+#: "Customer", and `\bUS\b` alone would still fire on the pronoun "us" in prose.
+#: This is only ever run against `location_raw`, never a description.
+_US_IN_TEXT = re.compile(
+    r"\b(u\.?s\.?a?\.?|united\s+states(\s+of\s+america)?)\b",
+    re.I,
+)
+
+
+def normalize_country(value: str | None) -> str | None:
+    """Collapse a country name or code to its ISO 3166-1 alpha-2 form.
+
+    Returns the input unchanged when it is already a two-letter code, and
+    ``None`` when there is nothing to normalize. An unrecognized longer name is
+    returned as-is rather than dropped — losing it would be worse than storing
+    a spelling this table does not yet know.
+    """
+    if not value:
+        return None
+    text = " ".join(str(value).strip().split())
+    if not text:
+        return None
+    mapped = _COUNTRY_ALIASES.get(text.lower())
+    if mapped:
+        return mapped
+    if len(text) == 2 and text.isalpha():
+        return text.upper()
+    return text
+
+
+def infer_country(state: str | None, location_raw: str | None) -> str | None:
+    """Resolve a country from evidence already present, or ``None``.
+
+    Two kinds of evidence count, both stated rather than assumed: a resolved US
+    ``state`` (the state parser only ever emits real US abbreviations), or the
+    location string naming the US outright.
+
+    Deliberately narrow. 20,689 rows had no country and it was tempting to
+    default the survivors to "US" — the archive is US-filtered, after all. But
+    ~7,600 of them say only "Remote", "Worldwide" or nothing at all, and
+    stamping those "US" would be a guess wearing the same clothes as a fact.
+    They stay ``None``, for the same reason `workplace_type` has an "unknown".
+    """
+    if state:
+        return "US"
+    if location_raw and _US_IN_TEXT.search(location_raw):
+        return "US"
+    return None
+
+
+# --- employment type -------------------------------------------------------
+
+#: Raw employment-type value -> controlled vocabulary, by keyword containment.
+#:
+#: 158 distinct raw strings were stored for what is mostly one fact: "FullTime",
+#: "Full-time", "full_time", "full-time", "Full Time", "Full-Time" and "Full
+#: time" are seven spellings covering 11,676 rows. Every adapter passed its
+#: ATS's own vocabulary through untouched, so filtering the column required
+#: knowing all of them.
+#:
+#: Containment rather than exact match, following freehire's `leverEmploymentType`
+#: (MIT) — that project maps each ATS separately, but reaches for containment
+#: where the field is free text. Here every source shares one classifier, and
+#: containment is what lets it absorb all 158 spellings without a lookup table:
+#: it also correctly reads Lever's "Software Engineering (Full-Time)", where an
+#: employer put a job category in the commitment field.
+#:
+#: Order matters. "internship" is checked before "part", because an internship
+#: is often described as part-time and the internship is the more specific fact.
+#: "contract" precedes "full_time" so "Full-Time Contractor" reads as contract.
+_EMPLOYMENT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("internship", ("intern", "internship", "co-op", "coop", "apprentice",
+                    "trainee", "praktikum", "working student", "werkstudent")),
+    ("contract", ("contract", "contractor", "freelance", "temporary", "temp ",
+                  "seasonal", "fixed term", "fixed_term", "fixed-term",
+                  "consultant", "b2b", "c2c", "1099", "per diem", "per_diem",
+                  "locum")),
+    ("part_time", ("part time", "part-time", "part_time", "parttime",
+                   "teilzeit", "casual")),
+    ("full_time", ("full time", "full-time", "full_time", "fulltime",
+                   "permanent", "regular", "vollzeit", "salaried",
+                   "employee", "ft ")),
+)
+
+EMPLOYMENT_TYPES = tuple(name for name, _ in _EMPLOYMENT_KEYWORDS)
+
+#: Anchored phrases for the description fallback, same shape as
+#: `ANCHORED_WORKPLACE` and for the same reason: a bare "contract" or "intern"
+#: appears constantly in prose ("contract with our vendors", "internal tools"),
+#: so only phrases that state the arrangement count.
+_EMPLOYMENT_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("internship", ("this internship", "summer internship", "internship program",
+                    "as an intern", "intern position", "internship position")),
+    ("contract", ("contract position", "contract role", "contract basis",
+                  "fixed-term contract", "temporary position",
+                  "this is a contract", "w2 contract", "6-month contract",
+                  "12-month contract")),
+    ("part_time", ("part-time position", "part-time role", "part time position",
+                   "this is a part-time")),
+    ("full_time", ("full-time position", "full-time role", "full time position",
+                   "this is a full-time", "permanent position",
+                   "permanent role", "full-time employment")),
+)
+
+
+def classify_employment_type(
+    raw: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+) -> str | None:
+    """Map a source's employment-type value to the controlled vocabulary.
+
+    Returns one of :data:`EMPLOYMENT_TYPES` or ``None``. Precedence is the same
+    as every other derived field here: the source's own structured value first,
+    then the posting's prose, and nothing at all when neither states it.
+
+    The prose pass runs only when the raw value resolves nothing — either
+    because it was absent, or because it was something like "Regular" or
+    "Employee" that names no schedule. Abstaining beats guessing: a wrong facet
+    is worse than a missing one, since a caller filtering on ``full_time``
+    silently loses real matches either way but only the wrong value misleads.
+    """
+    if raw:
+        lowered = f" {' '.join(str(raw).lower().split())} "
+        for name, keywords in _EMPLOYMENT_KEYWORDS:
+            if any(word in lowered for word in keywords):
+                return name
+
+    prose = " ".join(part for part in (title, description) if part).lower()
+    if prose:
+        for name, phrases in _EMPLOYMENT_PHRASES:
+            if any(phrase in prose for phrase in phrases):
+                return name
+    return None
+
+
 # --- raw payload encoding --------------------------------------------------
 
 #: Ceiling on the serialised payload stored in `jobs.raw_json`, to stop one
@@ -664,6 +827,19 @@ class Job:
         if not self.seniority:
             self.seniority = classify_seniority(self.title)
 
+        # Unlike the fields above, this REPLACES the adapter's value rather than
+        # filling a blank: the raw value is the classifier's input, not a
+        # fallback. Adapters keep passing their ATS's own vocabulary and none of
+        # them needs to know the target one — the same division of labour
+        # `workplace_hint` has with `classify_workplace`.
+        self.employment_type = classify_employment_type(
+            self.employment_type, self.title, self.description_text
+        )
+
+        self.country = normalize_country(self.country)
+        if not self.country:
+            self.country = infer_country(self.state, self.location_raw)
+
         if self.salary_min is None:
             haystack = self.salary_raw or self.description_text
             low, high, currency, matched = parse_salary(haystack)
@@ -701,6 +877,10 @@ class Job:
         # column holds, and its absence is what made Oracle's native
         # `WorkplaceType` unbackfillable.
         row["raw_json"] = encode_raw_json(raw)
-        # An input to classification, not a stored column.
+        # Inputs to derivation, not stored columns. `description_html` is kept on
+        # the dataclass because `__post_init__` derives `description_text` from
+        # it when an adapter supplies only HTML — that happens in memory, before
+        # this method runs, so dropping the column loses no text.
         row.pop("workplace_hint", None)
+        row.pop("description_html", None)
         return row

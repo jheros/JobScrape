@@ -24,7 +24,7 @@ COLUMNS = [
     "salary_min", "salary_max", "salary_currency", "salary_raw",
     "skills",
     "source", "company_slug", "apply_url", "updated_at",
-    "description_text", "description_html",
+    "description_text",
 ]
 
 #: The nine fields a job is expected to carry. Used by ``--complete-only``,
@@ -42,7 +42,7 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "seniority": ("seniority",),
     "salary": ("salary_min", "salary_max"),
     "skills": ("skills",),
-    "description": ("description_text", "description_html"),
+    "description": ("description_text",),
     "link": ("job_url", "apply_url"),
 }
 
@@ -79,9 +79,9 @@ def missing_fields(row: Any) -> list[str]:
 
 
 def _rows_to_dicts(
-    rows: Iterable[dict[str, Any]], columns: Sequence[str], include_html: bool
+    rows: Iterable[dict[str, Any]], columns: Sequence[str]
 ) -> list[dict[str, Any]]:
-    cols = [c for c in columns if include_html or c != "description_html"]
+    cols = list(columns)
     out = []
     for row in rows:
         record = {c: row[c] if c in row.keys() else None for c in cols}
@@ -100,13 +100,11 @@ def _stamp(path: Path | None, suffix: str) -> Path:
 
 
 def to_csv(
-    rows: Iterable[dict[str, Any]], path: Path | None = None, include_html: bool = False
+    rows: Iterable[dict[str, Any]], path: Path | None = None
 ) -> Path:
     target = _stamp(path, "csv")
-    records = _rows_to_dicts(rows, COLUMNS, include_html)
-    fields = list(records[0].keys()) if records else [
-        c for c in COLUMNS if include_html or c != "description_html"
-    ]
+    records = _rows_to_dicts(rows, COLUMNS)
+    fields = list(records[0].keys()) if records else list(COLUMNS)
     with target.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
@@ -115,11 +113,11 @@ def to_csv(
 
 
 def to_jsonl(
-    rows: Iterable[dict[str, Any]], path: Path | None = None, include_html: bool = True
+    rows: Iterable[dict[str, Any]], path: Path | None = None
 ) -> Path:
     target = _stamp(path, "jsonl")
     with target.open("w", encoding="utf-8") as handle:
-        for record in _rows_to_dicts(rows, COLUMNS, include_html):
+        for record in _rows_to_dicts(rows, COLUMNS):
             handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     return target
 
@@ -129,7 +127,7 @@ _EXCEL_CELL_LIMIT = 32_000
 
 
 def to_excel(
-    rows: Iterable[dict[str, Any]], path: Path | None = None, include_html: bool = False
+    rows: Iterable[dict[str, Any]], path: Path | None = None
 ) -> Path:
     """Write .xlsx using openpyxl directly.
 
@@ -147,10 +145,8 @@ def to_excel(
         ) from exc
 
     target = _stamp(path, "xlsx")
-    records = _rows_to_dicts(rows, COLUMNS, include_html)
-    fields = list(records[0].keys()) if records else [
-        c for c in COLUMNS if include_html or c != "description_html"
-    ]
+    records = _rows_to_dicts(rows, COLUMNS)
+    fields = list(records[0].keys()) if records else list(COLUMNS)
 
     workbook = Workbook(write_only=False)
     sheet = workbook.active
@@ -263,7 +259,6 @@ def export(
     rows: list[dict[str, Any]],
     formats: list[str],
     path: Path | None = None,
-    include_html: bool = False,
 ) -> list[Path]:
     written: list[Path] = []
     for fmt in formats:
@@ -275,5 +270,5 @@ def export(
         if fmt == "md":
             written.append(writer(rows, target))
         else:
-            written.append(writer(rows, target, include_html))
+            written.append(writer(rows, target))
     return written

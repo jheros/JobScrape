@@ -13,7 +13,7 @@ from datetime import date, datetime
 from typing import Any, Iterable
 
 from . import seniority
-from .models import Job
+from .models import Job, infer_country
 
 # --- Software role classification ----------------------------------------
 
@@ -664,15 +664,36 @@ _US_COUNTRY = re.compile(
 _CITY_STATE = re.compile(r",\s*([A-Z]{2})\b(?:\s*,?\s*(?:US|USA|United States))?\s*$")
 _STATE_ANYWHERE = re.compile(r",\s*([A-Z]{2})\s*(?:,|$|\s+-)")
 
-# Well-known US metros that often appear without a state.
-_US_CITIES = {
-    "new york", "nyc", "san francisco", "sf", "seattle", "boston", "chicago",
-    "los angeles", "austin", "denver", "atlanta", "miami", "dallas", "houston",
-    "philadelphia", "phoenix", "san diego", "san jose", "portland", "washington dc",
-    "washington, d.c.", "pittsburgh", "detroit", "minneapolis", "nashville",
-    "salt lake city", "boulder", "palo alto", "mountain view", "sunnyvale",
-    "cupertino", "menlo park", "redmond", "bellevue", "cambridge, ma",
-    "brooklyn", "manhattan", "silicon valley", "bay area",
+# Well-known US metros that often appear without a state, mapped to the state
+# each one implies.
+#
+# This was a bare set, consulted only by `is_us_eligible` to answer "could this
+# be a US job". It now carries the state too, because `parse_us_location`
+# needed exactly the same list: it can only resolve a location that names a
+# state, and the most common unresolved shapes in the archive are bare city
+# names — "San Francisco" (1,257 rows), "Cupertino" (350), "Seattle" (133),
+# "Austin" (118). 2,421 rows matched one of these exactly with no state
+# attached.
+#
+# Curated, not a geocoder — the same doctrine as every other dictionary here.
+# Ambiguous names are deliberately absent: there is a Portland in Oregon and
+# Maine, a Columbus in Ohio and Georgia, so neither implies a state on its own.
+# Entries that already carry their state ("cambridge, ma") stay for the
+# eligibility check but resolve through the normal state-code path.
+_US_CITIES: dict[str, str | None] = {
+    "new york": "NY", "nyc": "NY", "brooklyn": "NY", "manhattan": "NY",
+    "san francisco": "CA", "sf": "CA", "los angeles": "CA", "san diego": "CA",
+    "san jose": "CA", "palo alto": "CA", "mountain view": "CA",
+    "sunnyvale": "CA", "cupertino": "CA", "menlo park": "CA",
+    "seattle": "WA", "redmond": "WA", "bellevue": "WA",
+    "boston": "MA", "chicago": "IL", "austin": "TX", "dallas": "TX",
+    "houston": "TX", "denver": "CO", "boulder": "CO", "atlanta": "GA",
+    "miami": "FL", "philadelphia": "PA", "pittsburgh": "PA", "phoenix": "AZ",
+    "detroit": "MI", "minneapolis": "MN", "nashville": "TN",
+    "salt lake city": "UT", "washington dc": "DC", "washington, d.c.": "DC",
+    # Named for the eligibility check, but they imply no single state.
+    "portland": None, "cambridge, ma": None,
+    "silicon valley": None, "bay area": None,
 }
 
 # Regions that a posting can be *scoped to*, excluding US candidates. These are
@@ -803,7 +824,13 @@ is_us_location = is_us_eligible
 
 
 def parse_us_location(location: str | None) -> tuple[str | None, str | None]:
-    """Best-effort split of a raw location string into (city, state)."""
+    """Best-effort split of a raw location string into (city, state).
+
+    Three passes, most specific first: a trailing state code, a full state name
+    anywhere, then the curated hub-city table for a string that names a city and
+    no state at all. Returns ``(None, None)`` when nothing resolves — a bare
+    "Remote" or an unlisted city yields nothing rather than a guess.
+    """
     if not location:
         return None, None
     text = location.strip()
@@ -816,7 +843,34 @@ def parse_us_location(location: str | None) -> tuple[str | None, str | None]:
         if re.search(rf"\b{re.escape(name)}\b", lowered):
             city = re.sub(rf"\b{re.escape(name)}\b.*", "", text, flags=re.I)
             return (city.strip().strip(",") or None), abbr
+    # No state named anywhere. The string may still be a city we know — the
+    # single most common unresolved shape in the archive. Matched on the whole
+    # cleaned string, not by containment, so "San Francisco Bay Area" and
+    # "Greater Boston" do not silently become the city itself.
+    stripped = _CITY_NOISE_RE.sub("", lowered).strip(" ,-–—")
+    state = _US_CITIES.get(stripped)
+    if state:
+        return _CITY_DISPLAY.get(stripped, stripped.title()), state
     return None, None
+
+
+#: Cities whose canonical name is not their key title-cased. Without this "nyc"
+#: would be stored as the city "Nyc".
+_CITY_DISPLAY = {
+    "nyc": "New York", "sf": "San Francisco",
+    "washington dc": "Washington", "washington, d.c.": "Washington",
+}
+
+
+#: Wording that decorates a city name without changing which city it is, so
+#: "Remote - Austin" and "San Francisco Office" still resolve. Anchored to the
+#: ends of the string: an interior match would turn "Remote" itself into "".
+_CITY_NOISE_RE = re.compile(
+    r"^(remote|hybrid|onsite|on-site|us|usa)\s*[-–—,]\s*"
+    r"|\s*[-–—,]?\s*(remote|hybrid|onsite|on-site|office|hq|headquarters|"
+    r"metro|area|us|usa|united states)$",
+    re.I,
+)
 
 
 # --- Date window ----------------------------------------------------------
@@ -983,8 +1037,15 @@ def apply_filters_counted(
         if not in_window(job, since, until):
             funnel.dropped_window += 1
             continue
-        if not job.city and not job.state:
-            job.city, job.state = parse_us_location(job.location_raw)
+        # Each field filled independently. Requiring BOTH to be blank meant an
+        # adapter that supplied only one blocked the other from ever resolving —
+        # 1,835 rows carried a state with no city for that reason.
+        if not job.city or not job.state:
+            city, state = parse_us_location(job.location_raw)
+            job.city = job.city or city
+            job.state = job.state or state
+        if not job.country:
+            job.country = infer_country(job.state, job.location_raw)
         kept.append(job)
     funnel.kept = len(kept)
     return kept, funnel

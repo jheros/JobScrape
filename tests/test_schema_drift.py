@@ -23,7 +23,11 @@ from jobscrape.models import Job
 #: `raw` is stored under a different name (`raw_json`, JSON-encoded), and
 #: `workplace_hint` is an *input* to classification that is discarded once
 #: `workplace_type` has been derived from it.
-NOT_COLUMNS = {"raw", "workplace_hint"}
+#: Dataclass fields that are deliberately not stored. `raw` becomes `raw_json`;
+#: `workplace_hint` is an input to `classify_workplace`; `description_html` is an
+#: input to the `html_to_text` derivation and its column was dropped once
+#: `description_text` proved to carry the same content on every row.
+NOT_COLUMNS = {"raw", "workplace_hint", "description_html"}
 
 
 def _schema_columns() -> list[str]:

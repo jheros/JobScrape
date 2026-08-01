@@ -488,7 +488,6 @@ def cmd_export(args: argparse.Namespace) -> int:
                 rows,
                 formats=args.format,
                 path=Path(args.output) if args.output else None,
-                include_html=args.include_html,
             )
         except RuntimeError as exc:
             log.error("%s", exc)
@@ -882,8 +881,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--company")
     p_exp.add_argument("--search", help="substring in title or description")
     p_exp.add_argument("--limit", type=int, default=None)
-    p_exp.add_argument("--include-html", action="store_true",
-                       help="include the raw HTML description column")
     p_exp.add_argument("--complete-only", action="store_true",
                        help="keep only postings carrying all nine fields (title, source, "
                             "location, mode, seniority, salary, skills, description, link). "
@@ -914,7 +911,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--company")
     p_run.add_argument("--search")
     p_run.add_argument("--limit", type=int, default=None)
-    p_run.add_argument("--include-html", action="store_true")
     p_run.add_argument("--ats", action="append", choices=_ATS_CHOICES)
     p_run.add_argument("--recheck", action="store_true")
 

@@ -26,6 +26,31 @@ def _location(item: dict[str, Any]) -> str | None:
     return ", ".join(str(p) for p in parts if p) or None
 
 
+def _location_parts(*items: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """The structured ``(city, state, country)`` BambooHR already publishes.
+
+    `_location` above reads exactly these three fields and then joins them into
+    a string, which was the only thing that reached the `Job`. The parts were
+    parsed and thrown away, leaving `city`/`state`/`country` to be re-derived
+    from the string that had just been built out of them — when they were right
+    there, structured and unambiguous.
+    """
+    for item in items:
+        loc = item.get("location") or item.get("atsLocation") or {}
+        if not isinstance(loc, dict):
+            continue
+        city = loc.get("city") or None
+        state = loc.get("state") or None
+        country = loc.get("country") or None
+        if city or state or country:
+            return (
+                str(city) if city else None,
+                str(state) if state else None,
+                str(country) if country else None,
+            )
+    return None, None, None
+
+
 class BambooHR(BoardSource):
     name = "bamboohr"
     ats = "bamboohr"
@@ -80,6 +105,7 @@ class BambooHR(BoardSource):
             detail = details.get(job_id, {})
             is_remote = item.get("isRemote")
             location_type = str(item.get("locationType") or "")
+            _city, _state, _country = _location_parts(item, detail)
 
             job = Job(
                     source=self.name,
@@ -91,6 +117,7 @@ class BambooHR(BoardSource):
                     or f"https://{slug}.bamboohr.com/careers/{job_id}",
                     apply_url=f"https://{slug}.bamboohr.com/careers/{job_id}",
                     location_raw=_location(item) or _location(detail),
+                    city=_city, state=_state, country=_country,
                     is_remote=bool(is_remote) if is_remote is not None else None,
                     workplace_hint="remote" if is_remote else (location_type or None),
                     employment_type=item.get("employmentStatusLabel"),

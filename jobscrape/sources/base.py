@@ -84,8 +84,12 @@ DEFAULT_QUERIES = [
 #: These are exactly the columns `db.upsert_jobs` COALESCEs, and the two lists
 #: have to agree — if an adapter sets one of these to None on a shallow pass and
 #: the upsert does *not* preserve it, the stored value is destroyed.
+#: `description_html` is deliberately absent even though `shallow_refresh` still
+#: clears it: it is no longer a stored column, so there is nothing for the
+#: upsert to preserve. It stays cleared because it is still a detail-only field
+#: in memory, and the text has already been derived from it by then.
 PRESERVED_ON_REFRESH = frozenset({
-    "description_html", "description_text", "posted_at",
+    "description_text", "posted_at",
     "salary_min", "salary_max", "salary_currency", "raw",
 })
 

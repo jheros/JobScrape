@@ -48,6 +48,57 @@ def parse_slug(slug: str) -> tuple[str, str, str] | None:
     return None
 
 
+#: What Workday puts in the listing's `locationsText` when a posting spans
+#: several offices — literally "2 Locations". It is a UI summary, not a place,
+#: and it used to be the fallback whenever a detail request failed, which stored
+#: it as the entire `location_raw` for 1,118 postings and guaranteed
+#: city/state/country stayed blank on all of them.
+_PLACEHOLDER_LOCATION = re.compile(r"^\s*\d+\s+locations?\s*$", re.I)
+
+
+def _location(detail: dict[str, Any], posting: dict[str, Any]) -> str | None:
+    """The posting's real location, joining the extra offices when it has them.
+
+    `detail.location` is a real place ("Hampton, VA, US") and
+    `detail.additionalLocations` holds the rest, so a multi-office posting can be
+    described properly instead of as "2 Locations". The listing's `locationsText`
+    is still the last resort, but only when it names somewhere — the placeholder
+    is worth less than nothing, since it defeats every downstream parser while
+    looking like data.
+    """
+    primary = detail.get("location")
+    extra = [p for p in (detail.get("additionalLocations") or []) if isinstance(p, str)]
+    places = [p.strip() for p in ([primary] if isinstance(primary, str) else []) + extra
+              if isinstance(p, str) and p.strip()]
+    if places:
+        return "; ".join(dict.fromkeys(places))
+    fallback = posting.get("locationsText")
+    if isinstance(fallback, str) and fallback.strip() and not _PLACEHOLDER_LOCATION.match(fallback):
+        return fallback.strip()
+    return None
+
+
+def _country(detail: dict[str, Any]) -> str | None:
+    """The ISO code where Workday publishes one, its free-text name otherwise.
+
+    `country.descriptor` is what this used to read, and it is the reason the
+    archive held "United States of America" alongside "US" and "USA" for the
+    same country. `alpha2Code` is in the same payload, one level down.
+    """
+    req = detail.get("jobRequisitionLocation") or {}
+    for holder in (req.get("country"), detail.get("country")):
+        if isinstance(holder, dict):
+            code = holder.get("alpha2Code")
+            if isinstance(code, str) and code.strip():
+                return code.strip().upper()
+    for holder in (req.get("country"), detail.get("country")):
+        if isinstance(holder, dict):
+            name = holder.get("descriptor")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+    return None
+
+
 class Workday(BoardSource):
     name = "workday"
     ats = "workday"
@@ -271,8 +322,8 @@ class Workday(BoardSource):
             detail = details.get(path, {})
             bullets = posting.get("bulletFields") or []
             req_id = bullets[0] if bullets else re.sub(r".*_", "", path)
-            country = (detail.get("country") or {}).get("descriptor")
-            location = detail.get("location") or posting.get("locationsText")
+            country = _country(detail)
+            location = _location(detail, posting)
             remote_type = detail.get("remoteType")
 
             job = Job(

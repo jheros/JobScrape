@@ -83,7 +83,7 @@ async def test_amazon_joins_the_qualification_fields_into_the_description() -> N
     assert "Experience with Rust" in job.description_text
     assert job.company == "Amazon"
     assert job.job_url == "https://www.amazon.jobs/en/jobs/1000/sde-0"
-    assert job.city == "Seattle" and job.country == "USA"
+    assert job.city == "Seattle" and job.country == "US"   # normalized from "USA"
     # "July 30, 2026" is display text, not a timestamp.
     assert job.posted_at.startswith("2026-07-30")
 
@@ -284,7 +284,7 @@ async def test_uber_parses_and_unescapes() -> None:
     assert job.company == "Uber"
     # The API returns HTML entities inside plain-text fields.
     assert job.department == "Engineer - Risk & Safety"
-    assert job.city == "Sunnyvale" and job.country == "USA"
+    assert job.city == "Sunnyvale" and job.country == "US"   # normalized from "USA"
     assert job.posted_at.startswith("2026-06-19")
     assert job.job_url.endswith("/careers/list/301537/")
 

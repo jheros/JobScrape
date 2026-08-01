@@ -79,7 +79,7 @@ def test_shallow_refresh_clears_only_detail_fields() -> None:
     assert job.title == "SWE"
     assert job.location_raw == "Austin, TX"
     assert job.department == "Engineering"
-    assert job.employment_type == "FullTime"
+    assert job.employment_type == "full_time"   # normalized from Ashby's "FullTime"
 
 
 def test_preserved_set_matches_the_upsert() -> None:

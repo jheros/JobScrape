@@ -160,7 +160,7 @@ async def test_jobicy_parsing() -> None:
     job = jobs[0]
     assert job.company == "Toast"
     assert job.location_raw == "USA"
-    assert job.employment_type == "full-time"   # list flattened
+    assert job.employment_type == "full_time"   # list flattened, then normalized
     assert job.salary_max == 190_000
     assert job.workplace_type == "remote"
 

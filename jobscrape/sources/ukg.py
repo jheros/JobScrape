@@ -52,6 +52,38 @@ def _location(item: dict[str, Any]) -> str | None:
     return "; ".join(dict.fromkeys(parts)) or None
 
 
+def _location_parts(item: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+    """The first location's structured ``(city, state, country)``.
+
+    `_location` above walks exactly these fields and joins them into a display
+    string; the parts never reached the `Job`, so they were re-derived from the
+    string built out of them. The FIRST location only — a posting listing three
+    offices has one `city` column to put them in, and `location_raw` already
+    carries all three.
+    """
+    locations = item.get("Locations") or []
+    if not isinstance(locations, list):
+        return None, None, None
+    for loc in locations:
+        if not isinstance(loc, dict):
+            continue
+        address = loc.get("Address") or {}
+        if not isinstance(address, dict):
+            continue
+
+        def code(key: str, field: str) -> str | None:
+            holder = address.get(key)
+            value = holder.get(field) if isinstance(holder, dict) else None
+            return str(value) if value else None
+
+        city = code("City", "Name")
+        state = code("State", "Code")
+        country = code("Country", "Code")
+        if city or state or country:
+            return city, state, country
+    return None, None, None
+
+
 class UKG(BoardSource):
     name = "ukg"
     ats = "ukg"
@@ -116,6 +148,7 @@ class UKG(BoardSource):
                 continue
             body = item.get("BriefDescription")
             remote = str(item.get("JobLocationType") or "").lower() or None
+            _city, _state, _country = _location_parts(item)
             job = Job(
                 source=self.name,
                 source_job_id=f"{tenant}:{job_id}",
@@ -124,6 +157,7 @@ class UKG(BoardSource):
                 company_slug=slug,
                 job_url=DETAIL_URL.format(host=host, tenant=tenant, guid=guid, job_id=job_id),
                 location_raw=_location(item),
+                city=_city, state=_state, country=_country,
                 workplace_hint=remote,
                 employment_type="full_time" if item.get("FullTime") else None,
                 department=item.get("JobCategoryName"),

@@ -56,7 +56,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     salary_max        DOUBLE PRECISION,
     salary_currency   TEXT,
     salary_raw        TEXT,
-    description_html  TEXT,
+    -- `description_html` was here. It was dropped: `description_text` carries
+    -- the same content, `Job.__post_init__` derives the text from the HTML in
+    -- memory before anything is written, and nothing downstream read the HTML.
+    -- The dataclass field survives for that derivation; only storage went.
     description_text  TEXT,
     raw_json          JSONB,
     first_seen_at     TIMESTAMPTZ NOT NULL,
@@ -213,7 +216,7 @@ JOB_COLUMNS = [
     "workplace_type", "seniority", "employment_type", "department",
     "posted_at", "updated_at",
     "salary_min", "salary_max", "salary_currency", "salary_raw",
-    "description_html", "description_text", "raw_json",
+    "description_text", "raw_json",
 ]
 
 # --- the ?-placeholder compatibility shim ----------------------------------
@@ -445,7 +448,7 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
     stamp = now_iso()
     updatable = [c for c in JOB_COLUMNS if c not in ("source", "source_job_id")]
     # Descriptions are expensive to obtain; never overwrite a good one with NULL.
-    preserve = {"description_html", "description_text", "posted_at", "salary_min",
+    preserve = {"description_text", "posted_at", "salary_min",
                 "salary_max", "salary_currency", "raw_json"}
     #: Columns where a *value* means "I could not tell", so it must be treated
     #: like NULL rather than like an answer.
