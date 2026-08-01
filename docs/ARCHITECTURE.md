@@ -292,6 +292,43 @@ what the liveness probe exists to cover.
   refinement: without it `rust` matched 1,677 of 4,000 descriptions instead of 305
   (*trustworthiness*, *thrust*) and `scala` 1,543 instead of 137 (*scalable*,
   *escalation*) — both outranking `java`, which is how the problem was noticed.
+- **`employment_type`** → `full_time` / `part_time` / `contract` / `internship` / NULL,
+  from `classify_employment_type` in `models.py`. This one **replaces** the adapter's
+  value rather than filling a blank: the raw value is the classifier's *input*. Before it
+  existed the column held **158 distinct raw strings** — every adapter passing its ATS's
+  own vocabulary through, so "FullTime", "Full-time", "full_time", "full-time", "Full
+  Time", "Full-Time" and "Full time" were seven spellings of one fact across 11,676 rows,
+  and filtering the column meant knowing all of them.
+
+  Keyword **containment**, not exact match, borrowed from
+  [freehire](https://github.com/strelov1/freehire) (MIT). Containment is what lets one
+  shared classifier absorb all 158 spellings without a lookup table, and it correctly
+  reads Lever's `"Software Engineering (Full-Time)"` — 156 rows where an employer typed a
+  job category into the commitment field. Order matters: `internship` is tested before
+  `part_time` (an internship is often part-time; the internship is the more specific
+  fact), and `contract` before `full_time` so "Full-Time Contractor" reads as contract.
+
+  When the raw value names no schedule ("Regular", "Remote", a category label), an
+  anchored-phrase pass over title+description decides — same shape and same reason as
+  `ANCHORED_WORKPLACE`, since a bare "contract" or "intern" appears constantly in prose.
+  Nothing at all when neither states it: 19,376 rows are NULL, because a wrong facet is
+  worse than a missing one.
+- **`country`** → ISO 3166-1 alpha-2, normalized on write. The archive had held three
+  spellings of the United States simultaneously — "US" (11,074), "USA" (998) and "United
+  States of America" (1,068) — because Workday stored the free-text `country.descriptor`
+  while `alpha2Code` sat in the same payload. Inferred only from evidence: a resolved
+  `state` (the parser emits real US abbreviations only), or `location_raw` naming the US
+  outright. **Not** defaulted for the rest — ~5,200 rows say only "Remote" or "Worldwide",
+  and stamping those "US" would be a guess wearing the clothes of a fact.
+- **`city` / `state`** → `parse_us_location` in `filters.py`, three passes most-specific
+  first: a trailing state code, a full state name anywhere, then a curated hub-city table.
+  That third pass exists because bare city names are the commonest unresolved shape in the
+  archive — "San Francisco" (1,257 rows), "Cupertino" (350), "Seattle" (133), "Austin"
+  (118) — and the parser previously required a state to be named. Curated, not a geocoder:
+  Portland maps to nothing (there is one in Oregon and one in Maine), and so do the metro
+  areas ("Bay Area", "Silicon Valley"). The two fields fill **independently**; requiring
+  both to be blank meant an adapter supplying one blocked the other, which is why 1,835
+  rows carried a state and no city.
 
 ### 3d. Filtering
 

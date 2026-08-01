@@ -296,7 +296,7 @@ python -m jobscrape fetch --include-roles security --include-roles systems
 
 # Query the archive on export
 python -m jobscrape export --state CA --search kubernetes --format xlsx
-python -m jobscrape export --since 2026-07-01 --company stripe --include-html
+python -m jobscrape export --since 2026-07-01 --company stripe
 ```
 
 ## Output
@@ -309,7 +309,7 @@ Columns:
 job_url, title, company, location_raw, city, state, country, workplace_type,
 seniority, is_remote, posted_at, employment_type, department, salary_min,
 salary_max, salary_currency, salary_raw, skills, source, company_slug,
-apply_url, updated_at, description_text[, description_html]
+apply_url, updated_at, description_text
 ```
 
 ### The nine fields every job carries
@@ -394,10 +394,11 @@ largest bucket by a wide margin — **of 11,110 unknown postings measured, 10,80
 description stored and simply never stated an arrangement**. That is not a failure of the
 classifier, and guessing "onsite" there would be inventing data for ~9,500 rows.
 
-`description_html` is omitted unless you pass `--include-html`, since it dominates
-file size. Salary is parsed out of the description text when a source has no
-structured field, and validated against realistic pay bands so that funding
-announcements and discounts are not mistaken for compensation.
+`description_html` is no longer stored at all. `description_text` carries the same
+content — the text is derived from the HTML in memory before anything is written, so
+the column was a second copy nothing read. Salary is parsed out of the description text
+when a source has no structured field, and validated against realistic pay bands so
+that funding announcements and discounts are not mistaken for compensation.
 
 ## Filtering
 
