@@ -1,0 +1,422 @@
+"""Apify ingestion: mappers, the webhook receiver, and the ATS-link recovery.
+
+The mapper tests run against recorded fixtures with no network and no token,
+because the mapping is the part with real behavioural risk. The receiver tests
+are mostly about what it *refuses* — it is the only route in this project meant
+to be publicly reachable, and every other route is protected solely by binding
+to localhost.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from jobscrape import config, db
+from jobscrape.sources.apify import ats_link, indeed, linkedin, mapper_for
+
+# --- recorded fixtures ------------------------------------------------------
+#
+# Shapes taken from each actor's published output schema. Every field the
+# mappers read is present, and the nullable ones are exercised separately below.
+
+INDEED_ITEM: dict[str, Any] = {
+    "key": "a1b2c3",
+    "title": "Senior Backend Engineer",
+    "normalizedTitle": "senior backend engineer",
+    "jobCategory": "Software Development",
+    "jobUrl": "https://www.indeed.com/viewjob?jk=a1b2c3",
+    "applyUrl": "https://boards.greenhouse.io/acmecorp/jobs/4021",
+    "datePublished": "2026-07-30T10:00:00.000Z",
+    "dateScraped": "2026-07-31T02:00:00.000Z",
+    "location": {
+        "streetAddress": None, "city": "Austin", "state": "TX",
+        "country": "US", "postalCode": "78701",
+    },
+    "baseSalary_min": 165000,
+    "baseSalary_max": 210000,
+    "salary_period": "YEAR",
+    "salary_currency": "USD",
+    "description_text": "Build distributed services in Python and Go on Kubernetes.",
+    "description_html": "<p>Build distributed services in Python and Go on Kubernetes.</p>",
+    "company": {"companyName": "Acme Corp", "companyShortName": "Acme"},
+    "attributes": ["Full-time", "Remote", "401(k)", "Health insurance"],
+}
+
+LINKEDIN_ITEM: dict[str, Any] = {
+    "jobId": "3912847",
+    "jobTitle": "Staff Platform Engineer",
+    "location": "San Francisco, CA",
+    "salaryInfo": ["$180,000/yr - $240,000/yr"],
+    "postedTime": "2 days ago",
+    "publishedAt": "2026-07-29T08:00:00.000Z",
+    "jobUrl": "https://www.linkedin.com/jobs/view/3912847",
+    "jobDescription": "<p>Terraform, Kubernetes and Go. Three days in the office.</p>",
+    "companyName": "Globex Industries",
+    "companyUrl": "https://www.linkedin.com/company/globex",
+    "contractType": "Full-time",
+    "experienceLevel": "Mid-Senior level",
+    "workType": "Hybrid",
+    "sector": "Software Development",
+    "applyUrl": "https://jobs.lever.co/globex/9f2c",
+}
+
+
+# --- Indeed -----------------------------------------------------------------
+
+
+def test_indeed_maps_every_field() -> None:
+    job = indeed.to_job(INDEED_ITEM)
+    assert job is not None
+    assert job.source == "indeed"
+    assert job.source_job_id == "a1b2c3"
+    assert job.title == "Senior Backend Engineer"
+    assert job.company == "Acme Corp"
+    assert job.department == "Software Development"
+    # Structured location, so `parse_us_location` is never consulted.
+    assert (job.city, job.state, job.country) == ("Austin", "TX", "US")
+    assert job.location_raw == "Austin, TX, US"
+    assert job.salary_min == 165000 and job.salary_max == 210000
+    assert job.salary_currency == "USD"
+    assert job.posted_at is not None and job.posted_at.startswith("2026-07-30")
+    assert "Kubernetes" in (job.description_text or "")
+
+
+def test_indeed_reads_the_apply_url_for_the_board_slug() -> None:
+    """The whole point of `ats_link`: cluster with the company's own board row.
+
+    `Job.__post_init__` would otherwise slugify "Acme Corp" to `acme-corp`,
+    which never matches Greenhouse's `acmecorp`.
+    """
+    job = indeed.to_job(INDEED_ITEM)
+    assert job is not None and job.company_slug == "acmecorp"
+
+
+def test_indeed_falls_back_to_the_company_name() -> None:
+    """An Indeed-hosted apply flow names no board, and guessing one would be
+    worse than not having it — a wrong slug clusters unrelated employers.
+
+    The fallback is `Job.__post_init__`'s `slugify`, which already strips legal
+    suffixes, so "Acme Corp" and a Greenhouse board called `acme` agree here
+    without any help from `ats_link`.
+    """
+    item = {**INDEED_ITEM, "applyUrl": "https://www.indeed.com/apply/a1b2c3",
+            "jobUrl": "https://www.indeed.com/viewjob?jk=a1b2c3"}
+    job = indeed.to_job(item)
+    assert job is not None and job.company_slug == "acme"
+
+    # A name with no legal suffix keeps its separators, which is exactly the
+    # case `dedupe`'s slug normalisation exists for.
+    other = indeed.to_job({**item, "company": {"companyName": "10a Labs"}})
+    assert other is not None and other.company_slug == "10a-labs"
+
+
+def test_an_hourly_indeed_rate_is_annualised() -> None:
+    """The 488-row bug, in the one place it could recur.
+
+    Indeed publishes `salary_period: "HOUR"` beside the figures. Writing 60
+    into the same column as 210000 is what once put hourly rates across 11
+    sources into an annual field, with nothing to tell them apart afterwards.
+    """
+    item = {**INDEED_ITEM, "baseSalary_min": 60, "baseSalary_max": 80,
+            "salary_period": "HOUR"}
+    job = indeed.to_job(item)
+    assert job is not None
+    assert job.salary_min == 60 * 2080
+    assert job.salary_max == 80 * 2080
+    # The figures as published survive, so the conversion is auditable.
+    assert job.salary_raw is not None and "HOUR" in job.salary_raw
+
+
+def test_an_unrecognised_period_yields_no_salary() -> None:
+    """Abstaining beats guessing annual: a wrong number is unrecoverable."""
+    item = {**INDEED_ITEM, "baseSalary_min": 60, "baseSalary_max": 80,
+            "salary_period": "PER WIDGET"}
+    job = indeed.to_job(item)
+    assert job is not None and job.salary_min is None and job.salary_max is None
+
+
+def test_indeed_attributes_drive_workplace_and_employment_type() -> None:
+    """`attributes` mixes schedule, arrangement and benefits in one flat list.
+
+    Indeed renders these as chips on the posting, so they are far more reliable
+    than the same words appearing in prose.
+    """
+    job = indeed.to_job(INDEED_ITEM)
+    assert job is not None
+    assert job.workplace_type == "remote"
+    assert job.employment_type == "full_time"
+
+    hybrid = indeed.to_job({**INDEED_ITEM, "attributes": ["Contract", "Hybrid work"]})
+    assert hybrid is not None
+    assert hybrid.workplace_type == "hybrid"
+    assert hybrid.employment_type == "contract"
+
+
+# --- LinkedIn ---------------------------------------------------------------
+
+
+def test_linkedin_maps_every_field() -> None:
+    job = linkedin.to_job(LINKEDIN_ITEM)
+    assert job is not None
+    assert job.source == "linkedin"
+    assert job.source_job_id == "3912847"
+    assert job.title == "Staff Platform Engineer"
+    assert job.company == "Globex Industries"
+    assert job.company_slug == "globex"          # from the Lever apply URL
+    assert job.location_raw == "San Francisco, CA"
+    assert job.department == "Software Development"
+    assert job.employment_type == "full_time"    # normalised from "Full-time"
+    assert job.workplace_type == "hybrid"        # from workType, not the prose
+    assert job.seniority == "staff"              # from the title, see below
+    assert "Terraform" in (job.description_text or "")
+
+
+def test_linkedin_salary_prose_is_parsed() -> None:
+    """`salaryInfo` arrives as prose with a per-unit suffix.
+
+    "$180,000/yr - $240,000/yr" matched nothing before `_PER_UNIT` was added to
+    the range pattern — the suffix sat between the first amount and the dash,
+    so every LinkedIn salary would have been dropped.
+    """
+    job = linkedin.to_job(LINKEDIN_ITEM)
+    assert job is not None
+    assert job.salary_min == 180000 and job.salary_max == 240000
+
+
+def test_an_hourly_linkedin_rate_is_annualised() -> None:
+    item = {**LINKEDIN_ITEM, "salaryInfo": ["$85.00/hr - $110.00/hr"]}
+    job = linkedin.to_job(item)
+    assert job is not None
+    assert job.salary_min == 85 * 2080
+    assert job.salary_max == 110 * 2080
+
+
+def test_linkedin_experience_level_does_not_override_the_title() -> None:
+    """LinkedIn's four buckets are coarser than the seniority ladder.
+
+    "Mid-Senior level" covers mid, senior, staff and principal. The ladder
+    reads "Staff Platform Engineer" as staff, and because `__post_init__` only
+    fills a blank, passing the coarse value would win and be a downgrade.
+    """
+    job = linkedin.to_job(LINKEDIN_ITEM)
+    assert job is not None
+    assert job.seniority == "staff"
+    assert LINKEDIN_ITEM["experienceLevel"] == "Mid-Senior level"
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {}, {"jobId": "1"}, {"jobId": "1", "jobTitle": "X"},
+        {"jobId": "1", "jobTitle": "X", "companyName": "Y"},   # no link
+        {"jobTitle": "X", "companyName": "Y", "jobUrl": "https://x/1"},  # no id
+    ],
+)
+def test_an_item_without_an_identity_is_dropped(item: dict[str, Any]) -> None:
+    """Every field on this actor is nullable, so identity is checked."""
+    assert linkedin.to_job(item) is None
+
+
+def test_to_jobs_skips_what_it_cannot_map() -> None:
+    jobs = linkedin.to_jobs([{}, LINKEDIN_ITEM, "not a dict", None])  # type: ignore[list-item]
+    assert len(jobs) == 1
+
+
+# --- ATS link recovery ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://boards.greenhouse.io/acme/jobs/4021", ("greenhouse", "acme")),
+        ("https://job-boards.greenhouse.io/acme/jobs/4021", ("greenhouse", "acme")),
+        ("https://jobs.lever.co/acme/9f2c-aaa", ("lever", "acme")),
+        ("https://jobs.ashbyhq.com/acme/abc-123", ("ashby", "acme")),
+        ("https://acme.wd1.myworkdayjobs.com/en-US/careers/job/x", ("workday", "acme")),
+        ("https://acme.wd103.myworkdayjobs.com/careers", ("workday", "acme")),
+        ("https://acme.breezy.hr/p/123", ("breezy", "acme")),
+        ("https://acme.applytojob.com/apply/xyz", ("jazzhr", "acme")),
+        ("https://jobs.smartrecruiters.com/Acme/744000", ("smartrecruiters", "Acme")),
+        ("https://acme.teamtailor.com/jobs/123", ("teamtailor", "acme")),
+        ("https://apply.workable.com/acme/j/ABC/", ("workable", "acme")),
+    ],
+)
+def test_a_board_url_yields_its_slug(url: str, expected: tuple[str, str]) -> None:
+    assert ats_link.board_slug(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://www.indeed.com/viewjob?jk=abc",     # the aggregator itself
+        "https://www.linkedin.com/jobs/view/123",
+        "https://acme.com/careers/engineer",         # a company's own site
+        "https://www.myworkdayjobs.com/careers",     # no tenant label
+        "https://jobs.lever.co/",                    # no slug in the path
+        "not a url", "", None,
+    ],
+)
+def test_a_non_board_url_yields_nothing(url: str | None) -> None:
+    """Returning None is the honest answer; a guessed slug would cluster two
+    unrelated employers' postings together."""
+    assert ats_link.board_slug(url) is None
+
+
+def test_slug_normalisation_collapses_punctuation() -> None:
+    """`10a-labs` (aggregator) and `10alabs` (Greenhouse) are one company.
+
+    Measured on the archive, normalising doubles how many aggregator rows match
+    a known ATS company — adzuna 3% to 7%, jooble 8% to 14%.
+    """
+    assert ats_link.normalise_slug("10a-labs") == ats_link.normalise_slug("10alabs")
+    assert ats_link.normalise_slug("Acme Corp.") == "acmecorp"
+    assert ats_link.normalise_slug(None) is None
+    assert ats_link.normalise_slug("") is None
+
+
+def test_mapper_for_picks_by_actor_name() -> None:
+    assert mapper_for("cheap_scraper~indeed-job-scraper") is indeed
+    assert mapper_for("cheap_scraper~linkedin-job-scraper") is linkedin
+    # An actor this app cannot read must not be guessed at.
+    assert mapper_for("someone~glassdoor-scraper") is None
+    assert mapper_for(None) is None
+
+
+# --- the webhook receiver ---------------------------------------------------
+
+
+@pytest.fixture()
+def hook(monkeypatch, _isolated_db):
+    """The receiver with a known secret, and ingestion stubbed out.
+
+    Ingestion is replaced so these tests stay about the HTTP contract: what is
+    accepted, what is refused, and whether the response comes back before the
+    work does.
+    """
+    from jobscrape import webhook
+
+    monkeypatch.setattr(config, "APIFY_WEBHOOK_SECRET", "s3cret")
+    monkeypatch.setattr(webhook.config, "APIFY_WEBHOOK_SECRET", "s3cret")
+    ingested: list[str] = []
+
+    async def fake_ingest(run_id: str) -> None:
+        ingested.append(run_id)
+
+    monkeypatch.setattr(webhook, "_ingest", fake_ingest)
+    with TestClient(webhook.app) as client:
+        yield client, ingested
+
+
+PAYLOAD = {
+    "eventType": "ACTOR.RUN.SUCCEEDED",
+    "eventData": {"actorId": "abc", "actorRunId": "RUN123"},
+    "resource": {"id": "RUN123", "status": "SUCCEEDED",
+                 "defaultDatasetId": "DATASET123"},
+}
+
+
+def test_a_valid_delivery_is_accepted_and_ingested(hook) -> None:
+    client, ingested = hook
+    response = client.post("/apify", json=PAYLOAD, headers={"X-Apify-Secret": "s3cret"})
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "RUN123"
+    assert ingested == ["RUN123"]
+
+
+def test_the_secret_may_arrive_in_the_url(hook) -> None:
+    """Apify's own docs recommend a URL token, and it is the only option when
+    a headers template is awkward to configure."""
+    client, ingested = hook
+    assert client.post("/apify/s3cret", json=PAYLOAD).status_code == 200
+    assert ingested == ["RUN123"]
+
+
+@pytest.mark.parametrize(
+    "headers,path",
+    [
+        ({}, "/apify"),                                  # none at all
+        ({"X-Apify-Secret": "wrong"}, "/apify"),         # wrong header
+        ({}, "/apify/wrong"),                            # wrong URL token
+    ],
+)
+def test_a_bad_secret_is_refused(hook, headers: dict, path: str) -> None:
+    client, ingested = hook
+    response = client.post(path, json=PAYLOAD, headers=headers)
+    assert response.status_code == 401
+    assert ingested == []
+
+
+def test_an_unset_secret_refuses_everything(monkeypatch, _isolated_db) -> None:
+    """The failure mode of the opposite default is an open ingestion endpoint
+    on a route that is meant to be publicly reachable."""
+    from jobscrape import webhook
+
+    monkeypatch.setattr(webhook.config, "APIFY_WEBHOOK_SECRET", "")
+    with TestClient(webhook.app) as client:
+        assert client.post("/apify", json=PAYLOAD).status_code == 401
+        assert client.post("/apify/anything", json=PAYLOAD).status_code == 401
+
+
+@pytest.mark.parametrize("event", ["ACTOR.RUN.FAILED", "ACTOR.RUN.TIMED_OUT", ""])
+def test_a_non_success_event_is_acknowledged_but_not_ingested(hook, event: str) -> None:
+    """200, not an error. Apify retries a non-2xx eleven times over ~32 hours,
+    and this is a delivery we understand and are declining to act on."""
+    client, ingested = hook
+    response = client.post("/apify", json={**PAYLOAD, "eventType": event},
+                           headers={"X-Apify-Secret": "s3cret"})
+    assert response.status_code == 200
+    assert ingested == []
+
+
+def test_a_payload_with_no_run_id_is_rejected(hook) -> None:
+    client, ingested = hook
+    response = client.post("/apify", json={"eventType": "ACTOR.RUN.SUCCEEDED"},
+                           headers={"X-Apify-Secret": "s3cret"})
+    assert response.status_code == 400
+    assert ingested == []
+
+
+def test_the_run_id_is_read_from_either_place(hook) -> None:
+    """Apify puts it in `eventData`; the `resource` block carries it too."""
+    client, ingested = hook
+    client.post("/apify", json={"eventType": "ACTOR.RUN.SUCCEEDED",
+                                "resource": {"id": "FROM_RESOURCE"}},
+                headers={"X-Apify-Secret": "s3cret"})
+    assert ingested == ["FROM_RESOURCE"]
+
+
+def test_health_says_nothing_about_the_archive(hook) -> None:
+    """This endpoint is public, unlike the dashboard's, which reports row
+    counts, disk headroom and the age of the last run."""
+    client, _ = hook
+    body = client.get("/health").json()
+    assert body == {"ok": True}
+
+
+def test_re_delivery_is_safe() -> None:
+    """Apify retries, so the same run arrives more than once.
+
+    Nothing guards against it because nothing needs to: `upsert_jobs` is keyed
+    on (source, source_job_id) with ON CONFLICT DO UPDATE, so a second pass
+    converges on the same rows instead of duplicating them.
+    """
+    from jobscrape.models import Job
+
+    with db.session() as conn:
+        job = Job(source="indeed", source_job_id="dup-1", title="Backend Engineer",
+                  company="Acme", job_url="https://x/1",
+                  description_text="Python and Kubernetes.")
+        first = db.upsert_jobs(conn, [job])
+        second = db.upsert_jobs(conn, [job])
+        assert first == (1, 0)
+        assert second == (0, 1)
+        count = conn.execute(
+            "SELECT count(*) AS c FROM jobs WHERE source = ? AND source_job_id = ?",
+            ("indeed", "dup-1"),
+        ).fetchone()["c"]
+        assert count == 1

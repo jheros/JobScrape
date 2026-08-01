@@ -147,6 +147,35 @@ JSEARCH_MAX_REQUESTS = _env_int("JSEARCH_MAX_REQUESTS", 6)
 RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "jsearch.p.rapidapi.com")
 RAPIDAPI_PATH = os.environ.get("RAPIDAPI_PATH", "/search")
 
+# --- Apify ----------------------------------------------------------------
+#
+# Indeed and LinkedIn postings, bought from a vendor that does the scraping.
+# This is the only working route to those two: the restricted scrapers in
+# `sources/restricted/` are blocked by anti-bot defences, and JSearch — written
+# as the compliant alternative — has produced zero rows because its provider
+# returns 404 for every path.
+#
+# Apify's own scheduler runs the actors and calls the webhook receiver
+# (`jobscrape webhook`) on success. The webhook carries no job data, only a run
+# id, so the token is required to fetch the dataset afterwards.
+APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
+#: Shared secret Apify must present, as an `X-Apify-Secret` header or the last
+#: path segment. Apify offers no request signing, so this is the only
+#: authentication available; their docs recommend exactly this.
+APIFY_WEBHOOK_SECRET = os.environ.get("APIFY_WEBHOOK_SECRET", "")
+#: Overridable so a fork, a pinned version, or a different actor entirely needs
+#: no code change. Apify accepts either `user~actor-name` or the actor id.
+APIFY_INDEED_ACTOR = os.environ.get(
+    "APIFY_INDEED_ACTOR", "cheap_scraper~indeed-job-scraper"
+)
+APIFY_LINKEDIN_ACTOR = os.environ.get(
+    "APIFY_LINKEDIN_ACTOR", "cheap_scraper~linkedin-job-scraper"
+)
+APIFY_API = os.environ.get("APIFY_API", "https://api.apify.com/v2")
+#: Dataset page size. Apify enforces no maximum, but a bounded page keeps one
+#: enormous run from being held in memory whole.
+APIFY_PAGE_SIZE = _env_int("APIFY_PAGE_SIZE", 500)
+
 # --- Common Crawl ---------------------------------------------------------
 CC_COLLECTIONS = _env_int("JOBSCRAPE_CC_COLLECTIONS", 3)
 CC_INDEX_ROOT = "https://index.commoncrawl.org"

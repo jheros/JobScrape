@@ -161,13 +161,54 @@ and carry the bulk of the volume, and three large employers who run their own ca
 | **Apple** | none | jobs.apple.com — ~3,500 US postings behind a CSRF bootstrap |
 | **Uber** | none | ~220 US postings. **Titles and locations only — no descriptions** |
 
-**JSearch is the compliant route to the big-three job boards.** Rather than scraping
-LinkedIn/Indeed (which violates their terms and is usually blocked), JSearch licenses and
-republishes those listings through its own API. Its free tier is small — about 200
-requests/month — so `JSEARCH_MAX_REQUESTS` caps per-run spend and responses cache for a
-week.
+**JSearch was meant to be the compliant route to the big-three job boards** — it licenses
+and republishes those listings rather than scraping them. In practice it has produced
+**zero rows**: its provider returns 404 for every path, real or invented, while other APIs
+on the same key return 403. The adapter is kept because the subscription is demonstrably
+fine and the routing is theirs to fix.
 
 Sources without a configured key are skipped with a note. They never fail a run.
+
+### Indeed and LinkedIn, via Apify
+
+Postings from those two arrive through **[Apify](https://apify.com)** actors — a vendor
+that does the collection and sells the result — rather than through a scraper here. This
+is currently the only route to them that works at all: the restricted adapters below are
+blocked, and JSearch returns nothing.
+
+Ingestion is **push, not pull**, which is the one place this differs from every other
+source. Apify's own scheduler runs the actors and calls a webhook on success:
+
+```bash
+export APIFY_TOKEN=...  APIFY_WEBHOOK_SECRET=...
+python -m jobscrape webhook --port 8001     # POST /apify  (public)
+```
+
+Then in Apify: **Integrations → HTTP webhook**, event `Run succeeded`, URL
+`https://your.site/apify/<secret>` (or send the secret as an `X-Apify-Secret` header).
+
+Two things worth knowing before wiring it up:
+
+- **The webhook carries no jobs.** Apify's payload is run metadata — an `actorRunId` and a
+  dataset id. The postings are fetched from the API afterwards, which is why `APIFY_TOKEN`
+  is required regardless of how ingestion is triggered.
+- **It is the only publicly reachable route in this project.** It is a separate one-route
+  app, not part of the dashboard, because the dashboard has no authentication on anything
+  — `/api/runs/{stage}/start` will launch a pipeline stage for whoever asks. The receiver
+  refuses to start without a secret, and its `/health` deliberately reports nothing about
+  the archive.
+
+A delivery lost while the receiver was down is gone — Apify gives up after 11 retries over
+~32 hours — so there is a manual path for recovery, backfilling, or testing the mapping
+without waiting for a scheduled run:
+
+```bash
+python -m jobscrape apify-pull --last 3          # recent runs of both actors
+python -m jobscrape apify-pull --run <runId>     # one specific run
+```
+
+Re-ingesting is safe: upserts are keyed on `(source, source_job_id)`, so a run processed
+twice converges rather than duplicating.
 
 ### Restricted sources — opt-in, and read this
 

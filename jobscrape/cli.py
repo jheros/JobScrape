@@ -708,6 +708,73 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_webhook(args: argparse.Namespace) -> int:
+    """Serve the Apify webhook receiver.
+
+    Separate from `dashboard` on purpose: this one is meant to be publicly
+    reachable, and the dashboard has no authentication on any route.
+    """
+    try:
+        from .webhook import serve
+    except ImportError as exc:
+        log.error("The webhook receiver needs fastapi and uvicorn: %s", exc)
+        log.error("Install with: pip install fastapi uvicorn")
+        return 1
+    log.info("Apify webhook on http://%s:%d/apify  (Ctrl-C to stop)",
+             args.host, args.port)
+    serve(host=args.host, port=args.port)
+    return 0
+
+
+async def cmd_apify_pull(args: argparse.Namespace) -> int:
+    """Ingest Apify runs by hand.
+
+    The recovery path. A webhook delivery lost while this was down is otherwise
+    gone — Apify gives up after 11 retries — and this is also how to backfill
+    runs from before the receiver existed, or to test the mapping end to end
+    without waiting for a scheduled run.
+    """
+    from .http import Fetcher
+    from .sources.apify import client
+    from .sources.apify import ingest as ingest_module
+
+    ok, reason = client.available()
+    if not ok:
+        log.error("%s", reason)
+        return 1
+
+    run_ids: list[str] = list(args.run or [])
+    if not run_ids:
+        actors = args.actor or [config.APIFY_INDEED_ACTOR, config.APIFY_LINKEDIN_ACTOR]
+        async with Fetcher() as fetcher:
+            for actor in actors:
+                runs = await client.last_runs(fetcher, actor, limit=args.last)
+                if not runs:
+                    log.info("%-28s no succeeded runs found", actor)
+                for run in runs:
+                    if run.get("id"):
+                        run_ids.append(str(run["id"]))
+    if not run_ids:
+        log.error("Nothing to ingest — no runs matched.")
+        return 1
+
+    failures = 0
+    with db.session(args.db) as conn:
+        for run_id in run_ids:
+            result = await ingest_module.ingest_and_record(
+                conn, run_id, command="apify-pull",
+                max_items=args.max_results,
+                allow_roles=_allowed_roles(args),
+                software_only=not args.all_roles,
+                us_only=not args.worldwide,
+            )
+            if result.error:
+                failures += 1
+            if result.funnel:
+                log.info("   funnel: %s", result.funnel)
+    return 1 if failures and failures == len(run_ids) else 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     with db.session(args.db) as conn:
         print(json.dumps(db.stats(conn), indent=2))
@@ -919,6 +986,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_dash.add_argument("--port", type=int, default=8000)
     p_dash.add_argument("--reload", action="store_true", help="auto-reload on edit")
 
+    p_hook = sub.add_parser(
+        "webhook",
+        help="serve the Apify webhook receiver (public; needs APIFY_WEBHOOK_SECRET)",
+    )
+    p_hook.add_argument("--host", default="0.0.0.0")
+    p_hook.add_argument("--port", type=int, default=8001)
+
+    p_apify = sub.add_parser(
+        "apify-pull",
+        help="ingest Apify runs by hand — recovery for a missed webhook, or a backfill",
+    )
+    p_apify.add_argument("--run", action="append",
+                         help="ingest this run id (repeatable)")
+    p_apify.add_argument("--actor", action="append",
+                         help="actor to read recent runs from (repeatable); "
+                              "defaults to the configured Indeed and LinkedIn actors")
+    p_apify.add_argument("--last", type=int, default=1,
+                         help="how many recent succeeded runs per actor (default 1)")
+    p_apify.add_argument("--max-results", type=int, default=None,
+                         help="cap items read per run")
+    p_apify.add_argument("--all-roles", action="store_true",
+                         help="keep non-software roles too")
+    p_apify.add_argument("--worldwide", action="store_true",
+                         help="keep non-US locations too")
+    p_apify.add_argument("--include-roles", action="append", metavar="CATEGORY",
+                         choices=EXCLUDED_ROLE_NAMES, default=None,
+                         help="re-admit an excluded role category (repeatable)")
+
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")
 
@@ -1015,6 +1110,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sources(args)
         if args.command == "dashboard":
             return cmd_dashboard(args)
+        if args.command == "webhook":
+            return cmd_webhook(args)
+        if args.command == "apify-pull":
+            return asyncio.run(cmd_apify_pull(args))
         if args.command == "migrate-from-sqlite":
             return cmd_migrate_from_sqlite(args)
         if args.command == "dedupe":

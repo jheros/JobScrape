@@ -63,6 +63,18 @@ def _canonical(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return max(rows, key=_sort_key)
 
 
+def _slug_key(slug: str | None) -> str:
+    """A company slug reduced to what two sources can be expected to agree on.
+
+    See the comment at the tier-2 grouping for why. Empty string rather than
+    ``None`` so it is a usable dict key; rows with no slug group together and
+    are then separated by `role_key`, which is the behaviour this replaced.
+    """
+    from .sources.apify.ats_link import normalise_slug
+
+    return normalise_slug(slug) or ""
+
+
 def compute_clusters(rows: list[dict[str, Any]]) -> tuple[dict[int, int], dict[str, int]]:
     """Pure function: candidate rows in, ``{duplicate_id: canonical_id}`` out.
 
@@ -100,11 +112,22 @@ def compute_clusters(rows: list[dict[str, Any]]) -> tuple[dict[int, int], dict[s
     # Tier 2: cross-source, loose key, aggregator -> ATS only. Operates on
     # tier-1 survivors only (rows tier 1 already suppressed stay suppressed
     # by their tier-1 canonical, not re-pointed at a tier-2 one).
+    # The company slug is normalised for the KEY only, never rewritten on the
+    # row. An ATS row's slug is the board slug (`10alabs`); an aggregator
+    # derives it from the company name (`10a-labs`). Those describe the same
+    # employer and never matched, so the clusters that most needed collapsing
+    # were the ones that silently did not form — measured before this change,
+    # Adzuna left 57% of its rows unsuppressed and Jooble 85%.
+    #
+    # Stripping to alphanumerics is deliberately blunt. It cannot merge two
+    # genuinely different employers unless their names differ only by
+    # punctuation, and it is applied to both sides of a comparison rather than
+    # stored, so the slug a board URL is built from is untouched.
     by_key: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for r in survivors:
         key = r.get("role_key")
         if key:
-            by_key[(r.get("company_slug") or "", key)].append(r)
+            by_key[(_slug_key(r.get("company_slug")), key)].append(r)
 
     for group in by_key.values():
         ats_rows = [r for r in group if r["source"] in BOARD_SOURCES]

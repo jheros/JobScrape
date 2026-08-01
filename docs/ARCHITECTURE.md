@@ -231,6 +231,48 @@ forgets to say under-closes rather than deleting live jobs. The sampling sources
 read a slice, not a catalogue, so they can never be a basis for closing anything, which is
 what the liveness probe exists to cover.
 
+### 3b-ii. Apify — the one source that pushes
+
+Indeed and LinkedIn postings arrive from **Apify** actors, bought from a vendor rather
+than scraped here. That inverts the control flow every other source follows: Apify's
+scheduler runs the actors and calls a webhook, so there is no "what do you have?" for this
+app to ask. `jobscrape/sources/apify/` is therefore **not** a `Source` subclass — the
+fetch/probe contract would be a lie — and is instead a set of pure mappers plus an ingest
+path shared by the webhook and the manual `apify-pull` command.
+
+- **The webhook carries no jobs.** Apify's payload is run metadata — an `actorRunId` and a
+  `defaultDatasetId`. The items are fetched from the API afterwards, so a token is
+  required no matter how ingestion is triggered.
+- **The payload is untrusted input.** Apify offers no request signing, only a shared
+  secret, so the dataset id is re-read *from the run* rather than taken from the body —
+  otherwise a forged request could point ingestion at any dataset on the account.
+- **The route acknowledges before working.** Apify retries a non-2xx eleven times over
+  ~32 hours; fetching up to 1,000 jobs, filtering and upserting will not fit in an HTTP
+  timeout, and a slow reply starts a second delivery while the first is running.
+- **The receiver is a separate app** (`jobscrape/webhook.py`, one route) because the
+  dashboard has no authentication on anything and must stay on localhost.
+
+Re-delivery needs no guard: `upsert_jobs` is keyed on `(source, source_job_id)` with
+`ON CONFLICT DO UPDATE`, so a run processed twice converges.
+
+Downstream, nothing is special-cased — the same role filter, US-eligibility test,
+workplace cascade, seniority ladder and skill extraction as a Greenhouse posting.
+
+**Recovering the ATS slug.** These are aggregators, so they republish jobs the boards here
+already carry, and `dedupe` can only collapse the pair when both agree on `company_slug`.
+An ATS row uses the board slug (`acmecorp`); an aggregator derives one from the company
+name (`acme-corp`). `sources/apify/ats_link.py` closes that gap exactly rather than by
+similarity: Indeed and LinkedIn apply links usually point *at* the employer's real board,
+so `boards.greenhouse.io/acmecorp/jobs/4021` yields `acmecorp` directly. When the link is
+not a recognisable board the answer is `None` and the company name is used — a guessed
+slug would cluster unrelated employers.
+
+`dedupe` additionally normalises slugs to alphanumerics *for the grouping key only*, so
+`10a-labs` and `10alabs` meet. Measured on the archive, that doubles how many aggregator
+rows match a known ATS company (adzuna 3%→7%, jooble 8%→14%) — though it collapsed only 16
+further rows, because the unsuppressed aggregator rows turn out to be overwhelmingly
+companies whose boards this archive does not have, not slug mismatches.
+
 ### 3c. Normalisation — every adapter converges here
 
 `Job.__post_init__` in `models.py` does this once so no adapter repeats it:

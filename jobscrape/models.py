@@ -531,9 +531,19 @@ def encode_raw_json(raw: Any) -> str | None:
 # the whole range was silently read as "no salary". Ashby publishes
 # compensation in exactly that form — 429 rows in the archive carried a salary
 # this dropped on the floor.
+#
+# `_PER_UNIT` is the same class of miss. LinkedIn writes its pay as
+# "$180,000/yr - $240,000/yr", and the suffix sat between the first amount and
+# the range dash, so the pattern stopped at "$180,000" and matched nothing at
+# all. Every LinkedIn salary would have been dropped. The unit itself is not
+# captured here — `_HOURLY_HINT` reads it from the surrounding window and is
+# what decides whether the figures need annualising, which keeps one rule for
+# hourly detection rather than two that could disagree.
+_PER_UNIT = r"(?:\s*/\s*[a-z]{2,6}\b)?"
 _SALARY_RANGE_RE = re.compile(
-    r"\$\s?([\d][\d,]*(?:\.\d{1,2})?)\s?([kK])?\s*(?:-|–|—|to|through)\s*"
-    r"\$?\s?([\d][\d,]*(?:\.\d{1,2})?)\s?([kK])?",
+    r"\$\s?([\d][\d,]*(?:\.\d{1,2})?)\s?([kK])?" + _PER_UNIT
+    + r"\s*(?:-|–|—|to|through)\s*"
+    r"\$?\s?([\d][\d,]*(?:\.\d{1,2})?)\s?([kK])?" + _PER_UNIT,
 )
 _SALARY_CONTEXT = re.compile(
     r"(salary|compensation|pay\s+range|base\s+pay|pay\s+scale|annual|hourly|"
