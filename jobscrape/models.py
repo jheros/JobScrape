@@ -300,6 +300,63 @@ def classify_workplace(
     return "onsite" if is_remote is False else "unknown"
 
 
+# --- raw payload encoding --------------------------------------------------
+
+#: Ceiling on the serialised payload stored in `jobs.raw_json`, to stop one
+#: enormous posting bloating the table. Ashby in particular embeds base64 blobs
+#: and has shipped single postings over 400 KB.
+RAW_JSON_MAX = 400_000
+
+#: A string field longer than this is dropped when a payload has to be reduced.
+#: Generous enough to keep every workplace/department/type field intact.
+RAW_JSON_MAX_FIELD = 4_000
+
+
+def encode_raw_json(raw: Any) -> str | None:
+    """Serialise a source payload for storage, or return None if there is none.
+
+    The cap has to be applied to the *data*, never to the serialised string.
+    Slicing JSON text at a character count cuts it mid-token, and `raw_json` is
+    a `jsonb` column, so Postgres rejects the whole statement:
+
+        psycopg2.errors.InvalidTextRepresentation:
+        invalid input syntax for type json
+
+    That is not a lost row — it is a lost **batch**, and it killed a fetch run
+    outright after 5 hours. One Ashby posting with a base64 blob in its payload
+    was enough.
+
+    When a payload is over the ceiling, the top-level scalars are kept and the
+    big nested structures dropped. That is deliberate rather than storing
+    nothing: those scalars are exactly what the native-workplace backfills read
+    (`remoteType`, `WorkplaceType`, `homeOffice`), and a posting large enough to
+    trip this is no less likely to carry one. `_truncated` records that it
+    happened, so a reader never mistakes a reduced payload for a complete one.
+    """
+    if not raw:
+        return None
+
+    text = json.dumps(raw, default=str)
+    if len(text) <= RAW_JSON_MAX:
+        return text
+
+    if isinstance(raw, dict):
+        reduced: dict[str, Any] = {
+            key: value
+            for key, value in raw.items()
+            if isinstance(value, (str, int, float, bool, type(None)))
+            and not (isinstance(value, str) and len(value) > RAW_JSON_MAX_FIELD)
+        }
+        reduced["_truncated"] = True
+        text = json.dumps(reduced, default=str)
+        if len(text) <= RAW_JSON_MAX:
+            return text
+
+    # Nothing survived the reduction, or it was not a dict at all. Valid JSON
+    # that says so beats a NULL that looks like the source sent nothing.
+    return json.dumps({"_truncated": True})
+
+
 # --- salary extraction ----------------------------------------------------
 
 # Matches "$120,000 - $180,000", "$120K–$180K", "$55.00 to $70.00",
@@ -628,6 +685,8 @@ class Job:
     def to_row(self) -> dict[str, Any]:
         row = asdict(self)
         raw = row.pop("raw")
+        # See `encode_raw_json` — the cap cannot be applied to the serialised
+        # string, which is what used to happen.
         # An EMPTY payload must serialise to NULL, not to the string "{}".
         #
         # `raw_json` is in `upsert_jobs`'s COALESCE preserve set and `raw` is in
@@ -641,7 +700,7 @@ class Job:
         # That is not a cosmetic loss. The payload is the only copy of fields no
         # column holds, and its absence is what made Oracle's native
         # `WorkplaceType` unbackfillable.
-        row["raw_json"] = json.dumps(raw, default=str)[:400_000] if raw else None
+        row["raw_json"] = encode_raw_json(raw)
         # An input to classification, not a stored column.
         row.pop("workplace_hint", None)
         return row

@@ -407,3 +407,88 @@ def test_a_false_home_office_is_weak_evidence_not_proof() -> None:
         "jobSummary": "This role follows a hybrid schedule, 3 days in the office.",
     })
     assert job is not None and job.workplace_type == "hybrid"
+
+
+# --- an oversized payload killed a fetch run -------------------------------
+#
+# `to_row()` capped the payload by slicing the SERIALISED string at 400,000
+# characters. That cuts JSON mid-token, and `raw_json` is a `jsonb` column, so
+# Postgres refused the statement:
+#
+#     psycopg2.errors.InvalidTextRepresentation:
+#     invalid input syntax for type json
+#
+# Not a lost row — a lost *batch*, and the exception propagated out of the
+# sweep. One Ashby posting carrying a base64 blob ended a 5-hour fetch.
+#
+# Invisible because the cap only fires above 400 KB and no fixture was near it:
+# every existing raw_json test used a payload of a few dozen bytes.
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"remoteType": "Hybrid", "blob": "A" * 500_000},
+        {"blob": "A" * 500_000},
+        {"nested": {"deep": ["x" * 100] * 50_000}},
+        ["x" * 500_000],
+        "A" * 500_000,
+    ],
+)
+def test_an_oversized_payload_still_serialises_to_valid_json(raw: Any) -> None:
+    import json
+
+    from jobscrape.models import RAW_JSON_MAX, encode_raw_json
+
+    stored = encode_raw_json(raw)
+    assert stored is not None
+    assert len(stored) <= RAW_JSON_MAX
+    json.loads(stored)  # the assertion: Postgres would accept this
+
+
+def test_the_cap_is_applied_to_the_data_not_the_string() -> None:
+    """The distinction the bug turned on, stated as a test.
+
+    Slicing the serialised form is what produced invalid JSON, so this asserts
+    the output is not a prefix of the naive encoding.
+    """
+    import json
+
+    from jobscrape.models import RAW_JSON_MAX, encode_raw_json
+
+    raw = {"id": "keep-me", "blob": "A" * 500_000}
+    naive = json.dumps(raw)[:RAW_JSON_MAX]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(naive)
+    assert encode_raw_json(raw) != naive
+
+
+def test_a_reduced_payload_keeps_the_fields_the_backfills_read() -> None:
+    """Storing nothing would be safe and would also lose the workplace fields.
+
+    A posting big enough to trip the cap is no less likely to carry a native
+    workplace value than any other, and those scalars are cheap to keep.
+    """
+    import json
+
+    from jobscrape.models import encode_raw_json
+
+    stored = json.loads(encode_raw_json({
+        "remoteType": "Hybrid", "homeOffice": True, "WorkplaceType": "Remote",
+        "blob": "A" * 500_000, "nested": {"k": ["v"] * 50_000},
+    }))
+    assert stored["remoteType"] == "Hybrid"
+    assert stored["homeOffice"] is True
+    assert stored["WorkplaceType"] == "Remote"
+    assert stored["_truncated"] is True, "a reduced payload must say so"
+    assert "blob" not in stored and "nested" not in stored
+
+
+def test_an_ordinary_payload_is_untouched() -> None:
+    """The cap must not change the common case."""
+    import json
+
+    from jobscrape.models import encode_raw_json
+
+    raw = {"id": "1", "remoteType": "Hybrid", "title": "Engineer"}
+    assert json.loads(encode_raw_json(raw)) == raw
