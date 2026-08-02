@@ -194,14 +194,33 @@ CC_INDEX_ROOT = "https://index.commoncrawl.org"
 WORKDAY_MAX_PER_BOARD = _env_int("JOBSCRAPE_WORKDAY_MAX_PER_BOARD", 2000)
 
 # --- Global-source pagination caps ----------------------------------------
-# Both of these were verified to actually bind (i.e. the source still had more
-# to give when the old limit stopped us), so they are not theoretical ceilings:
-#   Himalayas — still returning full pages at page 60 under the old 50-page cap
-#   Jooble    — reports ~196,000 matches for one term; 10 pages saw 200 of them
-# Raising them costs proportionally more requests, so both stay tunable and the
-# role/region/date filters still trim whatever comes back.
-HIMALAYAS_MAX_PAGES = _env_int("JOBSCRAPE_HIMALAYAS_MAX_PAGES", 150)
-JOOBLE_MAX_PAGES = _env_int("JOBSCRAPE_JOOBLE_MAX_PAGES", 30)
+# All three were verified to actually bind — the source still had more to give
+# when the limit stopped us — so these are real ceilings, not theoretical ones.
+# Measured on the last full sweep:
+#
+#   jooble      6,214 seen against a 30 x 11-term ceiling; it reports ~196,000
+#               matches for a SINGLE term, and keeps 83% of what it returns —
+#               the best ratio of any source here. Raised to 60 and to be
+#               re-measured: the marginal page block has to keep paying.
+#   himalayas   2,999 seen against a ceiling of exactly 3,000. Squarely capped,
+#               but only 8% survives the filters, so this is a cheap small gain.
+#   adzuna      9,799 seen against 20 x 50 x 11 = 11,000. NOT raised. The free
+#               tier is quota-limited and 11 terms x 20 pages already spends
+#               ~220 calls a run; the budget belongs in DEFAULT_QUERIES instead,
+#               where page 1 of a term not yet searched beats page 20 of one
+#               already exhausted. Configurable only so it stops being the odd
+#               one out, hard-coded where its two peers were tunable.
+#
+# Raising any of them costs proportionally more requests, and the role/region/
+# date filters still trim whatever comes back.
+HIMALAYAS_MAX_PAGES = _env_int("JOBSCRAPE_HIMALAYAS_MAX_PAGES", 300)
+JOOBLE_MAX_PAGES = _env_int("JOBSCRAPE_JOOBLE_MAX_PAGES", 60)
+ADZUNA_MAX_PAGES = _env_int("JOBSCRAPE_ADZUNA_MAX_PAGES", 20)
+#: Total Adzuna requests one fetch may spend, divided across the search terms.
+#: 220 is what the old fixed 20-pages x 11-terms already cost, so widening
+#: DEFAULT_QUERIES re-spreads that spend instead of multiplying it past the free
+#: tier's daily quota. See sources/adzuna.py:CALL_BUDGET.
+ADZUNA_CALL_BUDGET = _env_int("JOBSCRAPE_ADZUNA_CALL_BUDGET", 220)
 
 
 def ensure_dirs() -> None:

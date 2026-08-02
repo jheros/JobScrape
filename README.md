@@ -306,7 +306,21 @@ Then:
 - `validate` probes each slug once and records it `live` / `empty` / `dead`. The index is
   full of numeric ids and junk paths; this is where they are discarded. Observed live
   rates: Ashby 86%, SmartRecruiters 77%, Greenhouse 80%.
-- `fetch` pulls only from boards marked `live`.
+  `--limit N --sample` draws the slice at random, which is what you want when the point
+  is to *measure* a platform's live rate: an unchecked row has `job_count = 0`, so the
+  default ordering is alphabetical and a plain `--limit` reports on the letter A.
+- `fetch` pulls every board marked `live`, plus a bounded random slice of the ones not yet
+  probed (`--unchecked`, default 500 per ATS). A board that answers with postings is
+  promoted to `live` on the spot — a fetch is validate's probe with details on top — so
+  the backlog works itself down across successive sweeps rather than waiting on a
+  dedicated validate pass.
+
+  This used to be all-or-nothing: `live` boards, falling back to `unchecked` only when
+  there were *none* live. A partially validated platform was pinned to its handful of
+  known-live boards forever — iCIMS swept 6 while 2,493 unchecked slugs sat beside them,
+  and 16,866 discovered boards across six platforms were unreachable. The other half of
+  the same branch was as costly in the other direction: a platform with zero live boards
+  swept *every* unchecked slug, which is what spent ~10,000 requests a sweep on Paycom.
 
 Both stages checkpoint to Postgres — stop and re-run and they pick up where they left off.
 
@@ -320,6 +334,22 @@ python -m jobscrape discover --collections 1 --max-pages 1   # fast sample
 8,000 companies does nothing until they are probed: this project sat at 405 live boards
 out of 8,075 discovered (5%) until the backlog was worked through, which alone took
 Greenhouse from 87 live boards to 1,343.
+
+### Boards that answer but never carry a software job
+
+Separate from the failure backoff, and the opposite problem: a board whose HTTP is
+perfectly healthy and whose postings are all forklift mechanics. Paycom is the case that
+forced the mechanism — its 5,135 discovered portals are car dealerships, clinics and
+municipalities, and a sampled live board served 55 postings of which the role prefilter
+passed exactly none.
+
+After `ZERO_YIELD_GRACE` (3) consecutive sweeps that keep nothing, a board is swept less
+often — `24h * 2^(streak-3)`, capped at two weeks. One kept posting resets it to full
+frequency, and `--all-boards` ignores the backoff entirely, which is what you want right
+after loosening the role filter. Recorded in `companies.zero_yield_streak` /
+`quiet_until`, beside `consecutive_failures` / `cooldown_until`; the two are deliberately
+not the same mechanism, because "did not respond" and "nothing here for us" are not the
+same fact.
 
 ## Useful options
 

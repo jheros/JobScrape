@@ -45,21 +45,38 @@ def _job_id(url: str) -> str | None:
 MAX_PER_BOARD = 1500
 
 
+#: Subdomain prefixes iCIMS itself serves boards on, besides ``careers-``.
+#:
+#: Certificate transparency yields the *whole* label, and `careers-` was the
+#: only one this knew how to recognise — so `us-shermco` was read as a tenant
+#: and resolved to `careers-us-shermco.icims.com`, which 404s. Measured against
+#: the registry, six boards are wrong this way today (`us-` and `usa-`); the
+#: rest of the list is taken from the prefixes that appear on the 715 slugs
+#: already stored in dotted form, so it stays correct as CT finds more of them.
+_HOST_PREFIXES = (
+    "careers", "careers2", "careersen", "uscareers", "us", "usa", "external",
+    "internal", "jobs", "globalcareers", "volunteer", "hourly", "emea",
+)
+
+
 def board_host(slug: str) -> str:
     """Resolve a board id to its host.
 
-    A dotted board is already a vanity host. A bare slug becomes
-    ``careers-<slug>.icims.com`` — but idempotently, because certificate
-    transparency yields the *whole* subdomain label (``careers-360care``)
-    while Common Crawl's regex yields just the tenant (``360care``). Without
-    the guard, one vector's slugs would resolve to
-    ``careers-careers-360care.icims.com`` and every board it found would look
-    dead.
+    A dotted board is already a vanity host. A bare slug that already carries
+    one of iCIMS's own host prefixes is a whole label and is used as-is —
+    certificate transparency yields labels (``careers-360care``,
+    ``us-shermco``) while Common Crawl's regex yields bare tenants
+    (``360care``). Anything else gets the default ``careers-`` prefix.
+
+    Idempotent for the `careers-` case, which is load-bearing: without it one
+    vector's slugs would resolve to ``careers-careers-360care.icims.com`` and
+    every board it found would look dead.
     """
     if "." in slug:
         return slug
-    tenant = slug[len("careers-"):] if slug.startswith("careers-") else slug
-    return f"careers-{tenant}.icims.com"
+    if any(slug.startswith(f"{prefix}-") for prefix in _HOST_PREFIXES):
+        return f"{slug}.icims.com"
+    return f"careers-{slug}.icims.com"
 
 
 def _same_host(urls: list[str], host: str) -> list[str]:

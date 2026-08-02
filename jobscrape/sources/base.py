@@ -75,8 +75,40 @@ DEFAULT_QUERIES = [
     "machine learning engineer",
     "devops engineer",
     "site reliability engineer",
-    "security engineer",
+    # "security engineer" was here, and went for the same reason "qa engineer"
+    # did: `is_excluded_role` reads it as the `security` category, so every
+    # posting the term returned was searched for, paid for and then thrown away.
+    # It was index 9 — past Workday's `[:4]` and LinkedIn's `[:6]` — so removing
+    # it changed nothing about what those two search for. The 20 aggregator rows
+    # in the archive with "security engineer" in the title all name software as
+    # well ("Software Engineer - Security Engineering"), and those the software
+    # terms already find.
     "mobile engineer",
+    # --- appended, and appending is the only safe way to add one -------------
+    #
+    # Every aggregator ceiling here is PER TERM — Jooble pages 60 deep for each
+    # one, Adzuna divides a fixed call budget across them — so the term list is
+    # the one lever on breadth that no page cap bounds. Measured on the last
+    # sweep, Adzuna returned 9,799 of a possible 11,000 and Jooble sat exactly
+    # on its cap: the existing terms are close to exhausted, and page 1 of a
+    # term never searched is worth more than page 20 of one that is.
+    #
+    # Each of these was checked against `filters.is_software_role` and
+    # `is_excluded_role` before being added, which is not a formality:
+    # "embedded software engineer" reads as `firmware` and ".net developer"
+    # does not qualify as software at all, so neither is here. Nothing from
+    # EXCLUDED_ROLES goes in — that is the same reason "qa engineer" was
+    # removed from this list, and re-adding a term whose results the role
+    # filter then throws away spends request budget for nothing.
+    "platform engineer",
+    "cloud engineer",
+    "infrastructure engineer",
+    "software architect",
+    "web developer",
+    "python developer",
+    "java developer",
+    "android developer",
+    "ios developer",
 ]
 
 

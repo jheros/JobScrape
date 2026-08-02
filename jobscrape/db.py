@@ -118,6 +118,13 @@ CREATE TABLE IF NOT EXISTS companies (
     -- retried at full frequency forever — see mark_board_failure/_success.
     consecutive_failures  INTEGER NOT NULL DEFAULT 0,
     cooldown_until        TIMESTAMPTZ,
+    -- yield backoff, the sibling of the two columns above: how many sweeps in a
+    -- row this board answered normally and produced nothing that passed the
+    -- filters, and how long it is being swept less often for. See
+    -- mark_board_yield() — Paycom's 5,135 healthy, jobless-to-us portals are
+    -- what this exists for.
+    zero_yield_streak     INTEGER NOT NULL DEFAULT 0,
+    quiet_until           TIMESTAMPTZ,
     UNIQUE (ats, slug)
 );
 
@@ -765,7 +772,18 @@ def get_companies(
     ats: str | None = None,
     status: str | list[str] | None = None,
     limit: int | None = None,
+    order: str = "yield",
 ) -> list[dict[str, Any]]:
+    """Rows from `companies`, biggest boards first by default.
+
+    ``order="random"`` exists because the default ordering is useless — and
+    actively misleading — for unchecked rows. An unchecked board has
+    `job_count = 0`, so `job_count DESC, slug` degenerates into alphabetical
+    order, and any `limit` then takes the same slice of the alphabet on every
+    single run. Two callers need a *representative* slice instead: `validate`
+    measuring a live-rate from a sample, and `fetch` chipping away at a backlog
+    of 26,390 unchecked boards a few hundred at a time.
+    """
     sql = "SELECT * FROM companies WHERE 1=1"
     params: list[Any] = []
     if ats:
@@ -777,7 +795,7 @@ def get_companies(
     elif status:
         sql += f" AND status IN ({','.join('?' * len(status))})"
         params.extend(status)
-    sql += " ORDER BY job_count DESC, slug"
+    sql += " ORDER BY random()" if order == "random" else " ORDER BY job_count DESC, slug"
     if limit:
         sql += f" LIMIT {int(limit)}"
     return conn.execute(sql, params).fetchall()
@@ -837,6 +855,72 @@ def boards_in_cooldown(conn: Connection, ats: str) -> set[str]:
         for row in conn.execute(
             "SELECT slug FROM companies WHERE ats=? AND cooldown_until IS NOT NULL "
             "AND cooldown_until > ?",
+            (ats, now_iso()),
+        )
+    }
+
+
+# --- yield backoff: boards that answer, but never with a software job --------
+#
+# The sibling of board_health above, and deliberately a SEPARATE mechanism. That
+# one backs off a board that is failing; this one backs off a board that is
+# working perfectly and simply has nothing this archive wants.
+#
+# Paycom is the case that forced it. Its 5,135 discovered portals are car
+# dealerships, clinics and municipalities — one sampled live board served 55
+# postings, of which the role prefilter passed exactly 0 ("Corporate Staff
+# Accountant", "Forklift Mechanic", "Industrial Dock/Door Install"). Every
+# sweep spent roughly 10,000 requests there and stored nothing. Those requests
+# are the budget that the 26,390-board validation backlog needs.
+#
+# Backoff, not exclusion: a dealership can hire a developer, and the platform is
+# not the thing at fault. A board that yields again resets to full frequency.
+
+#: Consecutive zero-yield sweeps before a board is slowed down at all. Three, so
+#: a board that is merely between openings is never affected.
+ZERO_YIELD_GRACE = 3
+
+#: Ceiling on the quiet period. Two weeks is long enough to matter for 5,135
+#: boards and short enough that a board which starts hiring engineers is picked
+#: up in the same month.
+ZERO_YIELD_MAX_HOURS = 24 * 14
+
+
+def mark_board_yield(conn: Connection, ats: str, slug: str, kept: int) -> None:
+    """Record whether this sweep of a board produced anything worth storing.
+
+    `kept` is the count AFTER the role/region/date filters, which is the only
+    number that matters here — a board serving 55 forklift-mechanic postings has
+    yielded nothing, however healthy its HTTP.
+    """
+    if kept:
+        conn.execute(
+            "UPDATE companies SET zero_yield_streak=0, quiet_until=NULL "
+            "WHERE ats=? AND slug=?",
+            (ats, slug),
+        )
+        return
+    row = conn.execute(
+        "SELECT zero_yield_streak FROM companies WHERE ats=? AND slug=?", (ats, slug)
+    ).fetchone()
+    streak = ((row["zero_yield_streak"] if row else 0) or 0) + 1
+    quiet = None
+    if streak >= ZERO_YIELD_GRACE:
+        hours = min(24 * (2 ** (streak - ZERO_YIELD_GRACE)), ZERO_YIELD_MAX_HOURS)
+        quiet = (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    conn.execute(
+        "UPDATE companies SET zero_yield_streak=?, quiet_until=? WHERE ats=? AND slug=?",
+        (streak, quiet, ats, slug),
+    )
+
+
+def quiet_boards(conn: Connection, ats: str) -> set[str]:
+    """Slugs currently backed off for yielding nothing. See mark_board_yield."""
+    return {
+        row["slug"]
+        for row in conn.execute(
+            "SELECT slug FROM companies WHERE ats=? AND quiet_until IS NOT NULL "
+            "AND quiet_until > ?",
             (ats, now_iso()),
         )
     }

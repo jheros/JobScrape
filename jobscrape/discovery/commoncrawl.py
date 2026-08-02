@@ -109,13 +109,36 @@ TARGETS: list[tuple[str, str, re.Pattern[str]]] = [
 ]
 
 # Subdomains that are the vendor's own site rather than a customer board.
+#
+# The second block is vendor *infrastructure*, added after 20 of these were
+# found sitting in the registry as iCIMS "boards" — `analytics`, `billing`,
+# `autodiscover` and eleven `api-<region>` variants. Each is probed on every
+# validate pass and can never be anything but dead, so they are junk that costs
+# request budget forever rather than junk that merely looks untidy.
 _VENDOR_SUBDOMAINS = {
     "www", "app", "api", "help", "support", "docs", "blog", "status", "developers",
     "partners", "marketing", "resources", "academy", "community", "login", "auth",
     "secure", "static", "assets", "cdn", "media", "images", "email", "go", "info",
     "about", "careers", "jobs", "hire", "hiring", "talent", "my", "portal",
     "dashboard", "admin", "test", "demo", "staging", "sandbox", "preview",
+    # vendor infrastructure
+    "analytics", "billing", "events", "click", "autodiscover", "gslink", "agents",
+    "dev", "qa", "uat", "mail", "smtp", "ns1", "ns2", "vpn", "cpanel", "webmail",
+    "monitor", "metrics", "grafana", "internal-api", "edge", "origin",
 }
+
+#: A label that is *only* vendor infrastructure once its trailing qualifier is
+#: removed — `api-eu-west-1`, `api-stg`, `analytics-api`. Checked separately
+#: from the set above because the suffix is unbounded: there is one per region,
+#: per stage, per version, and enumerating them would be a losing game.
+_VENDOR_PREFIXES = ("api-", "analytics-", "cdn-", "static-", "mail-", "smtp-",
+                    "monitor-", "internal-api-")
+
+
+def is_vendor_subdomain(slug: str) -> bool:
+    """Whether a discovered label is the ATS's own infrastructure, not a tenant."""
+    return slug in _VENDOR_SUBDOMAINS or slug.startswith(_VENDOR_PREFIXES)
+
 
 # Workday tenants live on per-company subdomains, so the slug is the host.
 # Career-site URLs optionally carry a locale segment before the site name
@@ -198,7 +221,7 @@ def _extract(lines: Iterable[str], pattern: re.Pattern[str]) -> set[str]:
             # For subdomain-per-customer platforms the vendor's own subdomains
             # match the pattern too; probing "www.bamboohr.com" as a company
             # wastes a request every run.
-            if slug and slug not in _VENDOR_SUBDOMAINS:
+            if slug and not is_vendor_subdomain(slug):
                 found.add(slug)
     return found
 

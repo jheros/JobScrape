@@ -6,6 +6,7 @@ URL path rather than a header.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date
 
@@ -13,6 +14,8 @@ from .. import config
 from ..http import Fetcher
 from ..models import Job
 from .base import DEFAULT_QUERIES, GlobalSource, JobBatch
+
+log = logging.getLogger("jobscrape.jooble")
 
 API = "https://jooble.org/api/{key}"
 #: Verified to actually bind: Jooble reports ~196,000 matches for a single
@@ -60,6 +63,16 @@ class Jooble(GlobalSource):
                     headers={"content-type": "application/json"},
                 )
                 if not isinstance(data, dict):
+                    # Logged, not swallowed. This is the shape a quota refusal
+                    # arrives in, and the page budget was raised from 30 to 60
+                    # against a term list that also grew — so "Jooble stopped
+                    # early" needs to be distinguishable from "Jooble ran out of
+                    # jobs" without reading the funnel afterwards.
+                    log.warning(
+                        "jooble: %r page %d returned %s, not an object — stopping "
+                        "this term (quota, or a transient failure)",
+                        term, page, type(data).__name__,
+                    )
                     complete = False  # the page failed; the rest is unread
                     break
                 results = data.get("jobs") or []

@@ -72,6 +72,20 @@ _ATS_CHOICES = sorted(set(BOARD_SOURCES) | {"avature"})
 #: "the platform is back" from "this one board is genuinely broken".
 MAX_RECOVERY_PROBES = 3
 
+#: How many not-yet-validated boards each sweep pulls in per ATS, on top of
+#: every live one.
+#:
+#: Not unbounded, and not zero. Zero is what the old `live`-only branch did to
+#: any partially validated platform — 16,866 discovered boards across six
+#: platforms were unreachable, iCIMS sweeping 6 of 2,499. Unbounded is what the
+#: old zero-live branch did — every sweep spent ~10,000 requests on Paycom's
+#: 5,135 portals, which return real postings that are never software.
+#:
+#: 500 per ATS per sweep works through the largest backlog here (BambooHR's
+#: 5,629) in eleven runs, and boards that answer are promoted to `live`
+#: immediately, so the slice keeps moving rather than re-drawing the same slugs.
+UNCHECKED_PER_ATS = 500
+
 
 # --------------------------------------------------------------------------
 # discover
@@ -138,6 +152,7 @@ async def cmd_validate(args: argparse.Namespace) -> int:
                     limit=args.limit,
                     concurrency=args.concurrency,
                     recheck=args.recheck,
+                    sample=getattr(args, "sample", False),
                 )
     return 0
 
@@ -156,14 +171,29 @@ async def _fetch_boards(
     boards: dict[str, Any] | None = None,
 ) -> tuple[dict[str, int], FilterFunnel]:
     source = (boards or BOARD_SOURCES)[ats]
-    # Prefer boards already known to be live; fall back to unchecked ones so a
-    # fetch still works before validate has been run.
+    # Every live board, plus a bounded slice of the ones nobody has probed yet.
+    #
+    # This used to be `live`, falling back to `unchecked` ONLY when there were
+    # zero live boards — all or nothing. A *partially* validated platform was
+    # therefore pinned to its handful of known-live boards forever: iCIMS swept
+    # 6 boards while 2,493 unchecked slugs sat beside them, Workday swept 71 of
+    # 3,561, BambooHR 1 of 5,648. 16,866 discovered boards were unreachable
+    # across six platforms, and no amount of re-running fetch would find them.
+    #
+    # The slice is capped and randomly ordered rather than unbounded, for two
+    # reasons. Unbounded is what the old zero-live branch did, and it is why
+    # every sweep spent ~10,000 requests on Paycom's 5,135 portals. And an
+    # unchecked row has `job_count = 0`, so the default ordering is alphabetical
+    # — an uncapped-but-limited slice would re-sweep the same slugs forever
+    # instead of working through the backlog.
     rows = db.get_companies(conn, ats=ats, status="live", limit=args.companies)
-    if not rows:
-        rows = db.get_companies(
-            conn, ats=ats, status=["unchecked", "live"], limit=args.companies
+    unchecked = getattr(args, "unchecked", UNCHECKED_PER_ATS)
+    if unchecked:
+        rows += db.get_companies(
+            conn, ats=ats, status="unchecked", limit=unchecked, order="random",
         )
-    empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0, "closed": 0, "cooled_down": 0}
+    empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0, "closed": 0,
+             "cooled_down": 0, "quiet": 0}
     if not rows:
         log.info("%-16s no companies discovered yet", ats)
         return empty, FilterFunnel()
@@ -202,6 +232,18 @@ async def _fetch_boards(
             ats, skipped_cooldown, len(rows),
         )
     rows = [r for r in rows if r["slug"] not in cooldown]
+
+    # Boards that answer fine and never carry a software job — see
+    # db.mark_board_yield. Skipped unless `--all-boards` says otherwise, which
+    # is what makes the request budget available for the validation backlog.
+    quiet = set() if getattr(args, "all_boards", False) else db.quiet_boards(conn, ats)
+    skipped_quiet = sum(1 for r in rows if r["slug"] in quiet)
+    if skipped_quiet:
+        log.info(
+            "%-16s %d/%d boards quiet (no software postings for %d+ sweeps), skipping",
+            ats, skipped_quiet, len(rows), db.ZERO_YIELD_GRACE,
+        )
+    rows = [r for r in rows if r["slug"] not in quiet]
     if not rows:
         return empty, FilterFunnel()
 
@@ -212,7 +254,7 @@ async def _fetch_boards(
     # passed the filters, which can exceed rows when a source repeats a
     # requisition (e.g. one copy per location).
     totals = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0, "closed": 0,
-              "cooled_down": skipped_cooldown}
+              "cooled_down": skipped_cooldown, "quiet": skipped_quiet}
     # Why postings were dropped, aggregated across this ATS's boards.
     funnel = FilterFunnel()
 
@@ -230,7 +272,8 @@ async def _fetch_boards(
     # posting — on a repeat sweep that is the overwhelming majority of them.
     refetch = getattr(args, "refetch_details", False)
 
-    async def one(slug: str) -> None:
+    async def one(row: dict[str, Any]) -> None:
+        slug = row["slug"]
         known: set[str] | None = None
         if not refetch:
             async with lock:
@@ -260,6 +303,19 @@ async def _fetch_boards(
 
         async with lock:
             db.mark_board_success(conn, ats, slug)
+            # A fetch IS the probe `validate` performs, with details on top, so
+            # a board that answered with postings is live and should be treated
+            # as such from the next sweep on — otherwise the unchecked slice
+            # above would have to rediscover it by chance every time.
+            #
+            # Only the positive verdict is recorded here. An empty answer is
+            # ambiguous at this layer: `prefilter` runs inside `fetch_board`, so
+            # a board full of forklift-mechanic postings comes back `[]` exactly
+            # like a board with nothing on it. Writing "empty" would turn "no
+            # SOFTWARE jobs today" into a permanent judgement about the board.
+            # `validate` stays the authority for empty/dead.
+            if jobs and row.get("status") == "unchecked":
+                db.mark_company(conn, ats, slug, "live", len(jobs))
             # The board answered, so anything it no longer lists has closed
             # (after the grace period — see mark_board_closures). Done before
             # filtering: a posting dropped by the date window is still open,
@@ -270,6 +326,13 @@ async def _fetch_boards(
             conn.commit()
 
         if not jobs:
+            # An empty answer counts as a zero-yield sweep. It is the branch
+            # Paycom takes on all 5,135 of its portals: the prefilter runs
+            # inside `fetch_board`, so a board of forklift-mechanic postings
+            # arrives here as `[]` having already cost its requests.
+            async with lock:
+                db.mark_board_yield(conn, ats, slug, 0)
+                conn.commit()
             return
         kept, board_funnel = apply_filters_counted(
             jobs, since=since, until=until,
@@ -286,6 +349,7 @@ async def _fetch_boards(
         ]
 
         async with lock:
+            db.mark_board_yield(conn, ats, slug, len(kept))
             if rejected:
                 db.record_rejected(conn, ats, slug, rejected)
             funnel.add(board_funnel)
@@ -305,7 +369,7 @@ async def _fetch_boards(
                     ats, totals["boards"], totals["raw"], totals["new"],
                 )
 
-    await asyncio.gather(*(one(row["slug"]) for row in rows))
+    await asyncio.gather(*(one(row) for row in rows))
     log.info(
         "%-16s done: %d boards, %d postings seen, %d matched, %d new, %d refreshed, %d closed",
         ats, totals["boards"], totals["raw"], totals["kept"],
@@ -925,6 +989,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.add_argument("--ats", action="append", choices=_ATS_CHOICES)
     p_val.add_argument("--limit", type=int, default=None)
     p_val.add_argument("--recheck", action="store_true", help="re-probe all, not just unchecked")
+    p_val.add_argument("--sample", action="store_true",
+                       help="draw the --limit slice at random, so the live-rate it "
+                            "reports describes the platform rather than the letter A")
     add_common(p_val)
 
     # fetch
@@ -936,6 +1003,13 @@ def build_parser() -> argparse.ArgumentParser:
                          help="restrict to named sources (repeatable)")
     p_fetch.add_argument("--companies", type=int, default=None,
                          help="max boards per ATS")
+    p_fetch.add_argument("--unchecked", type=int, default=UNCHECKED_PER_ATS,
+                         help="how many not-yet-validated boards per ATS to include "
+                              f"(default {UNCHECKED_PER_ATS}; 0 = live boards only)")
+    p_fetch.add_argument("--all-boards", action="store_true",
+                         help="also sweep boards backed off for yielding no software "
+                              "postings (see zero_yield_streak); slow, and mostly "
+                              "useful right after loosening the role filter")
     p_fetch.add_argument("--max-results", type=int, default=None,
                          help="cap results per global source")
     p_fetch.add_argument("--include-restricted", action="store_true",
@@ -968,6 +1042,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_run)
     p_run.add_argument("--sources", action="append")
     p_run.add_argument("--companies", type=int, default=None)
+    p_run.add_argument("--unchecked", type=int, default=UNCHECKED_PER_ATS)
+    p_run.add_argument("--all-boards", action="store_true")
     p_run.add_argument("--max-results", type=int, default=None)
     p_run.add_argument("--include-restricted", action="store_true")
     p_run.add_argument("--refetch-details", action="store_true")

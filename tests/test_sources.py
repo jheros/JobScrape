@@ -640,6 +640,28 @@ def test_icims_board_host_handles_slug_and_vanity_forms() -> None:
 
     assert board_host("360care") == "careers-360care.icims.com"
     assert board_host("careers.docusign.com") == "careers.docusign.com"
+    # Idempotent: certificate transparency yields the whole label while Common
+    # Crawl's regex yields the bare tenant, and both must land on one host.
+    assert board_host("careers-360care") == "careers-360care.icims.com"
+
+
+def test_icims_board_host_keeps_non_careers_prefixes() -> None:
+    """iCIMS serves boards on several prefixes, and only `careers-` was known.
+
+    Certificate transparency returns whole labels, so `us-shermco` was read as
+    a tenant named "us-shermco" and resolved to `careers-us-shermco.icims.com`
+    — which 404s. Six registered boards are wrong this way; the prefix list is
+    taken from the 715 slugs already stored in dotted form, so it keeps up as
+    CT finds more of them.
+    """
+    from jobscrape.sources.icims import board_host
+
+    assert board_host("us-shermco") == "us-shermco.icims.com"
+    assert board_host("usa-titanmaterials") == "usa-titanmaterials.icims.com"
+    assert board_host("external-92y") == "external-92y.icims.com"
+    assert board_host("uscareers-asm") == "uscareers-asm.icims.com"
+    # A hyphen alone means nothing — a real tenant name may contain one.
+    assert board_host("1stheritage-cu") == "careers-1stheritage-cu.icims.com"
 
 
 def test_rippling_joins_its_sectioned_description() -> None:

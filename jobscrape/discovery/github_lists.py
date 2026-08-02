@@ -16,7 +16,7 @@ import re
 from typing import Iterable
 
 from ..http import Fetcher
-from .commoncrawl import _VENDOR_SUBDOMAINS, _clean
+from .commoncrawl import _clean, is_vendor_subdomain
 
 log = logging.getLogger("jobscrape.github_lists")
 
@@ -72,7 +72,7 @@ def extract(text: str) -> dict[str, set[str]]:
     for pattern, ats in _HOST_PATTERNS:
         for raw in pattern.findall(text):
             slug = _clean(raw)
-            if slug and slug not in _VENDOR_SUBDOMAINS:
+            if slug and not is_vendor_subdomain(slug):
                 add(ats, slug)
 
     for tenant, wd, site in _WORKDAY_RE.findall(text):

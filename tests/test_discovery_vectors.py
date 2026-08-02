@@ -47,6 +47,22 @@ def test_ct_drops_vendor_subdomains() -> None:
     assert ct._subdomains(names, "bamboohr.com") == {"acme"}
 
 
+def test_ct_drops_vendor_infrastructure_labels() -> None:
+    """The junk that was actually in the registry.
+
+    Twenty iCIMS *infrastructure* hosts had been recorded as boards —
+    `analytics`, `billing`, `autodiscover` and eleven `api-<region>` variants.
+    Each is re-probed on every validate pass and can never be anything but
+    dead, so it is junk that costs request budget rather than junk that merely
+    looks untidy. The `api-` family is checked by prefix because its suffix is
+    unbounded: one per region, per stage, per version.
+    """
+    labels = ("analytics", "billing", "autodiscover", "gslink", "agents",
+              "api-eu-west-1", "api-stg", "analytics-api", "acme")
+    names = [f"{s}.icims.com" for s in labels]
+    assert ct._subdomains(names, "icims.com") == {"acme"}
+
+
 async def test_ct_certspotter_parsing() -> None:
     payload = [
         {"dns_names": ["acme.teamtailor.com", "www.teamtailor.com"]},

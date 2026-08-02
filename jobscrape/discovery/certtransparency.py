@@ -20,7 +20,7 @@ import logging
 from typing import Iterable
 
 from ..http import Fetcher
-from .commoncrawl import _VENDOR_SUBDOMAINS, _clean
+from .commoncrawl import _clean, is_vendor_subdomain
 
 log = logging.getLogger("jobscrape.certtransparency")
 
@@ -62,7 +62,7 @@ def _subdomains(names: Iterable[str], domain: str) -> set[str]:
         if not label or "." in label:
             continue
         slug = _clean(label)
-        if slug and slug not in _VENDOR_SUBDOMAINS:
+        if slug and not is_vendor_subdomain(slug):
             found.add(slug)
     return found
 

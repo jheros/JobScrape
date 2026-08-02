@@ -129,10 +129,22 @@ def restricted_board_sources() -> dict[str, BoardSource]:
     return {s.ats: s for s in (avature.Avature(),)}
 
 
-ALL_SOURCE_NAMES = sorted(set(BOARD_SOURCES) | set(GLOBAL_SOURCES))
+#: Registered, addressable by `--sources`, but not part of a default sweep.
+#:
+#: `jsearch` is here because it has produced **zero** rows since it was written:
+#: its RapidAPI provider returns 404 for every path tried (see config.py). It
+#: costs six requests a run to re-confirm that, and it is kept rather than
+#: deleted because the adapter itself is fine — a working RAPIDAPI_HOST/PATH is
+#: all it needs, and `--sources jsearch` still runs it.
+OFF_BY_DEFAULT = frozenset({"jsearch"})
+
+ALL_SOURCE_NAMES = sorted(
+    (set(BOARD_SOURCES) | set(GLOBAL_SOURCES)) - OFF_BY_DEFAULT
+)
 
 __all__ = [
     "ALL_SOURCE_NAMES",
+    "OFF_BY_DEFAULT",
     "BOARD_SOURCES",
     "GLOBAL_SOURCES",
     "BoardSource",

@@ -19,10 +19,18 @@ async def validate_ats(
     limit: int | None = None,
     concurrency: int = 8,
     recheck: bool = False,
+    sample: bool = False,
 ) -> dict[str, int]:
     """Probe every unchecked slug for one ATS, recording live/empty/dead.
 
     Results are committed in batches so an interrupted run keeps its progress.
+
+    ``sample=True`` draws the slice at random. With a `--limit`, the default
+    ordering is `job_count DESC, slug`, and every unchecked row has
+    `job_count = 0` — so a limited run probes the same alphabetical prefix every
+    time, and the live-rate it reports describes the letter A rather than the
+    platform. That number is what decides whether validating the remaining
+    thousands is worth the hours, so it has to be representative.
     """
     # Restricted boards are discovered like any other, so they can be validated
     # on request even though a normal fetch skips them.
@@ -31,7 +39,10 @@ async def validate_ats(
         return {}
 
     statuses = None if recheck else "unchecked"
-    rows = db.get_companies(conn, ats=ats, status=statuses, limit=limit)
+    rows = db.get_companies(
+        conn, ats=ats, status=statuses, limit=limit,
+        order="random" if sample else "yield",
+    )
     if not rows:
         return {}
 

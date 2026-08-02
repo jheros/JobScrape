@@ -196,11 +196,22 @@ signal the end would never terminate.
 
 ### 3b. Global sources — search APIs
 
-Swept with 12 software search terms, paginated, deduped per source.
+Swept with 19 software search terms, paginated, deduped per source.
 
 - **No key needed:** RemoteOK, Arbeitnow, Hacker News, Himalayas, Remotive, Jobicy,
   We Work Remotely
-- **Free key needed:** USAJobs, Adzuna, Jooble, JSearch
+- **Free key needed:** USAJobs, Adzuna, Jooble; JSearch is registered but off by default
+  (zero rows since it was written — its provider 404s every path)
+
+**The term list is the one lever on breadth that no page cap bounds**, because every
+ceiling here is per term. It is also the easiest place to waste a request budget: a term
+whose results the role filter then discards costs pages and stores nothing. Two have been
+removed on exactly that ground — "qa engineer", and "security engineer", which
+`is_excluded_role` reads as the `security` category. Every term is asserted against
+`is_software_role` and `is_excluded_role` in `tests/test_query_budget.py`, which is not a
+formality: "embedded software engineer" reads as `firmware` and ".net developer" does not
+qualify as software at all, so neither is in the list. Order is load-bearing — Workday
+searches `[:4]` and LinkedIn `[:6]` — so terms are appended, never inserted.
 
 A missing key is a **skip with an explanatory message**, never an error. The run
 continues.
@@ -209,7 +220,16 @@ Pagination limits here are tunable, and the defaults were raised after checking 
 old ones genuinely bound rather than being theoretical ceilings — Himalayas was still
 returning full pages at page 60 under a 50-page cap (**1,000 → 2,688 postings** per run
 once lifted), and Jooble reports ~196,000 matches for a single term where 10 pages saw
-200. See `JOBSCRAPE_HIMALAYAS_MAX_PAGES` / `JOOBLE_MAX_PAGES` in `config.py`.
+200. Re-measured on a full sweep, Jooble sat exactly on its 30-page ceiling and Himalayas
+returned 2,999 against a ceiling of 3,000, so both were raised again (60 and 300).
+
+**Adzuna is the exception, and deliberately.** Its free tier is quota-limited per day, so
+what binds it is not a page cap but a total call budget — `ADZUNA_CALL_BUDGET`, divided
+across whatever terms are configured. Widening the term list therefore re-spreads its
+spend instead of multiplying it, which is also the better buy: it returned 9,799 postings
+against an 11,000 ceiling, so the deep pages of each term are nearly exhausted and page 1
+of a term never searched is worth more than page 20 of one already walked. See
+`JOBSCRAPE_HIMALAYAS_MAX_PAGES` / `JOOBLE_MAX_PAGES` / `JOBSCRAPE_ADZUNA_CALL_BUDGET`.
 
 Global sources also get the same closure treatment as boards, with one difference worth
 knowing: `mark_board_closures` is called with `company_slug=None`, meaning "skip
