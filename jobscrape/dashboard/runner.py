@@ -29,6 +29,10 @@ log = logging.getLogger("jobscrape.dashboard.runner")
 
 #: Stage name -> CLI arguments. Everything the dashboard can launch is here, so
 #: the web layer can never assemble an arbitrary command line.
+#:
+#: The stage name was always allowlisted; the caller-supplied `extra` was not,
+#: and was appended to argv verbatim — see `SAFE_EXTRA_FLAGS` below for why that
+#: made the sentence above untrue.
 STAGES: dict[str, list[str]] = {
     "discover": ["discover"],
     "discover-fast": ["discover", "--vector", "ct", "--vector", "github"],
@@ -36,6 +40,42 @@ STAGES: dict[str, list[str]] = {
     "fetch": ["fetch"],
     "export": ["export", "--format", "csv", "--format", "xlsx"],
 }
+
+#: The only extra CLI flags a dashboard caller may add to a stage.
+#:
+#: Every one is a value-less boolean, which is the property that matters: a flag
+#: that takes a value can redirect where the process writes. `--output` (on the
+#: `export` stage) and `--db` both do, so `extra="--output ~/.zshrc"` was an
+#: arbitrary file write, and `--db` repointed the archive.
+#:
+#: That was reachable without any credential. These routes take `Form(...)`
+#: bodies, so a cross-origin form POST is a CORS "simple request" — no
+#: preflight, the browser just sends it — and binding to 127.0.0.1 is no defence
+#: against a page the operator already has open. There is no CSRF token here
+#: because there is no session to protect; the allowlist is what makes the
+#: absence of one safe.
+SAFE_EXTRA_FLAGS = frozenset({
+    "--recheck", "--all-roles", "--worldwide", "--no-cache",
+    "--dry-run", "--include-restricted", "--complete-only",
+})
+
+
+def safe_extra(extra: list[str] | None) -> list[str]:
+    """Keep only allowlisted flags, discarding anything else.
+
+    Silently dropping rather than raising: this is defence against a request the
+    operator did not knowingly make, so failing the run would turn a blocked
+    attack into a denial of service on a legitimate button press.
+    """
+    if not extra:
+        return []
+    kept, refused = [], []
+    for token in extra:
+        (kept if token in SAFE_EXTRA_FLAGS else refused).append(token)
+    if refused:
+        log.warning("ignoring CLI flags not on the dashboard allowlist: %s", refused)
+    return kept
+
 
 #: Progress lines the CLI already emits, parsed for the live counters.
 _DONE_RE = re.compile(
@@ -103,7 +143,8 @@ class RunManager:
             if stage in self._active:
                 raise RuntimeError(f"{stage} is already running")
 
-            argv = [sys.executable, "-m", "jobscrape", *STAGES[stage], *(extra or [])]
+            argv = [sys.executable, "-m", "jobscrape", *STAGES[stage],
+                    *safe_extra(extra)]
             command = " ".join(argv[2:])
 
             with db.session(self.db_path) as conn:

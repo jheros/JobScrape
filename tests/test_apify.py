@@ -420,3 +420,130 @@ def test_re_delivery_is_safe() -> None:
             ("indeed", "dup-1"),
         ).fetchone()["c"]
         assert count == 1
+
+
+# --- the ingest path itself -------------------------------------------------
+#
+# These exist because the feature shipped broken and the suite did not notice.
+# `ingest` was loaded through a module `__getattr__` that did
+# `from . import ingest`, which re-enters `__getattr__` — `from X import Y`
+# resolves Y with `getattr(X, "Y")`. Every real ingestion raised RecursionError.
+# Both `apify-pull` and the webhook's background task were dead, and the tests
+# passed because they stub `_ingest` and never import the module.
+
+
+def test_the_ingest_module_can_be_imported() -> None:
+    """The whole feature is unreachable if this fails, however green the rest is."""
+    from jobscrape.sources.apify import ingest
+
+    assert hasattr(ingest, "ingest_run")
+    assert hasattr(ingest, "ingest_and_record")
+
+
+def test_every_entry_point_can_reach_ingest() -> None:
+    """The two importers that were broken, exercised the way they import it."""
+    from jobscrape.sources.apify import ingest as via_from_import  # noqa: F401
+    import jobscrape.sources.apify as package
+
+    assert package.ingest is via_from_import
+
+
+def _stub_client(monkeypatch, run: dict | None, items: list[dict]) -> None:
+    from jobscrape.sources.apify import client
+
+    async def run_info(_fetcher, _run_id):
+        return run
+
+    async def dataset_items(_fetcher, _dataset_id, max_items=None):
+        return items[:max_items] if max_items else items
+
+    monkeypatch.setattr(client, "run_info", run_info)
+    monkeypatch.setattr(client, "dataset_items", dataset_items)
+
+
+SUCCEEDED_RUN = {
+    "status": "SUCCEEDED",
+    "actId": "cheap_scraper~indeed-job-scraper",
+    "defaultDatasetId": "DS1",
+}
+
+
+def test_a_run_is_fetched_mapped_filtered_and_stored(monkeypatch, _isolated_db) -> None:
+    from jobscrape.sources.apify import ingest
+
+    _stub_client(monkeypatch, SUCCEEDED_RUN, [INDEED_ITEM])
+    result = asyncio.run(ingest.ingest_run(None, _isolated_db, "RUN1"))
+
+    assert result.error is None
+    assert (result.items, result.mapped, result.kept) == (1, 1, 1)
+    assert result.inserted == 1
+    assert result.ats_linked == 1        # the Greenhouse apply URL was read
+    assert result.funnel["seen"] == 1
+
+    stored = _isolated_db.execute(
+        "SELECT company_slug, city, salary_min FROM jobs WHERE source_job_id = ?",
+        ("a1b2c3",),
+    ).fetchone()
+    assert stored["company_slug"] == "acmecorp"
+    assert stored["city"] == "Austin"
+
+
+@pytest.mark.parametrize(
+    "run,expected",
+    [
+        (None, "could not be read"),
+        ({"status": "FAILED"}, "not SUCCEEDED"),
+        ({"status": "SUCCEEDED", "actId": "x", "defaultDatasetId": ""},
+         "no defaultDatasetId"),
+        ({"status": "SUCCEEDED", "actId": "someone~glassdoor-scraper",
+          "defaultDatasetId": "D"}, "no mapper"),
+    ],
+)
+def test_a_run_that_cannot_be_ingested_reports_why(
+    monkeypatch, _isolated_db, run: dict | None, expected: str
+) -> None:
+    """Each failure names itself rather than looking like an empty dataset."""
+    from jobscrape.sources.apify import ingest
+
+    _stub_client(monkeypatch, run, [INDEED_ITEM])
+    result = asyncio.run(ingest.ingest_run(None, _isolated_db, "RUN1"))
+    assert result.error is not None and expected in result.error
+    assert result.inserted == 0
+
+
+def test_the_dataset_id_comes_from_the_run_not_the_caller(
+    monkeypatch, _isolated_db
+) -> None:
+    """The webhook payload is unauthenticated and names both a run and a dataset.
+
+    Apify offers no request signing, so a forged body could otherwise point
+    ingestion at any dataset on the account. `ingest_run` takes only a run id
+    and re-reads the dataset from the API.
+    """
+    import inspect
+
+    from jobscrape.sources.apify import ingest
+
+    signature = inspect.signature(ingest.ingest_run)
+    assert "dataset_id" not in signature.parameters, (
+        "ingest_run must not accept a dataset id from its caller"
+    )
+
+
+def test_ingest_and_record_writes_a_run_row(monkeypatch, _isolated_db) -> None:
+    """Ingestion appears on the dashboard's Runs page like every other stage.
+
+    Otherwise this would be the one way postings enter the archive with no
+    trace of how they got there.
+    """
+    from jobscrape.sources.apify import ingest
+
+    _stub_client(monkeypatch, SUCCEEDED_RUN, [INDEED_ITEM])
+    asyncio.run(ingest.ingest_and_record(_isolated_db, "RUN1", command="apify-pull"))
+
+    run = _isolated_db.execute(
+        "SELECT command, stage, status FROM runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert run["command"] == "apify-pull"
+    assert run["stage"] == "apify"
+    assert run["status"] == "ok"

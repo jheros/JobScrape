@@ -62,7 +62,16 @@ class SmartRecruiters(BoardSource):
             batch = page.get("content") or []
             postings.extend(b for b in batch if isinstance(b, dict))
             offset += PAGE_SIZE
-            if len(batch) < PAGE_SIZE or offset >= int(page.get("totalFound") or 0):
+            # `(total and ...)` short-circuits on 0, which is what `totalFound`
+            # becomes when the key is missing or null. Without that guard a
+            # *full* first page — positive evidence there is more — was
+            # overridden by `100 >= 0` and every board past 100 postings was
+            # silently cut to its first page. Worse than under-collecting: the
+            # fetch still looks successful, so `mark_board_closures` then closes
+            # the postings that were never read. Oracle and UKG already write it
+            # this way; this was the one that did not.
+            total = int(page.get("totalFound") or 0)
+            if len(batch) < PAGE_SIZE or (total and offset >= total):
                 break
             if offset > 5000:  # safety valve on very large employers
                 break

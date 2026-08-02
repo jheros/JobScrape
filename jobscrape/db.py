@@ -933,14 +933,23 @@ def mark_board_closures(
     if not seen_ids:
         return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=config.CLOSURE_GRACE_HOURS)).isoformat()
-    placeholders = ",".join("?" * len(seen_ids))
     slug_clause = "company_slug = ?" if company_slug is not None else "1=1"
     slug_param = [company_slug] if company_slug is not None else []
+    # `= ANY(array)` rather than `NOT IN (?, ?, …)`: one bind parameter instead
+    # of one per id. The old form hit PostgreSQL's 65,535-parameter ceiling on a
+    # large global source — `seen_ids` is the RAW crawl result, not the filtered
+    # `kept`, and Amazon alone runs 11 query terms against a 10,000-per-term cap.
+    # Past the limit psycopg2 raises, the exception escapes `cmd_fetch`'s source
+    # loop, `finish_run` never executes, and the `runs` row is left "running" —
+    # which then blocks the dashboard from starting another fetch.
+    #
+    # Batching is not an option here: `NOT IN (A ∪ B)` is not `NOT IN A` then
+    # `NOT IN B`, so a chunked version would close everything in the other chunk.
     result = conn.execute(
         f"UPDATE jobs SET closed_at = ? WHERE source = ? AND {slug_clause} "
         f"AND closed_at IS NULL AND last_seen_at < ? "
-        f"AND source_job_id NOT IN ({placeholders})",
-        [now_iso(), source, *slug_param, cutoff, *seen_ids],
+        f"AND NOT (source_job_id = ANY(?))",
+        [now_iso(), source, *slug_param, cutoff, list(seen_ids)],
     )
     return result.rowcount
 

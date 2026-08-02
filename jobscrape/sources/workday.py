@@ -285,7 +285,11 @@ class Workday(BoardSource):
                     break  # probing only needs to prove the board responds
 
         if not seen:
-            return None if not with_details else []
+            # `[]` on both paths — see the identical note in oracle.py. A
+            # genuinely dead board already returned `None` above; reaching here
+            # means the search answered with nothing, which is "empty".
+            # Workday showed 0 empty boards out of 83 because of this line.
+            return []
 
         # Workday's keyword search is fuzzy and returns plenty of unrelated
         # roles. Dropping them here avoids one detail request each.

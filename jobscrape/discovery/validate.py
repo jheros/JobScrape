@@ -46,8 +46,22 @@ async def validate_ats(
             try:
                 status, count = await source.probe(fetcher, slug)
             except Exception as exc:
-                log.debug("probe %s/%s failed: %s", ats, slug, exc)
-                status, count = "dead", 0
+                # An exception is NOT a verdict. `probe` does real network and
+                # parsing work, so a transient timeout, an unexpected payload
+                # shape or an adapter bug all land here — and writing "dead"
+                # would turn any of them into a permanent judgement about the
+                # board. `dead` is never selected for a fetch again
+                # (`_fetch_boards` asks for `status="live"`), so a board retired
+                # this way needs `validate --recheck` to come back.
+                #
+                # Left `unchecked` instead, and logged at warning rather than
+                # debug: this was invisible at the default log level.
+                log.warning("probe %s/%s errored, leaving unchecked: %s: %s",
+                            ats, slug, type(exc).__name__, exc)
+                async with lock:
+                    counts["errored"] = counts.get("errored", 0) + 1
+                    done += 1
+                return
         async with lock:
             counts[status] = counts.get(status, 0) + 1
             db.mark_company(conn, ats, slug, status, count)
@@ -61,8 +75,10 @@ async def validate_ats(
 
     await asyncio.gather(*(probe(row["slug"]) for row in rows))
     conn.commit()
+    errored = counts.get("errored", 0)
     log.info(
-        "%s: %d probed -> live=%d empty=%d dead=%d",
+        "%s: %d probed -> live=%d empty=%d dead=%d%s",
         ats, len(rows), counts["live"], counts["empty"], counts["dead"],
+        f" errored={errored} (left unchecked)" if errored else "",
     )
     return counts

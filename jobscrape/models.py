@@ -300,6 +300,25 @@ def classify_workplace(
     return "onsite" if is_remote is False else "unknown"
 
 
+def _safe_link(url: str | None) -> str:
+    """Keep an http(s) link, discard anything else.
+
+    Returns ``""`` rather than ``None`` because `job_url` is a required column;
+    an empty string makes the absence obvious downstream instead of raising in
+    the middle of a sweep over one bad posting.
+
+    Scheme-relative (``//host/path``) is rejected too: it inherits the page's
+    scheme and is a link, but not one any ATS legitimately publishes here.
+    """
+    if not url:
+        return ""
+    text = str(url).strip()
+    lowered = text.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return text
+    return ""
+
+
 # --- country normalization -------------------------------------------------
 
 #: Spellings of the same country, collapsed to the ISO 3166-1 alpha-2 code.
@@ -793,6 +812,14 @@ class Job:
         self.company = (self.company or "").strip()
         self.source_job_id = str(self.source_job_id)
         self.location_raw = clean_location(self.location_raw)
+        # A link that is not http(s) is not a job link. Both of these are raw
+        # third-party strings and both are rendered straight into an `href` by
+        # the dashboard, so a posting carrying `javascript:fetch('/api/jobs/bulk'…)`
+        # would execute in the dashboard's origin on click — an origin with no
+        # authentication on any of its mutating routes. Zero rows in the archive
+        # carry one today; this is what keeps it that way.
+        self.job_url = _safe_link(self.job_url)
+        self.apply_url = _safe_link(self.apply_url)
         # Board adapters pass the real ATS board slug, which is authoritative and
         # must not be rewritten. Only the search APIs leave this empty.
         if not (self.company_slug or "").strip():

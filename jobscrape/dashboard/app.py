@@ -70,7 +70,12 @@ templates.env.filters["comma"] = lambda v: f"{int(v):,}" if v is not None else "
 templates.env.filters["datefmt"] = _datefmt
 templates.env.filters["scamreasons"] = _scam_reasons
 
-app = FastAPI(title="jobscrape dashboard", docs_url=None, redoc_url=None)
+# `openapi_url=None` too: disabling `docs_url`/`redoc_url` removes Swagger and
+# ReDoc but FastAPI still serves the schema at /openapi.json, which enumerates
+# every route including the unauthenticated mutating ones.
+app = FastAPI(
+    title="jobscrape dashboard", docs_url=None, redoc_url=None, openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
 

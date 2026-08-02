@@ -54,18 +54,18 @@ def mapper_for(actor: str | None):
     return None
 
 
-__all__ = ["MAPPERS", "ats_link", "client", "indeed", "linkedin", "mapper_for"]
+# Imported LAST, and that ordering is load-bearing: `ingest` calls
+# `mapper_for`, so it cannot be imported before this module has defined it.
+#
+# It was previously loaded lazily through a module `__getattr__` instead, to
+# keep `db` and `filters` out of a plain mapper import. That was wrong twice
+# over. `from . import ingest` inside `__getattr__` re-enters `__getattr__` —
+# `from X import Y` resolves Y with `getattr(X, "Y")` — so every real ingestion
+# raised RecursionError while the tests passed, because they stub it. And there
+# was no cycle to avoid in the first place: `db` and `filters` import `models`
+# and `config`, neither of which imports `sources`.
+from . import ingest  # noqa: E402,F401  (must follow `mapper_for`)
 
-
-def __getattr__(name: str):
-    """`ingest` imported lazily.
-
-    It pulls in `db` and `filters`, which drag in SQLAlchemy and the whole
-    model layer. The mappers and `ats_link` are pure and should stay importable
-    — and testable — without any of that.
-    """
-    if name == "ingest":
-        from . import ingest as module
-
-        return module
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+__all__ = [
+    "MAPPERS", "ats_link", "client", "indeed", "ingest", "linkedin", "mapper_for",
+]

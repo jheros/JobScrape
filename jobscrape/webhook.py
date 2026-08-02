@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hmac
 import logging
+import re
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, Header, Request
@@ -55,7 +56,22 @@ log = logging.getLogger("jobscrape.webhook")
 #: or timeout too, and those carry a partial dataset at best.
 SUCCEEDED = "ACTOR.RUN.SUCCEEDED"
 
-app = FastAPI(title="jobscrape apify webhook", docs_url=None, redoc_url=None)
+# `openapi_url=None` as well as the two doc UIs. Disabling `docs_url` and
+# `redoc_url` only removes Swagger and ReDoc — FastAPI still serves the schema
+# at /openapi.json, which on a public route hands an anonymous caller the route
+# table, including the fact that the secret is accepted as a path segment.
+app = FastAPI(
+    title="jobscrape apify webhook",
+    docs_url=None, redoc_url=None, openapi_url=None,
+)
+
+#: Apify run ids are opaque alphanumerics. Validated because the id is
+#: interpolated into an API path (`/v2/actor-runs/{run_id}`), and httpx
+#: normalises dot segments — so an id of `../key-value-stores/x/records/INPUT`
+#: would re-target the request at a different Apify resource while still
+#: carrying the account's bearer token. Post-authentication, but the id is
+#: trivially constrainable and there is no reason to accept the shape.
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _secret_ok(presented: str | None) -> bool:
@@ -64,11 +80,19 @@ def _secret_ok(presented: str | None) -> bool:
     An unset secret rejects everything rather than allowing everything: this
     route is meant to be public, and the failure mode of the opposite default
     is an open ingestion endpoint.
+
+    Compared as **bytes**. `hmac.compare_digest` raises `TypeError` on `str`
+    operands containing non-ASCII, so a secret like `/apify/ünauthorized`
+    produced an unhandled 500 instead of a 401 — a distinguishable response for
+    one class of wrong input, on the only public route here.
     """
     expected = config.APIFY_WEBHOOK_SECRET
-    if not expected:
+    if not expected or not presented:
         return False
-    return bool(presented) and hmac.compare_digest(str(presented), expected)
+    return hmac.compare_digest(
+        str(presented).encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    )
 
 
 def _run_id(payload: dict[str, Any]) -> str | None:
@@ -141,6 +165,9 @@ async def apify(
     run_id = _run_id(payload)
     if not run_id:
         return JSONResponse({"error": "no actorRunId in payload"}, status_code=400)
+    if not _RUN_ID_RE.match(run_id):
+        log.warning("apify webhook: refusing a malformed run id")
+        return JSONResponse({"error": "malformed run id"}, status_code=400)
 
     # Acknowledged here, before any work — see constraint 1 in the module
     # docstring. The dataset id in the payload is deliberately not passed on;
@@ -171,4 +198,13 @@ def serve(host: str = "0.0.0.0", port: int = 8001) -> None:
             "the token is required to fetch the dataset it points at."
         )
     config.ensure_dirs()
-    uvicorn.run(app, host=host, port=port, log_level="info")
+    # `access_log=False` because the secret is accepted as a path segment, and
+    # uvicorn's access log records the full request path — so every *successful*
+    # delivery would write `POST /apify/<the-actual-secret> 200` to disk. The
+    # handler already logs what matters (accepted run ids, rejected requests)
+    # without ever including the credential.
+    #
+    # Worth knowing when deploying: a reverse proxy in front of this will log
+    # the path too. Use the `X-Apify-Secret` header form there, or configure the
+    # proxy not to log the path.
+    uvicorn.run(app, host=host, port=port, log_level="info", access_log=False)

@@ -14,7 +14,7 @@ import random
 import time
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -57,14 +57,32 @@ class _HostLimiter:
         return self._sems[host], self._locks[host]
 
     async def acquire(self, host: str) -> asyncio.Semaphore:
+        """Take a permit for ``host``, then wait out the politeness interval.
+
+        The permit is released here if anything after ``sem.acquire()`` raises.
+        The caller's ``finally`` cannot cover that window — it is only installed
+        once this returns — so a cancellation during the sleep used to leak the
+        permit for the lifetime of the `Fetcher`. That is not a slow leak:
+        several hosts in `config.HOST_LIMITS` are limited to **one** concurrent
+        request, so a single cancelled task would deadlock every later request
+        to that host for the rest of the sweep. Reachable from the dashboard's
+        stop button and from any `gather` where a sibling raises.
+        """
         sem, lock = self._for(host)
         await sem.acquire()
-        delay = self._delays.get(host, self._delay)
-        async with lock:
-            elapsed = time.monotonic() - self._last[host]
-            if elapsed < delay:
-                await asyncio.sleep(delay - elapsed)
-            self._last[host] = time.monotonic()
+        try:
+            delay = self._delays.get(host, self._delay)
+            async with lock:
+                elapsed = time.monotonic() - self._last[host]
+                if elapsed < delay:
+                    await asyncio.sleep(delay - elapsed)
+                self._last[host] = time.monotonic()
+        except BaseException:
+            # BaseException, not Exception: `asyncio.CancelledError` derives
+            # from BaseException in 3.8+, and cancellation is the case this
+            # exists for.
+            sem.release()
+            raise
         return sem
 
     def slow_down(self, host: str, factor: float = 1.5, cap: float = 8.0) -> None:
@@ -279,6 +297,64 @@ class Fetcher:
     async def get_text(self, url: str, **kw: Any) -> str | None:
         kw["expect"] = "text"
         return await self.request("GET", url, **kw)
+
+    async def probe(
+        self,
+        url: str,
+        validate: Callable[[str], None] | None = None,
+        max_redirects: int = 5,
+    ) -> tuple[int, str, str] | None:
+        """Fetch a URL we did not choose, checking **every** hop.
+
+        Returns ``(status, final_url, body)``, or ``None`` if the request could
+        not be made at all. Bypasses `request` deliberately, for two reasons
+        that both matter only for untrusted URLs:
+
+        **Redirects are followed by hand.** The shared client sets
+        ``follow_redirects=True``, so a URL that passes an SSRF check can 302 to
+        ``169.254.169.254`` or to loopback and be fetched with no further
+        scrutiny. `safehttp`'s docstring claimed hops were re-checked; nothing
+        implemented it. ``validate`` is called on the original URL *and on every
+        Location* before that hop is followed.
+
+        **The status is returned.** `request` collapses every response >= 400 to
+        ``None``, which made 404 and 410 — the most reliable death signals a
+        liveness probe has — indistinguishable from a timeout, so the caller
+        could only ever see "no response" and had to hardcode ``200``.
+
+        A `BlockedAddress` from ``validate`` propagates: refusing to follow is
+        the caller's business to classify, not something to silently swallow.
+        """
+        if self._client is None:
+            raise RuntimeError("Fetcher must be used as an async context manager")
+
+        current = url
+        for _ in range(max_redirects + 1):
+            if validate is not None:
+                validate(current)
+            host = urlparse(current).netloc
+            async with self._global:
+                sem = await self._hosts.acquire(host)
+                try:
+                    response = await self._client.request(
+                        "GET", current, follow_redirects=False
+                    )
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    self.stats["failed"] += 1
+                    log.debug("probe %s failed: %s", current, exc)
+                    return None
+                finally:
+                    sem.release()
+
+            location = response.headers.get("location")
+            if response.is_redirect and location:
+                current = str(response.url.join(location))
+                continue
+            self.stats["ok"] += 1
+            return response.status_code, str(response.url), response.text
+
+        log.debug("probe %s: too many redirects", url)
+        return None
 
 
 async def gather_limited(coros: list[Any], limit: int = 16) -> list[Any]:

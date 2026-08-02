@@ -147,7 +147,9 @@ async def test_a_blocked_address_is_uncertain_not_expired() -> None:
     """Refusing to look at something is not evidence about it."""
 
     class NeverCalled:
-        async def get_text(self, *a, **k):
+        async def probe(self, url, validate=None, **k):
+            if validate is not None:
+                validate(url)       # the real guard, called the real way
             raise AssertionError("must not fetch a blocked address")
 
     probe = await probe_url(NeverCalled(), "http://169.254.169.254/latest/meta-data/")
@@ -157,11 +159,50 @@ async def test_a_blocked_address_is_uncertain_not_expired() -> None:
 @pytest.mark.asyncio
 async def test_no_response_is_uncertain() -> None:
     class Dead:
-        async def get_text(self, *a, **k):
+        async def probe(self, *a, **k):
             return None
 
     probe = await probe_url(Dead(), "https://example.com/job/1")
     assert probe.verdict == UNCERTAIN and probe.reason == "no_response"
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_to_a_private_address_is_refused() -> None:
+    """The hop-by-hop check `safehttp`'s docstring has always claimed.
+
+    A public URL that 302s to the cloud metadata endpoint used to be followed
+    without any further scrutiny: `check_url` ran once, up front, and the shared
+    client has `follow_redirects=True`. This is the one code path in the project
+    that fetches URLs it did not choose.
+    """
+    from jobscrape.safehttp import BlockedAddress
+
+    class Redirector:
+        async def probe(self, url, validate=None, **k):
+            # First hop passes, then the server redirects somewhere private.
+            if validate is not None:
+                validate(url)
+                validate("http://169.254.169.254/latest/meta-data/")
+            raise AssertionError("the second hop must not be fetched")
+
+    probe = await probe_url(Redirector(), "https://example.com/job/1")
+    assert probe.verdict == UNCERTAIN and probe.reason == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_a_404_is_now_reachable() -> None:
+    """`classify`'s most reliable branch was dead code.
+
+    `probe_url` hardcoded `classify(200, url, body)` because `get_text` returns
+    None for any status >= 400 — so a 404 or 410, the clearest death signal a
+    posting can give, arrived as "no_response" and was called UNCERTAIN.
+    """
+    class Gone:
+        async def probe(self, url, validate=None, **k):
+            return 404, url, ""
+
+    probe = await probe_url(Gone(), "https://example.com/job/1")
+    assert probe.verdict == EXPIRED, "a 404 must now close the posting"
 
 
 # --- database integration ----------------------------------------------------

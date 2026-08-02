@@ -132,7 +132,16 @@ class UKG(BoardSource):
                 break  # probing only needs to prove the board answers
 
         if not postings:
-            return [] if with_details else None
+            # `[]`, not `None`, on BOTH paths. By this point the API has
+            # answered — a genuinely dead board already returned `None` from the
+            # first-page guard above — so zero postings means "exists, not
+            # hiring". `BoardSource.probe` maps `None` to "dead" and `[]` to
+            # "empty", and `dead` boards are never selected for a fetch again
+            # (`_fetch_boards` asks for `status="live"`), so returning `None`
+            # here retired live employers on the day they happened to have no
+            # openings. Measured: Workday had 0 empty boards out of 83 while
+            # every other ATS ran 7-48%.
+            return []
 
         if prefilter is not None:
             postings = [

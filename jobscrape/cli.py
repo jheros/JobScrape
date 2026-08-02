@@ -525,7 +525,8 @@ def cmd_purge(args: argparse.Namespace) -> int:
     allow_roles = _allowed_roles(args)
     with db.session(args.db) as conn:
         rows = conn.execute(
-            "SELECT source, source_job_id, title, department, company, posted_at FROM jobs"
+            "SELECT source, source_job_id, title, department, company, company_slug, "
+            "posted_at FROM jobs"
         ).fetchall()
 
         doomed = [
@@ -563,12 +564,18 @@ def cmd_purge(args: argparse.Namespace) -> int:
 
         # Record before deleting, so the next sweep skips these instead of
         # re-downloading and re-rejecting them. This is what posting_seen is for.
+        # Keyed on company_SLUG, not the display name. `record_rejected`'s third
+        # argument is `company_slug` and `skippable_ids` reads it back against
+        # `companies.slug`, so writing "Anduril Industries" where `anduril`
+        # belongs means the lookup never matches and the promise this block
+        # makes — "recorded as rejected so they are not re-fetched" — is void.
+        # 8,524 rows in the archive were written that way before this was fixed.
         by_source: dict[tuple[str, str], list[tuple[str, str | None]]] = {}
         for r in doomed:
-            key = (r["source"], r["company"] or "")
+            key = (r["source"], r["company_slug"] or "")
             by_source.setdefault(key, []).append((r["source_job_id"], r["posted_at"]))
-        for (source, company), entries in by_source.items():
-            db.record_rejected(conn, source, company, entries)
+        for (source, company_slug), entries in by_source.items():
+            db.record_rejected(conn, source, company_slug, entries)
 
         deleted, released = db.delete_jobs(
             conn, [(r["source"], r["source_job_id"]) for r in doomed]

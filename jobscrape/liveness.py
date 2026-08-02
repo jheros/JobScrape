@@ -114,17 +114,28 @@ async def probe_url(fetcher, url: str) -> Probe:
     something is not evidence about it.
     """
     try:
-        check_url(url)
+        # `check_url` is passed as the per-hop validator, not called once up
+        # front. A URL that resolves publicly can redirect to loopback or to a
+        # cloud metadata endpoint, and the client follows redirects — so a
+        # single pre-flight check secured only the first request. `safehttp`'s
+        # docstring has always claimed hop-by-hop checking; this is it.
+        result = await fetcher.probe(url, validate=check_url)
     except BlockedAddress as exc:
         log.debug("liveness: refusing %s — %s", url, exc)
         return Probe(UNCERTAIN, "blocked")
 
-    body = await fetcher.get_text(url, retries=1)
-    if body is None:
-        # The Fetcher collapses every failure to None, so this covers timeouts,
-        # connection errors and any 4xx/5xx alike. None of them are evidence.
+    if result is None:
+        # A transport failure — timeout, connection reset, too many redirects.
+        # None of them are evidence about the posting.
         return Probe(UNCERTAIN, "no_response")
-    return classify(200, url, body)
+
+    # The real status and the URL actually landed on. Previously this was
+    # hardcoded `(200, url)` because `get_text` returns None for any status
+    # >= 400, which made `classify`'s 404/410 branch — the single most reliable
+    # death signal — unreachable, and tested `_EXPIRED_URL` against the URL
+    # requested rather than the one redirected to.
+    status, final_url, body = result
+    return classify(status, final_url, body)
 
 
 def apply_verdict(strikes: int, verdict: str) -> tuple[int, bool]:

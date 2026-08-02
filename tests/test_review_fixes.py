@@ -818,3 +818,232 @@ def test_the_html_never_reaches_the_database() -> None:
     assert job.description_text == "Build things"
     assert "description_html" not in job.to_row()
     assert "description_html" not in db.JOB_COLUMNS
+
+
+# --- a probe exception was being written as the verdict "dead" --------------
+
+
+def test_a_probe_error_leaves_the_board_unchecked(_isolated_db) -> None:
+    """An exception is not evidence about whether a board exists.
+
+    `probe` does network and parsing work, so a timeout, an unexpected payload
+    shape or an adapter bug all landed in the same `except` and were written as
+    `dead`. `dead` boards are never selected for a fetch again — `_fetch_boards`
+    asks for `status="live"` — so a transient error retired a real employer
+    until someone ran `validate --recheck`. It was logged at debug, i.e.
+    invisible by default.
+    """
+    import asyncio
+
+    from jobscrape.discovery import validate as validate_mod
+    from jobscrape.sources import BOARD_SOURCES
+
+    conn = _isolated_db
+    db.add_companies(conn, "greenhouse", ["boom"])
+
+    class Exploding:
+        ats = "greenhouse"
+
+        async def probe(self, fetcher, slug):
+            raise RuntimeError("transient parse failure")
+
+    original = BOARD_SOURCES["greenhouse"]
+    BOARD_SOURCES["greenhouse"] = Exploding()
+    try:
+        counts = asyncio.run(validate_mod.validate_ats(
+            conn, fetcher=None, ats="greenhouse", limit=10,
+        ))
+    finally:
+        BOARD_SOURCES["greenhouse"] = original
+    assert counts.get("dead", 0) == 0, "an error must not be recorded as a verdict"
+    assert counts.get("errored", 0) == 1
+
+    row = conn.execute(
+        "SELECT status FROM companies WHERE ats = ? AND slug = ?",
+        ("greenhouse", "boom"),
+    ).fetchone()
+    assert row["status"] == "unchecked", "the board must stay eligible for a retry"
+
+
+# --- an empty board is not a dead board -------------------------------------
+
+
+@pytest.mark.parametrize("module", ["adp", "oracle", "ukg", "workday"])
+def test_an_empty_board_probes_as_empty_not_dead(module: str) -> None:
+    """Four adapters returned `None` from a probe of a board with no openings.
+
+    `BoardSource.probe` maps `None` to "dead" and `[]` to "empty", and every one
+    of these already returns `None` earlier for a genuinely failed first page —
+    so reaching the end means the API answered. Measured before the fix: Workday
+    had 0 empty boards out of 83 while every other ATS ran 7-48%.
+    """
+    import importlib
+    import inspect
+
+    source = inspect.getsource(
+        importlib.import_module(f"jobscrape.sources.{module}")
+    )
+    assert "[] if with_details else None" not in source, (
+        f"{module}: an empty board still probes as dead"
+    )
+    assert "None if not with_details else []" not in source, (
+        f"{module}: an empty board still probes as dead"
+    )
+
+
+# --- the host semaphore leaked on cancellation ------------------------------
+
+
+def test_a_cancelled_request_returns_its_host_permit() -> None:
+    """`acquire` takes a permit and *then* awaits the politeness delay.
+
+    The caller's `finally` is only installed once `acquire` returns, so a
+    cancellation in that window leaked the permit for the lifetime of the
+    Fetcher. Several hosts in `config.HOST_LIMITS` are limited to ONE concurrent
+    request, so a single cancelled task deadlocked that host for the rest of the
+    sweep — reachable from the dashboard's stop button and from any `gather`
+    whose sibling raises.
+    """
+    import asyncio
+
+    from jobscrape.http import _HostLimiter
+
+    async def scenario() -> str:
+        limiter = _HostLimiter(concurrency=1, delay=3.0)
+        # Prime `_last` so the next acquire actually has to wait.
+        (await limiter.acquire("example.com")).release()
+
+        task = asyncio.create_task(limiter.acquire("example.com"))
+        await asyncio.sleep(0.05)          # let it reach the sleep
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        try:
+            (await asyncio.wait_for(limiter.acquire("example.com"), timeout=6)).release()
+            return "recovered"
+        except asyncio.TimeoutError:
+            return "deadlocked"
+
+    assert asyncio.run(scenario()) == "recovered"
+
+
+# --- closures could exceed PostgreSQL's bind-parameter ceiling --------------
+
+
+def test_closing_a_huge_result_set_does_not_exceed_the_bind_limit(
+    _isolated_db,
+) -> None:
+    """`NOT IN (?, ?, …)` bound one parameter per seen id, unbatched.
+
+    `seen_ids` is the RAW crawl result, not the filtered `kept`, and Amazon runs
+    11 query terms against a 10,000-per-term cap. Past 65,535 psycopg2 raises,
+    the exception escapes `cmd_fetch`'s source loop, `finish_run` never runs and
+    the `runs` row is stranded as "running" — which then blocks the dashboard
+    from starting another fetch.
+
+    Chunking is not available here: `NOT IN (A ∪ B)` is not `NOT IN A` then
+    `NOT IN B`, so a batched version would close everything in the other batch.
+    """
+    conn = _isolated_db
+    db.upsert_jobs(conn, [Job(
+        source="amazon", source_job_id="keep-me", title="Backend Engineer",
+        company="Amazon", job_url="https://x/1",
+    )])
+    huge = {f"id-{i}" for i in range(70_000)} | {"keep-me"}
+    closed = db.mark_board_closures(conn, "amazon", None, huge)
+
+    assert closed == 0, "a posting still listed must not be closed"
+    still_open = conn.execute(
+        "SELECT closed_at FROM jobs WHERE source_job_id = ?", ("keep-me",)
+    ).fetchone()
+    assert still_open["closed_at"] is None
+
+
+# --- purge recorded a display name where a slug belonged --------------------
+
+
+def test_purge_records_the_company_slug_not_its_name(_isolated_db) -> None:
+    """`record_rejected`'s third argument is `company_slug`, and `skippable_ids`
+    reads it back against `companies.slug`.
+
+    Writing "Anduril Industries" where `anduril` belongs means the lookup can
+    never match, so every posting `purge` deleted was re-downloaded and
+    re-rejected on the next sweep — while the log claimed they were "recorded as
+    rejected so they are not re-fetched". 8,524 rows in the archive were written
+    that way.
+    """
+    conn = _isolated_db
+    db.record_rejected(conn, "greenhouse", "anduril", [("job-1", "2026-07-01")])
+    skippable = db.skippable_ids(conn, "greenhouse", "anduril")
+    assert "job-1" in skippable, (
+        "a posting recorded under its slug must be skippable by that slug"
+    )
+
+
+# --- a link that is not http(s) is not a link -------------------------------
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>",
+     "//evil.example.com/x", "ftp://host/file", "  javascript:x  "],
+)
+def test_a_dangerous_url_scheme_is_discarded(url: str) -> None:
+    """Both URL fields are raw third-party strings rendered into an `href`.
+
+    A posting carrying `javascript:fetch('/api/jobs/bulk', …)` would run in the
+    dashboard's origin on click — and that origin has no authentication on any
+    of its mutating routes.
+    """
+    job = Job(source="t", source_job_id="1", title="Engineer", company="A",
+              job_url=url, apply_url=url)
+    assert job.job_url == ""
+    assert job.apply_url == ""
+
+
+def test_ordinary_links_are_untouched() -> None:
+    job = Job(source="t", source_job_id="1", title="Engineer", company="A",
+              job_url="https://boards.greenhouse.io/acme/jobs/1",
+              apply_url="http://acme.com/apply?id=1")
+    assert job.job_url == "https://boards.greenhouse.io/acme/jobs/1"
+    assert job.apply_url == "http://acme.com/apply?id=1"
+
+
+# --- the dashboard could assemble more than its allowlist claimed -----------
+
+
+def test_only_allowlisted_cli_flags_reach_the_subprocess() -> None:
+    """`STAGES` allowlists the stage; `extra` was appended to argv verbatim.
+
+    Every allowlisted flag is a value-less boolean, and that is the property
+    that matters: a flag taking a value can redirect where the process writes.
+    `--output` on the export stage was an arbitrary file write and `--db`
+    repointed the archive — reachable with no credential, because these routes
+    take form bodies and a cross-origin form POST needs no preflight.
+    """
+    from jobscrape.dashboard.runner import SAFE_EXTRA_FLAGS, safe_extra
+
+    assert safe_extra(["--output", "/Users/me/.zshrc"]) == []
+    assert safe_extra(["--db", "postgres://evil/x"]) == []
+    assert safe_extra(["--recheck", "--output", "/tmp/x"]) == ["--recheck"]
+    assert safe_extra(None) == []
+    for flag in SAFE_EXTRA_FLAGS:
+        assert not flag.startswith("--output") and not flag.startswith("--db")
+
+
+# --- neither app should publish its route table ------------------------------
+
+
+def test_neither_app_serves_an_openapi_schema() -> None:
+    """`docs_url=None, redoc_url=None` removes Swagger and ReDoc but NOT the
+    schema — FastAPI keeps serving /openapi.json unless `openapi_url` is also
+    None. On the public webhook that handed an anonymous caller the route table,
+    including that the secret is accepted as a path segment."""
+    from jobscrape.dashboard.app import app as dashboard_app
+    from jobscrape.webhook import app as webhook_app
+
+    assert webhook_app.openapi_url is None
+    assert dashboard_app.openapi_url is None
