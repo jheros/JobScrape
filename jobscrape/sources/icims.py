@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import urlparse
 from xml.etree import ElementTree as ET
 
 from ..http import Fetcher, gather_limited
@@ -59,6 +60,30 @@ def board_host(slug: str) -> str:
         return slug
     tenant = slug[len("careers-"):] if slug.startswith("careers-") else slug
     return f"careers-{tenant}.icims.com"
+
+
+def _same_host(urls: list[str], host: str) -> list[str]:
+    """Keep only the URLs served by ``host`` itself.
+
+    A sitemap is a document we did not write, fetched from a board whose
+    hostname can itself come from a third-party tenant list. Its ``<loc>``
+    values were previously fetched as-is, with no scheme or host check — so a
+    hostile or merely compromised tenant could point one at
+    ``http://169.254.169.254/`` or at loopback and have this fetch it.
+
+    Pinning to the sitemap's own host is stronger than an SSRF address check and
+    is also just correct: a sitemap index legitimately only ever points within
+    its own site.
+    """
+    kept = []
+    for url in urls:
+        try:
+            parsed = urlparse(url)
+        except ValueError:
+            continue
+        if parsed.scheme in ("http", "https") and parsed.hostname == host:
+            kept.append(url)
+    return kept
 
 
 def _sitemap_urls(xml: str | None) -> list[str]:
@@ -114,12 +139,15 @@ class ICIMS(BoardSource):
         # third-party document is not something to invite.
         if not any(_job_id(u) for u in urls):
             nested = await gather_limited(
-                [fetcher.get_text(u) for u in urls[:20]], limit=4
+                [fetcher.get_text(u) for u in _same_host(urls, host)[:20]], limit=4
             )
             urls = [u for doc in nested if isinstance(doc, str) for u in _sitemap_urls(doc)]
 
         found: list[tuple[str, str]] = []  # (job_id, url)
-        for url in urls:
+        # Host-pinned as well as pattern-matched. `_job_id` only inspects the
+        # PATH, so `http://127.0.0.1:8000/jobs/1` satisfies it — and every URL
+        # surviving here is fetched by `_detail`.
+        for url in _same_host(urls, host):
             job_id = _job_id(url)
             if job_id:
                 found.append((job_id, url))

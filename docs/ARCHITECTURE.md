@@ -396,8 +396,9 @@ companies whose boards this archive does not have, not slug mismatches.
 
 ### 3d. Filtering
 
-- **Excluded by preference** — six categories held in a registry in `filters.py`:
-  `qa`, `management`, `network`, `systems`, `security`, `analyst`, `firmware`. Distinct from the
+- **Excluded by preference** — nine categories held in a registry in `filters.py`:
+  `qa`, `management`, `network`, `systems`, `security`, `analyst`, `firmware`,
+  `early_career`, `flight`. Distinct from the
   blocklist below, which means "not a software job at all": these *are* software jobs, and
   each is individually reversible with `--include-roles CATEGORY`. `is_excluded_role`
   returns the matching **category name**, so `purge` can report why a row went without

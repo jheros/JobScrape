@@ -1047,3 +1047,42 @@ def test_neither_app_serves_an_openapi_schema() -> None:
 
     assert webhook_app.openapi_url is None
     assert dashboard_app.openapi_url is None
+
+
+# --- the docs drifted because nothing checked them --------------------------
+
+
+def test_the_docs_name_every_excluded_role_category() -> None:
+    """ARCHITECTURE.md said "six categories" and then listed seven, at a point
+    when there were nine.
+
+    Prose counts drift silently every time the registry grows — `early_career`
+    and `flight` were added without it. Asserting the *names* rather than a
+    number means the docs fail loudly when a category is added and quietly pass
+    when one is renamed in both places.
+    """
+    import pathlib
+
+    from jobscrape.filters import EXCLUDED_ROLE_NAMES
+
+    text = pathlib.Path("docs/ARCHITECTURE.md").read_text()
+    section = text.split("Excluded by preference", 1)[1][:600]
+    missing = [name for name in EXCLUDED_ROLE_NAMES if f"`{name}`" not in section]
+    assert not missing, (
+        f"docs/ARCHITECTURE.md does not name these role categories: {missing}"
+    )
+
+
+def test_the_docs_state_the_real_vocabulary_size() -> None:
+    """Both docs quote a term count, and it was 133 for a long time after the
+    vocabulary was no longer 133."""
+    import pathlib
+
+    from jobscrape.skills import VOCABULARY
+
+    size = len(VOCABULARY)
+    for name in ("README.md", "docs/ARCHITECTURE.md"):
+        text = pathlib.Path(name).read_text()
+        assert f"{size}-term" in text, (
+            f"{name} does not state the current vocabulary size ({size} terms)"
+        )

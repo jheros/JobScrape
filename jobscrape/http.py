@@ -369,7 +369,13 @@ async def gather_limited(coros: list[Any], limit: int = 16) -> list[Any]:
             try:
                 return await coro
             except Exception as exc:
-                log.debug("task failed: %s", exc)
+                # Warning, with the type: callers cannot distinguish this None
+                # from "the source legitimately had no detail", so the log is
+                # the only place the difference exists. It was `debug` with just
+                # `str(exc)`, which for a bare KeyError prints the key and
+                # nothing else — invisible at the default level and unreadable
+                # when found.
+                log.warning("detail request failed: %s: %s", type(exc).__name__, exc)
                 return None
 
     return await asyncio.gather(*(_run(c) for c in coros))
