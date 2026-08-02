@@ -264,10 +264,16 @@ def classify_workplace(
     Both fill blanks only — a posting an earlier tier already classified keeps
     that answer.
 
-    Purely descriptive — nothing is filtered on this value. "unknown" is the
-    honest answer for a bare city with no workplace wording, and it is the
-    common case: of 11,110 unknown postings measured, 10,808 had a full
-    description stored and simply never stated an arrangement.
+    **The collection filter reads this value** — `filters.WORKPLACE_KEEP` keeps
+    `remote` and `unknown` and drops `hybrid` and `onsite`, unless
+    `--all-workplaces` is passed. It was purely descriptive until that changed,
+    so treat a wrong answer here as costing a posting, not just a mislabel.
+
+    "unknown" is the honest answer for a bare city with no workplace wording,
+    and it is the common case: of 11,110 unknown postings measured, 10,808 had a
+    full description stored and simply never stated an arrangement. That is
+    precisely why the filter keeps it — a remote job whose posting forgot to say
+    so is in that bucket, and dropping it would be unrecoverable.
     """
     from_hint = classify_hint(hint)
     if from_hint:
@@ -787,7 +793,8 @@ class Job:
     state: str | None = None
     country: str | None = None
     is_remote: bool | None = None
-    #: remote / hybrid / onsite / unknown — descriptive only, never filtered on.
+    #: remote / hybrid / onsite / unknown. FILTERED ON: the default collection
+    #: rule keeps remote and unknown only — see `filters.WORKPLACE_KEEP`.
     workplace_type: str | None = None
     #: A source's own workplace field, used to classify then discarded.
     workplace_hint: str | None = None

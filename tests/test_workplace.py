@@ -263,3 +263,103 @@ def test_usajobs_remote_indicator_parsing(value, expected) -> None:
     from jobscrape.sources.usajobs import _remote_indicator
 
     assert _remote_indicator(value) is expected
+
+
+# --- the collection filter reads workplace_type -----------------------------
+#
+# It was purely descriptive until hybrid and onsite stopped being collected.
+# That makes a wrong answer from `classify_workplace` cost a posting rather
+# than just mislabel one, so both halves are asserted here rather than only
+# the drop.
+
+
+def _posting(workplace: str | None):
+    from jobscrape.models import Job
+
+    return Job(
+        source="greenhouse", source_job_id=str(workplace), title="Software Engineer",
+        company="Acme", job_url="https://x/1", location_raw="Austin, TX",
+        workplace_type=workplace,
+    )
+
+
+@pytest.mark.parametrize("workplace", ["remote", "unknown", None])
+def test_remote_and_unknown_are_collected(workplace) -> None:
+    """`unknown` is kept, and it is the biggest bucket — 18,684 of 49,692 open
+    postings against 11,732 remote.
+
+    It does not mean the classifier was unsure. It means the posting never
+    states an arrangement anywhere in its text, which is the common case: of
+    11,110 unknowns measured, 10,808 had a full description and simply never
+    said. A remote job whose posting forgot to mention it is in that bucket,
+    and dropping it would be unrecoverable once the listing closes.
+
+    `None` is folded into unknown because the column is nullable.
+    """
+    from jobscrape.filters import apply_filters
+
+    assert len(apply_filters([_posting(workplace)])) == 1
+
+
+@pytest.mark.parametrize("workplace", ["hybrid", "onsite"])
+def test_hybrid_and_onsite_are_not_collected(workplace) -> None:
+    """The 19,276 rows this rejects said so themselves."""
+    from jobscrape.filters import apply_filters
+
+    assert apply_filters([_posting(workplace)]) == []
+
+
+@pytest.mark.parametrize("workplace", ["remote", "unknown", "hybrid", "onsite", None])
+def test_all_workplaces_restores_every_arrangement(workplace) -> None:
+    from jobscrape.filters import apply_filters
+
+    assert len(apply_filters([_posting(workplace)], remote_only=False)) == 1
+
+
+def test_the_funnel_attributes_them_and_still_sums() -> None:
+    """Each posting is attributed to the FIRST stage that dropped it, which is
+    what makes the counts sum to `seen` and read as a funnel."""
+    from jobscrape.filters import apply_filters_counted
+
+    jobs = [_posting(w) for w in ("remote", "unknown", "hybrid", "onsite")]
+    kept, funnel = apply_filters_counted(jobs)
+
+    assert funnel.dropped_workplace == 2
+    assert funnel.kept == len(kept) == 2
+    d = funnel.as_dict()
+    assert d["dropped_workplace"] == 2
+    assert (d["dropped_role"] + d["dropped_location"] + d["dropped_window"]
+            + d["dropped_workplace"] + d["kept"]) == d["seen"]
+
+
+def test_workplace_is_checked_last() -> None:
+    """A posting failing role AND workplace is attributed to role.
+
+    Order is not cosmetic: the stages run in the order the evidence becomes
+    available, and role is decidable from the listing while workplace needs the
+    description. Reporting the later one would misdescribe where the loss
+    happened.
+    """
+    from jobscrape.filters import apply_filters_counted
+    from jobscrape.models import Job
+
+    job = Job(
+        source="greenhouse", source_job_id="1", title="Front End Team Leader",
+        company="Acme", job_url="https://x/1", location_raw="Austin, TX",
+        workplace_type="onsite",
+    )
+    _kept, funnel = apply_filters_counted([job])
+    assert funnel.dropped_role == 1
+    assert funnel.dropped_workplace == 0
+
+
+def test_the_wrapper_and_the_counted_version_agree() -> None:
+    """`apply_filters` is a thin wrapper; a default that drifted between the two
+    would silently collect onsite roles through whichever call site used it."""
+    import inspect
+
+    from jobscrape import filters
+
+    wrapper = inspect.signature(filters.apply_filters).parameters["remote_only"]
+    counted = inspect.signature(filters.apply_filters_counted).parameters["remote_only"]
+    assert wrapper.default is counted.default is True

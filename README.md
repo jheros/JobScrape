@@ -453,13 +453,27 @@ with is present as a plain substring. That is why 722 terms extract *faster* tha
 extend. The remaining skills gap is structural: Adzuna and Jooble serve ~500-character
 snippets, and a snippet rarely names a stack.
 
-`workplace_type` is `remote` / `hybrid` / `onsite` / `unknown`. **Nothing is filtered on
-it** — every job is collected regardless — so you can slice the dataset yourself:
+`workplace_type` is `remote` / `hybrid` / `onsite` / `unknown`, and **the collector
+filters on it**: `hybrid` and `onsite` are dropped, `remote` and `unknown` are kept.
+`--all-workplaces` turns that off, on `fetch`, `apify-pull` and `purge` alike.
+
+Keeping `unknown` is deliberate and it is the largest bucket — 18,684 of 49,692 open
+postings against 11,732 remote. It does not mean the classifier was unsure; it means the
+posting never states an arrangement anywhere in its text, which is the common case (of
+11,110 unknowns measured, 10,808 had a full description and simply never said). A remote
+job whose posting forgot to mention it lives there too, and dropping it would be
+unrecoverable once the listing closes.
 
 ```bash
-# just the remote ones
+# only the ones positively identified as remote
 psql jobscrape -c "SELECT title, company, job_url FROM jobs WHERE workplace_type='remote' AND duplicate_of IS NULL"
 ```
+
+Note this filter saves storage, not requests. `workplace_type` is derived from the
+description, and three of the five tiers below read the posting body — so the detail
+request that would have been "saved" has already been paid by the time the value exists.
+Measured on 4,000 remote postings, 89% were decided by wording in the body and only 7.5%
+by a source-level field.
 
 Five tiers, in descending order of what the evidence is worth:
 

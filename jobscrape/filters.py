@@ -1173,6 +1173,22 @@ def cheap_prefilter(
     return True
 
 
+#: Work arrangements worth collecting.
+#:
+#: `unknown` is in here and it is the biggest bucket by a wide margin — 18,684
+#: of 49,692 open postings when this was written, against 11,732 remote. It does
+#: NOT mean "the classifier was unsure": `classify_workplace` returns it only
+#: when the posting never states an arrangement anywhere in its text, which is
+#: most postings, because most employers do not think to say. Every genuinely
+#: remote job whose posting forgot to mention it lives in that bucket too, and a
+#: row dropped here cannot be recovered without refetching the posting — which
+#: for a closed listing is not possible at all.
+#:
+#: So the rule is "not known to be hybrid or onsite" rather than "known to be
+#: remote". The 19,276 rows it does reject said so themselves.
+WORKPLACE_KEEP = frozenset({"remote", "unknown"})
+
+
 def apply_filters(
     jobs: Iterable[Job],
     *,
@@ -1180,12 +1196,13 @@ def apply_filters(
     until: date | None = None,
     software_only: bool = True,
     us_only: bool = True,
+    remote_only: bool = True,
     allow_roles: Iterable[str] = (),
 ) -> list[Job]:
-    """Apply role, location and date filters, enriching city/state as we go."""
+    """Apply role, location, date and workplace filters, enriching as we go."""
     kept, _ = apply_filters_counted(
         jobs, since=since, until=until,
-        software_only=software_only, us_only=us_only,
+        software_only=software_only, us_only=us_only, remote_only=remote_only,
         allow_roles=allow_roles,
     )
     return kept
@@ -1204,6 +1221,7 @@ class FilterFunnel:
     dropped_role: int = 0
     dropped_location: int = 0
     dropped_window: int = 0
+    dropped_workplace: int = 0
     kept: int = 0
 
     def add(self, other: "FilterFunnel") -> None:
@@ -1218,6 +1236,7 @@ class FilterFunnel:
         self.dropped_role += other.dropped_role
         self.dropped_location += other.dropped_location
         self.dropped_window += other.dropped_window
+        self.dropped_workplace += other.dropped_workplace
         self.kept += other.kept
 
     def as_dict(self) -> dict[str, int]:
@@ -1226,6 +1245,7 @@ class FilterFunnel:
             "dropped_role": self.dropped_role,
             "dropped_location": self.dropped_location,
             "dropped_window": self.dropped_window,
+            "dropped_workplace": self.dropped_workplace,
             "kept": self.kept,
         }
 
@@ -1237,12 +1257,16 @@ def apply_filters_counted(
     until: date | None = None,
     software_only: bool = True,
     us_only: bool = True,
+    remote_only: bool = True,
     allow_roles: Iterable[str] = (),
 ) -> tuple[list[Job], FilterFunnel]:
     """Filter, and report why each rejected posting was rejected.
 
     A posting is attributed to the **first** stage that dropped it, so the
-    counts sum to ``seen`` and read as a genuine funnel.
+    counts sum to ``seen`` and read as a genuine funnel. The stages run in the
+    order the evidence becomes available — role and location from the listing,
+    the date next, and workplace last because it is the only one derived from
+    the description.
     """
     kept: list[Job] = []
     funnel = FilterFunnel()
@@ -1258,6 +1282,15 @@ def apply_filters_counted(
             continue
         if not in_window(job, since, until):
             funnel.dropped_window += 1
+            continue
+        # Last, because it is the only stage that needs the DESCRIPTION.
+        # `workplace_type` is derived in `Job.__post_init__`, and three of the
+        # five tiers that decide it read the posting body — so unlike the three
+        # stages above, this one cannot save the detail request that fetched it.
+        # It keeps the archive to what you want to publish; it does not make a
+        # sweep cheaper.
+        if remote_only and (job.workplace_type or "unknown") not in WORKPLACE_KEEP:
+            funnel.dropped_workplace += 1
             continue
         # Each field filled independently. Requiring BOTH to be blank meant an
         # adapter that supplied only one blocked the other from ever resolving —

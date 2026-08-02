@@ -76,6 +76,7 @@ async def ingest_run(
     allow_roles: tuple[str, ...] = (),
     software_only: bool = True,
     us_only: bool = True,
+    remote_only: bool = True,
 ) -> IngestResult:
     """Fetch one run's dataset, map it, filter it and store it.
 
@@ -130,7 +131,8 @@ async def ingest_run(
     )
 
     kept, funnel = apply_filters_counted(
-        jobs, software_only=software_only, us_only=us_only, allow_roles=allow_roles
+        jobs, software_only=software_only, us_only=us_only,
+        remote_only=remote_only, allow_roles=allow_roles,
     )
     result.kept = len(kept)
     result.funnel = funnel.as_dict()

@@ -240,6 +240,7 @@ async def sources(request: Request) -> HTMLResponse:
         segments = [
             ("kept", "Kept"), ("dropped_role", "Not software"),
             ("dropped_location", "Not US-eligible"), ("dropped_window", "Outside window"),
+            ("dropped_workplace", "Not remote"),
         ]
         return _page(
             request, "sources.html",

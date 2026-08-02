@@ -458,6 +458,14 @@ companies whose boards this archive does not have, not slug mismatches.
   missing locations and anything unrecognised are **accepted**; only a named non-US place
   or a region-locked remote scope (`Remote - EMEA`, `EU residents only`) is rejected.
 - **Date window** — `--since` / `--until` against the normalised `posted_at`.
+- **Workplace** — `hybrid` and `onsite` are dropped; `remote` and `unknown` are kept.
+  `--all-workplaces` turns it off. Checked **last**, because it is the only stage whose
+  input comes from the description rather than the listing: three of `classify_workplace`'s
+  five tiers read the posting body, so unlike the three above it, this stage cannot save
+  the detail request that produced the value it reads. It shapes the archive; it does not
+  make a sweep cheaper. Keeping `unknown` is deliberate — it is the largest bucket (18,684
+  of 49,692 open postings) and means the posting never states an arrangement, which is
+  where a remote job that forgot to say so would be.
 
 Counts for each rejection reason are recorded per source. That is what lets the dashboard
 answer "why did this source yield nothing?" with a chart instead of a debugging session.

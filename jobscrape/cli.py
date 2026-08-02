@@ -337,6 +337,7 @@ async def _fetch_boards(
         kept, board_funnel = apply_filters_counted(
             jobs, since=since, until=until,
             software_only=not args.all_roles, us_only=not args.worldwide,
+            remote_only=not getattr(args, "all_workplaces", False),
             allow_roles=allow_roles,
         )
         # Remember what we looked at and turned away, so the next sweep does
@@ -377,9 +378,10 @@ async def _fetch_boards(
     )
     if funnel.seen:
         log.info(
-            "%-16s filter funnel: seen=%d role=-%d location=-%d window=-%d kept=%d",
+            "%-16s filter funnel: seen=%d role=-%d location=-%d window=-%d "
+            "workplace=-%d kept=%d",
             ats, funnel.seen, funnel.dropped_role, funnel.dropped_location,
-            funnel.dropped_window, funnel.kept,
+            funnel.dropped_window, funnel.dropped_workplace, funnel.kept,
         )
     return totals, funnel
 
@@ -469,6 +471,7 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                     kept_jobs, gfunnel = apply_filters_counted(
                         jobs, since=since, until=until,
                         software_only=not args.all_roles, us_only=not args.worldwide,
+                        remote_only=not getattr(args, "all_workplaces", False),
                         allow_roles=_allowed_roles(args),
                     )
                     per_source[name] = gfunnel.as_dict()
@@ -608,42 +611,51 @@ def cmd_purge(args: argparse.Namespace) -> int:
     The archive is written once per posting and never re-evaluated, so a filter
     change only ever affects *future* fetches. This applies it retroactively.
 
-    Deliberately role-only. Region and date are per-run parameters rather than
-    archive-wide rules, so re-applying those here would delete rows that a past
-    run legitimately kept for a window you asked for at the time.
+    Role and workplace only, and the distinction is the point: those two are
+    ARCHIVE-WIDE rules — "this is not a software job", "we do not publish onsite
+    roles" — true of a posting whenever you look at it. Region and date are
+    per-RUN parameters, so re-applying those here would delete rows a past run
+    legitimately kept for a window you asked for at the time.
     """
     allow_roles = _allowed_roles(args)
+    remote_only = not getattr(args, "all_workplaces", False)
     with db.session(args.db) as conn:
         rows = conn.execute(
             "SELECT source, source_job_id, title, department, company, company_slug, "
-            "posted_at FROM jobs"
+            "posted_at, workplace_type FROM jobs"
         ).fetchall()
 
-        doomed = [
-            r for r in rows
+        def verdict(row: Any) -> str | None:
+            """Why this row would go, or None to keep it."""
             if not apply_filters_mod.is_software_role(
-                r["title"], r["department"], allow_roles=allow_roles,
-            )
-        ]
+                row["title"], row["department"], allow_roles=allow_roles,
+            ):
+                # The category, so the report says WHICH preference removed it.
+                return apply_filters_mod.is_excluded_role(row["title"], allow_roles) or "other"
+            if remote_only and (row["workplace_type"] or "unknown") \
+                    not in apply_filters_mod.WORKPLACE_KEEP:
+                return f"not remote ({row['workplace_type']})"
+            return None
+
+        verdicts = [(r, verdict(r)) for r in rows]
+        doomed = [r for r, why in verdicts if why]
         if not doomed:
-            log.info("Nothing to purge: all %d stored postings still pass the role filter.",
+            log.info("Nothing to purge: all %d stored postings still pass the filters.",
                      len(rows))
             return 0
 
         # Show what is going, grouped, before anything is destroyed.
-        # `is_excluded_role` returns the category, so this needs no re-testing.
         by_reason: collections.Counter[str] = collections.Counter()
-        for r in doomed:
-            by_reason[
-                apply_filters_mod.is_excluded_role(r["title"], allow_roles) or "other"
-            ] += 1
+        for _row, why in verdicts:
+            if why:
+                by_reason[why] += 1
 
         log.info("%s %d of %d stored postings (%.1f%%)",
                  "Would purge" if args.dry_run else "Purging",
                  len(doomed), len(rows), 100 * len(doomed) / len(rows))
         for reason, count in by_reason.most_common():
             if count:
-                log.info("    %-12s %6d", reason, count)
+                log.info("    %-20s %6d", reason, count)
         if args.sample:
             for r in doomed[:args.sample]:
                 log.info("    [%s] %s -- %s", r["source"], r["company"], r["title"])
@@ -864,6 +876,7 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
                 allow_roles=_allowed_roles(args),
                 software_only=not args.all_roles,
                 us_only=not args.worldwide,
+                remote_only=not getattr(args, "all_workplaces", False),
             )
             if result.error:
                 failures += 1
@@ -984,6 +997,11 @@ def build_parser() -> argparse.ArgumentParser:
                        help="keep non-software roles too")
         p.add_argument("--worldwide", action="store_true",
                        help="keep non-US locations too")
+        p.add_argument("--all-workplaces", action="store_true",
+                       help="keep hybrid and onsite roles too. The default keeps only "
+                            "remote and unknown — 'unknown' meaning the posting never "
+                            "says, which is most of them and is where a remote job that "
+                            "forgot to mention it would be")
         p.add_argument("--include-roles", action="append", choices=EXCLUDED_ROLE_NAMES,
                        metavar="CATEGORY",
                        help="re-admit an excluded role category (repeatable). One of: "
@@ -1119,6 +1137,8 @@ def build_parser() -> argparse.ArgumentParser:
                          help="keep non-software roles too")
     p_apify.add_argument("--worldwide", action="store_true",
                          help="keep non-US locations too")
+    p_apify.add_argument("--all-workplaces", action="store_true",
+                         help="keep hybrid and onsite roles too")
     p_apify.add_argument("--include-roles", action="append", metavar="CATEGORY",
                          choices=EXCLUDED_ROLE_NAMES, default=None,
                          help="re-admit an excluded role category (repeatable)")
@@ -1167,6 +1187,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="report what would be deleted without writing")
     p_purge.add_argument("--sample", type=int, default=0, metavar="N",
                          help="print N of the postings that would go")
+    p_purge.add_argument("--all-workplaces", action="store_true",
+                         help="keep hybrid and onsite rows (the fetch flag of the same "
+                              "name, applied retroactively)")
     p_purge.add_argument("--include-roles", action="append", choices=EXCLUDED_ROLE_NAMES,
                          metavar="CATEGORY",
                          help="spare a role category from the purge (repeatable). One of: "
