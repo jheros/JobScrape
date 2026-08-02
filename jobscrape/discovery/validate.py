@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .. import db
+from .. import db, filters
 from ..http import Fetcher
 from ..sources import BOARD_SOURCES, restricted_board_sources
 
@@ -43,6 +43,9 @@ async def validate_ats(
         conn, ats=ats, status=statuses, limit=limit,
         order="random" if sample else "yield",
     )
+    # A board we will never fetch is not worth a probe either, and there are
+    # thousands of unvalidated slugs competing for this budget.
+    rows = [r for r in rows if not filters.is_blocked_company(r["slug"])]
     if not rows:
         return {}
 

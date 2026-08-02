@@ -238,7 +238,8 @@ async def sources(request: Request) -> HTMLResponse:
     try:
         funnel = analytics.latest_funnel(conn)
         segments = [
-            ("kept", "Kept"), ("dropped_role", "Not software"),
+            ("kept", "Kept"), ("dropped_company", "Blocked employer"),
+            ("dropped_role", "Not software"),
             ("dropped_location", "Not US-eligible"), ("dropped_window", "Outside window"),
             ("dropped_workplace", "Not remote"),
         ]

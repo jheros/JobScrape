@@ -241,3 +241,54 @@ def test_a_failing_board_is_not_treated_as_a_quiet_one(_isolated_db):
     row = db.get_companies(conn, ats="fake")[0]
     assert row["zero_yield_streak"] == 0
     assert row["consecutive_failures"] >= db.ZERO_YIELD_GRACE
+
+
+# --- blocked employers never cost a request ---------------------------------
+
+
+def test_a_blocked_board_is_never_asked_for_anything(_isolated_db, monkeypatch):
+    """The point of filtering at the board level rather than after the fetch.
+
+    For an ATS board the company IS the slug, so it is knowable with no network
+    at all — unlike the workplace filter, which reads a value derived from the
+    description and so cannot save the request that fetched it. Measured on the
+    live registry, this skips `greenhouse/stripe` (544 postings),
+    `greenhouse/airbnb` (184) and `greenhouse/coinbase` (160) every sweep.
+    """
+    from jobscrape import filters
+
+    conn = _isolated_db
+    monkeypatch.setattr(filters, "BLOCKED_COMPANIES", frozenset({"Stripe", "Airbnb"}))
+    _register(conn, {"live": ["stripe", "airbnb", "acme", "stripes"]})
+    source = FakeBoard({s: [_job(s)] for s in ("stripe", "airbnb", "acme", "stripes")})
+
+    asyncio.run(_sweep(conn, source, _args(unchecked=0)))
+
+    # `stripes` is a different company and must survive — the registry really
+    # does contain a board by that name.
+    assert sorted(source.asked) == ["acme", "stripes"]
+
+
+def test_a_blocked_board_is_not_probed_by_validate(_isolated_db, monkeypatch):
+    """Probing a board we will never fetch wastes a request every pass, and
+    thousands of unvalidated slugs are competing for that budget."""
+    import asyncio as _asyncio
+
+    from jobscrape import filters
+    from jobscrape.discovery import validate as validate_mod
+
+    conn = _isolated_db
+    monkeypatch.setattr(filters, "BLOCKED_COMPANIES", frozenset({"Coinbase"}))
+    _register(conn, {"unchecked": ["coinbase", "acme"]})
+    probed: list[str] = []
+
+    class Probing(FakeBoard):
+        async def probe(self, fetcher, slug):
+            probed.append(slug)
+            return "live", 1
+
+    source = Probing({})
+    monkeypatch.setitem(validate_mod.BOARD_SOURCES, "fake", source)
+    _asyncio.run(validate_mod.validate_ats(conn, None, "fake", concurrency=1))
+
+    assert probed == ["acme"]

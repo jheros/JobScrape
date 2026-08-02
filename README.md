@@ -544,6 +544,23 @@ row is dropped rather than allowed to pollute the dataset.
   *software* engineer. It confirms only genuinely ambiguous words — `Scientist`,
   `Architect`, `Tech Lead`, `Intern` — where the competing reading is a research biologist
   or a building architect rather than a hardware engineer.
+- **Blocked employers**: a short list of companies whose postings are never collected —
+  Amazon, Microsoft, Apple, Coinbase, Airbnb, UnitedHealth Group, Stripe, PayPal. Extend it
+  with `JOBSCRAPE_BLOCKED_COMPANIES` in `.env` (comma-separated, appended to the built-in
+  list); write names however you like, since both sides normalise — `Airbnb, Inc.`,
+  `Paypal` and `United Health Group` all match.
+
+  **Matching is exact after normalisation, never a prefix**, and that is load-bearing: the
+  company registry contains `apple-roofing` (58 postings), `appletreedental` (50),
+  `applewoodcenters` (34), `applebank`, `applepiecapital`, a `microsoftc1` and a board
+  literally called `stripes`. A prefix rule would take every one of them. Subsidiaries are
+  not inferred either — `Amazon Robotics`, `Optum`, `Venmo` and `LinkedIn` need their own
+  entries if you want them gone.
+
+  This is the one filter that genuinely saves requests: for an ATS board the company *is*
+  the slug, so a blocked board is skipped before a single HTTP call, and `validate` skips
+  it too. Amazon and Apple also had hand-written career-site adapters, deleted with this
+  change — they existed only to fetch companies now on the list, at ~4,700 requests a sweep.
 - **US eligibility**: a *can't-rule-it-out* test rather than a guarantee. It accepts
   unless the listing gives positive evidence it cannot hire in the US. So a bare
   `Remote`, a `Worldwide` scope, a **missing** location, and anything unrecognized are

@@ -454,6 +454,14 @@ companies whose boards this archive does not have, not slug mismatches.
   outright outranks the block side, which is what keeps "Optical Software Engineer" while
   dropping "Optical Design Engineer". Ten categories are then excluded by preference and
   restorable with `--include-roles`.
+- **Blocked employers** — `filters.BLOCKED_COMPANIES`, extended by
+  `JOBSCRAPE_BLOCKED_COMPANIES`. Checked **first** in the funnel: it is the most specific
+  reason a posting can be dropped, and attributing an Amazon posting to "not software"
+  answers a question nobody asked. Exact match after `slugify` + alphanumeric
+  normalisation, never a prefix — the registry holds `apple-roofing`, `appletreedental`,
+  `microsoftc1` and `stripes`. Board sources never reach this stage: a blocked slug is
+  dropped in `_fetch_boards` before any request, and `validate` skips it too, which makes
+  this the only filter here that saves HTTP rather than just storage.
 - **US eligibility** — a *can't-rule-it-out* test, not a guarantee. Bare `Remote`,
   missing locations and anything unrecognised are **accepted**; only a named non-US place
   or a region-locked remote scope (`Remote - EMEA`, `EU residents only`) is rejected.

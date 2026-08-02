@@ -85,6 +85,16 @@ LIVENESS_SOURCES = tuple(
     s for s in _env_str("JOBSCRAPE_LIVENESS_SOURCES", "hackernews,jsearch").split(",") if s
 )
 
+#: Employers whose postings are never collected, ADDED to the built-in list in
+#: `filters.BLOCKED_COMPANIES`. Comma-separated names as you would write them —
+#: "United Health Group" and "unitedhealth-group" normalise to the same key, so
+#: spelling and punctuation do not matter. Matching is EXACT after
+#: normalisation, never a prefix, so blocking "apple" leaves "Apple Roofing",
+#: "Appletree Dental" and "Applewood Centers" alone.
+BLOCKED_COMPANIES = tuple(
+    s.strip() for s in _env_str("JOBSCRAPE_BLOCKED_COMPANIES", "").split(",") if s.strip()
+)
+
 # --- Logging / observability ----------------------------------------------
 #: "text" (human, the default) or "json" (one object per line, for shipping).
 LOG_FORMAT = _env_str("JOBSCRAPE_LOG_FORMAT", "text")

@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, Iterable
 
-from . import seniority
-from .models import Job, infer_country
+from . import config, seniority
+from .models import Job, infer_country, slugify
 
 # --- Software role classification ----------------------------------------
 
@@ -1173,6 +1173,61 @@ def cheap_prefilter(
     return True
 
 
+# --- blocked employers ------------------------------------------------------
+
+#: Companies whose postings are never collected, whatever they are advertising.
+#:
+#: A preference, like the excluded role categories — nothing is wrong with these
+#: postings, they are simply not wanted. Extend it without touching code through
+#: `JOBSCRAPE_BLOCKED_COMPANIES` in `.env`, which is appended to this set.
+#:
+#: Names are written as you would say them and normalised on both sides of the
+#: comparison, so "PayPal", "Paypal" and "paypal" are one entry, and
+#: "Airbnb, Inc." matches "airbnb" because `slugify` strips legal suffixes.
+#:
+#: **Matching is EXACT, never a prefix, and that is load-bearing.** The company
+#: registry contains `apple-roofing` (58 postings), `appletreedental` (50),
+#: `applewoodcenters` (34), `applebank` (20), `applepiecapital`, `appleseed`,
+#: `appletreeprep`, a `microsoftc1`, and a board literally called `stripes`.
+#: A prefix rule would take every one of them.
+BLOCKED_COMPANIES = frozenset({
+    "Amazon", "Microsoft", "Apple", "Coinbase", "Airbnb",
+    # Both spellings of one name, not a subsidiary of it. `UnitedHealthcare`
+    # and `Optum` are separate brands and are deliberately NOT here.
+    "UnitedHealth Group", "UnitedHealth",
+    "Stripe", "PayPal",
+})
+
+#: Strip a company name or board slug to its comparable core.
+#:
+#: Deliberately the same normalisation as `sources.apify.ats_link.normalise_slug`
+#: rather than an import of it: `filters` is imported BY the source adapters, so
+#: importing one back would close the loop `filters -> sources -> ingest ->
+#: filters`. Two lines of regex is the cheaper price.
+_COMPANY_KEY_RE = re.compile(r"[^a-z0-9]+")
+
+
+def company_key(value: str | None) -> str:
+    """Normalise a company name or slug for blocklist comparison."""
+    if not value:
+        return ""
+    # A Workday slug is `tenant|wdN|site`; only the tenant names the company.
+    head = str(value).split("|")[0]
+    return _COMPANY_KEY_RE.sub("", slugify(head).lower())
+
+
+def _blocked_keys() -> frozenset[str]:
+    """The built-in list plus whatever `.env` adds, normalised."""
+    names = set(BLOCKED_COMPANIES) | set(config.BLOCKED_COMPANIES)
+    return frozenset(k for k in (company_key(n) for n in names) if k)
+
+
+def is_blocked_company(value: str | None) -> bool:
+    """Whether this company name or board slug is on the blocklist."""
+    key = company_key(value)
+    return bool(key) and key in _blocked_keys()
+
+
 #: Work arrangements worth collecting.
 #:
 #: `unknown` is in here and it is the biggest bucket by a wide margin — 18,684
@@ -1218,6 +1273,7 @@ class FilterFunnel:
     """
 
     seen: int = 0
+    dropped_company: int = 0
     dropped_role: int = 0
     dropped_location: int = 0
     dropped_window: int = 0
@@ -1233,6 +1289,7 @@ class FilterFunnel:
         enclosing object with no such trap.
         """
         self.seen += other.seen
+        self.dropped_company += other.dropped_company
         self.dropped_role += other.dropped_role
         self.dropped_location += other.dropped_location
         self.dropped_window += other.dropped_window
@@ -1242,6 +1299,7 @@ class FilterFunnel:
     def as_dict(self) -> dict[str, int]:
         return {
             "seen": self.seen,
+            "dropped_company": self.dropped_company,
             "dropped_role": self.dropped_role,
             "dropped_location": self.dropped_location,
             "dropped_window": self.dropped_window,
@@ -1272,6 +1330,16 @@ def apply_filters_counted(
     funnel = FilterFunnel()
     for job in jobs:
         funnel.seen += 1
+        # First, because it is the most specific reason a posting can be dropped
+        # and the cheapest to test. Attributing an Amazon posting to "not
+        # software" would answer a question nobody asked.
+        #
+        # Board sources never reach this — a blocked board is skipped before any
+        # request (see `cli._fetch_boards`). This is the aggregator path, where
+        # the company name is the only thing identifying the employer.
+        if is_blocked_company(job.company_slug) or is_blocked_company(job.company):
+            funnel.dropped_company += 1
+            continue
         if software_only and not is_software_role(
             job.title, job.department, allow_roles=allow_roles,
         ):

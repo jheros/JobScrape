@@ -1307,3 +1307,99 @@ def test_distributed_systems_is_still_rescued() -> None:
 )
 def test_more_non_software_programmers(title: str) -> None:
     assert is_software_role(title) is False, title
+
+
+# --- blocked employers ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Amazon", "amazon", "Microsoft", "Microsoft Corporation",
+        "Apple", "Apple Inc.", "Coinbase", "Airbnb", "Airbnb, Inc.",
+        "UnitedHealth Group", "United Health Group", "UnitedHealth",
+        "Stripe", "PayPal", "Paypal", "paypal",
+        # A Workday board slug: only the tenant names the company.
+        "paypal|wd1|jobs",
+    ],
+)
+def test_blocked_employers_are_recognised_in_every_spelling(name: str) -> None:
+    """Both sides normalise, so case, punctuation and legal suffixes do not
+    matter — `slugify` strips "Inc." and "Corporation" before comparison."""
+    from jobscrape.filters import is_blocked_company
+
+    assert is_blocked_company(name) is True, name
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # Every one of these is a REAL board in the company registry, with the
+        # posting count it was carrying when the blocklist was written. A
+        # prefix rule would have taken all of them.
+        "apple-roofing",              # ashby, 58 postings
+        "appletreedental",            # lever, 50
+        "applewoodcenters",           # jazzhr, 34
+        "applebank|wd5|applebankcareers",  # workday, 20
+        "appletreeprep",              # greenhouse, 10
+        "applepiecapital",
+        "appleseed",
+        "apple-restoration-and-waterproofing",
+        "microsoftc1",                # smartrecruiters, 6
+        "stripes",                    # greenhouse — not Stripe
+        # Subsidiaries and brands, deliberately NOT blocked: the list is the
+        # eight exact names, so these keep coming in under their own.
+        "UnitedHealthcare", "Optum", "Amazon Advertising", "Amazon Robotics",
+        "Venmo", "LinkedIn", "GitHub", "AWS",
+    ],
+)
+def test_look_alikes_and_subsidiaries_are_not_blocked(name: str) -> None:
+    from jobscrape.filters import is_blocked_company
+
+    assert is_blocked_company(name) is False, name
+
+
+def test_the_env_var_extends_the_list(monkeypatch) -> None:
+    """You will add employers over time, and editing .env beats editing code."""
+    from jobscrape import config, filters
+
+    assert filters.is_blocked_company("Globex") is False
+    monkeypatch.setattr(config, "BLOCKED_COMPANIES", ("Globex Corporation",))
+    assert filters.is_blocked_company("Globex") is True
+    # And the built-in eight are still blocked alongside it.
+    assert filters.is_blocked_company("Coinbase") is True
+
+
+def test_a_blocked_posting_is_attributed_to_the_company_stage() -> None:
+    """First in the funnel, because it is the most specific reason a posting can
+    be dropped — reporting an Amazon posting as "not software" answers a
+    question nobody asked."""
+    from jobscrape.filters import apply_filters_counted
+    from jobscrape.models import Job
+
+    def job(company: str, title: str = "Software Engineer"):
+        return Job(source="adzuna", source_job_id=company, title=title, company=company,
+                   job_url="https://x/1", location_raw="Austin, TX")
+
+    kept, funnel = apply_filters_counted(
+        [job("Amazon"), job("Apple Roofing"), job("Acme"),
+         # Fails role AND company: company wins, because it runs first.
+         job("Stripe", "Front End Team Leader")]
+    )
+    assert [k.company for k in kept] == ["Apple Roofing", "Acme"]
+    assert funnel.dropped_company == 2
+    assert funnel.dropped_role == 0
+    d = funnel.as_dict()
+    assert (d["dropped_company"] + d["dropped_role"] + d["dropped_location"]
+            + d["dropped_window"] + d["dropped_workplace"] + d["kept"]) == d["seen"]
+
+
+def test_the_deleted_employer_adapters_are_gone() -> None:
+    """Amazon and Apple had hand-written adapters that existed only to fetch
+    companies now on the blocklist — ~4,700 requests a sweep for postings the
+    filter would immediately discard."""
+    from jobscrape.sources import ALL_SOURCE_NAMES, GLOBAL_SOURCES
+
+    assert "amazon" not in GLOBAL_SOURCES and "amazon" not in ALL_SOURCE_NAMES
+    assert "apple" not in GLOBAL_SOURCES and "apple" not in ALL_SOURCE_NAMES
+    assert "uber" in GLOBAL_SOURCES, "Uber is not blocked and stays"

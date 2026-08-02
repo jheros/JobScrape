@@ -233,6 +233,16 @@ async def _fetch_boards(
         )
     rows = [r for r in rows if r["slug"] not in cooldown]
 
+    # Blocked employers, dropped before a single request is made. This is the
+    # one filter in the project that genuinely saves HTTP: for a board source
+    # the company IS the slug, so it is knowable with no network at all —
+    # `greenhouse/stripe` alone is 544 postings never fetched again.
+    blocked = [r["slug"] for r in rows if apply_filters_mod.is_blocked_company(r["slug"])]
+    if blocked:
+        log.info("%-16s %d board(s) skipped as blocked employers: %s",
+                 ats, len(blocked), ", ".join(sorted(blocked)[:5]))
+        rows = [r for r in rows if r["slug"] not in set(blocked)]
+
     # Boards that answer fine and never carry a software job — see
     # db.mark_board_yield. Skipped unless `--all-boards` says otherwise, which
     # is what makes the request budget available for the validation backlog.
@@ -378,10 +388,11 @@ async def _fetch_boards(
     )
     if funnel.seen:
         log.info(
-            "%-16s filter funnel: seen=%d role=-%d location=-%d window=-%d "
-            "workplace=-%d kept=%d",
-            ats, funnel.seen, funnel.dropped_role, funnel.dropped_location,
-            funnel.dropped_window, funnel.dropped_workplace, funnel.kept,
+            "%-16s filter funnel: seen=%d company=-%d role=-%d location=-%d "
+            "window=-%d workplace=-%d kept=%d",
+            ats, funnel.seen, funnel.dropped_company, funnel.dropped_role,
+            funnel.dropped_location, funnel.dropped_window,
+            funnel.dropped_workplace, funnel.kept,
         )
     return totals, funnel
 
@@ -611,8 +622,8 @@ def cmd_purge(args: argparse.Namespace) -> int:
     The archive is written once per posting and never re-evaluated, so a filter
     change only ever affects *future* fetches. This applies it retroactively.
 
-    Role and workplace only, and the distinction is the point: those two are
-    ARCHIVE-WIDE rules — "this is not a software job", "we do not publish onsite
+    Role, workplace and blocked employers only, and the distinction is the
+    point: those three are ARCHIVE-WIDE rules — "this is not a software job", "we do not publish onsite
     roles" — true of a posting whenever you look at it. Region and date are
     per-RUN parameters, so re-applying those here would delete rows a past run
     legitimately kept for a window you asked for at the time.
@@ -627,6 +638,11 @@ def cmd_purge(args: argparse.Namespace) -> int:
 
         def verdict(row: Any) -> str | None:
             """Why this row would go, or None to keep it."""
+            # First, and named, so the report says WHICH employer went rather
+            # than lumping them under a role or workplace verdict.
+            if (apply_filters_mod.is_blocked_company(row["company_slug"])
+                    or apply_filters_mod.is_blocked_company(row["company"])):
+                return f"blocked employer ({row['company']})"
             if not apply_filters_mod.is_software_role(
                 row["title"], row["department"], allow_roles=allow_roles,
             ):

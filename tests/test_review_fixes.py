@@ -371,42 +371,40 @@ def test_the_permissive_sweep_is_otherwise_unchanged() -> None:
     assert classify_workplace("Engineer", None, None, full_text=posting) == "remote"
 
 
-# --- Apple's homeOffice field ----------------------------------------------
+# --- a False remote flag is weak evidence, not proof ------------------------
+#
+# This began as two tests against Apple's `homeOffice` field, whose adapter has
+# since been deleted along with Amazon's — both companies are on
+# `filters.BLOCKED_COMPANIES` now, so the adapters existed only to fetch
+# postings the filter would immediately discard.
+#
+# The INVARIANT they guarded is not Apple-specific and is worth keeping: a
+# structured `is_remote=False` must not end the classification, because plenty
+# of sources ship that field as a vestigial constant. All 993 stored Apple rows
+# read False; a live fetch found 2 of 417 that were True. So `False` is fed to
+# `classify_workplace` as evidence, and any positive wording still wins.
 
 
-def test_apple_reads_its_own_remote_flag() -> None:
-    """Checked before being trusted, because a constant carries no information.
+def test_a_true_remote_flag_is_conclusive() -> None:
+    from jobscrape.models import classify_workplace
 
-    All 993 stored Apple rows read False, which is what a vestigial field looks
-    like. Only a live fetch settled it: 2 of 417 came back True. Rare but real,
-    which matches how few remote roles Apple advertises — so the field is worth
-    reading, and a False is worth treating as weak evidence rather than proof.
-    """
-    from jobscrape.sources.employers import Apple
-
-    remote = Apple()._parse({"positionId": "1", "postingTitle": "Engineer",
-                             "homeOffice": True})
-    assert remote is not None and remote.is_remote is True
-    assert remote.workplace_type == "remote"
-
-    office = Apple()._parse({"positionId": "2", "postingTitle": "Engineer",
-                             "homeOffice": False})
-    assert office is not None and office.is_remote is False
-    assert office.workplace_type == "onsite"
-
-    absent = Apple()._parse({"positionId": "3", "postingTitle": "Engineer"})
-    assert absent is not None and absent.is_remote is None
+    assert classify_workplace("Engineer", True, None) == "remote"
 
 
-def test_a_false_home_office_is_weak_evidence_not_proof() -> None:
-    """Any positive wording still wins, which is why it is fed as the boolean."""
-    from jobscrape.sources.employers import Apple
+def test_a_false_remote_flag_does_not_end_the_classification() -> None:
+    """Tier 2 returns early only on a True. A False falls through to the
+    wording tiers, which is what lets a hybrid schedule stated in the body
+    override a source's vestigial flag."""
+    from jobscrape.models import classify_workplace
 
-    job = Apple()._parse({
-        "positionId": "4", "postingTitle": "Engineer", "homeOffice": False,
-        "jobSummary": "This role follows a hybrid schedule, 3 days in the office.",
-    })
-    assert job is not None and job.workplace_type == "hybrid"
+    hybrid = "Engineer. This role follows a hybrid schedule, 3 days in the office."
+    assert classify_workplace(hybrid, False, None) == "hybrid"
+
+    remote = "Engineer. This is a fully remote position."
+    assert classify_workplace(remote, False, None) == "remote"
+
+    # With nothing else to go on, the False stands.
+    assert classify_workplace("Engineer in Austin", False, None) == "onsite"
 
 
 # --- an oversized payload killed a fetch run -------------------------------

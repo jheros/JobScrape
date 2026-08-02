@@ -97,10 +97,9 @@ GLOBAL_SOURCES: dict[str, GlobalSource] = {
         adzuna.Adzuna(),
         jooble.Jooble(),
         jsearch.JSearch(),
-        # Direct employer career sites: single fixed employers who run their own
-        # APIs rather than an ATS, so no other adapter can see their openings.
-        employers.Amazon(),
-        employers.Apple(),
+        # A direct employer career site: a fixed employer running its own API
+        # rather than an ATS, so no other adapter can see its openings. Amazon
+        # and Apple were here until both were blocked — see filters.BLOCKED_COMPANIES.
         employers.Uber(),
     )
 }
