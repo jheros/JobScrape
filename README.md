@@ -552,15 +552,28 @@ row is dropped rather than allowed to pollute the dataset.
   | `qa` | QA / quality assurance, SDET, software engineer in test, tester, **test engineer**, **test automation**, **automation engineer** | `--include-roles qa` |
   | `management` | whatever the seniority ladder calls `manager`, `director` or `executive` | `--include-roles management` |
   | `network` | network / networking engineer, network architect, administrator, specialist | `--include-roles network` |
-  | `systems` | systems engineer / administrator / architect / analyst, sysadmin | `--include-roles systems` |
+  | `systems` | systems engineer / administrator / architect / analyst / **programmer**, sysadmin | `--include-roles systems` |
   | `security` | security engineer / analyst / architect, **application & product security**, cyber security, InfoSec, SecOps, penetration testing | `--include-roles security` |
   | `analyst` | data analyst, **analytics engineer** | `--include-roles analyst` |
   | `firmware` | firmware and embedded — Firmware Engineer, Embedded Software Engineer, Embedded Developer | `--include-roles firmware` |
   | `early_career` | intern, internship, co-op, apprentice, trainee, new grad, university/college grad | `--include-roles early_career` |
   | `flight` | flight software, flight control/test/systems, avionics — embedded software on a vehicle | `--include-roles flight` |
+  | `architect` | **every** architect title — Data, Cloud, AI, Technical, Application, Integration, Infrastructure, and Software Architect too | `--include-roles architect` |
 
   `--include-roles` is repeatable. `--include-qa` and `--include-management` remain as
   shorthand for the first two.
+
+  `architect` is deliberately the whole word rather than a curated subset. Three architect
+  senses were already excluded through other categories — `Systems Architect` via
+  `systems`, `Network Architect` via `network`, `Solutions Architect` via the
+  not-software list — so a partial rule would have left an arbitrary half of them and no
+  way to say which half. A title can sit in two categories, and then both flags are needed
+  to restore it: `Systems Architect` needs `--include-roles systems --include-roles
+  architect`.
+
+  Note that `\barchitect\b` does not match "architect**ure**", so "Frontend Engineer -
+  Platform Architecture" is unaffected — an engineer working on architecture is not an
+  Architect.
 
   Every exclusion pattern is spelled to match an accept pattern that names the same
   titles. Without that the flag half-works — it catches a spelling the accept list does

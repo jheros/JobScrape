@@ -431,9 +431,9 @@ companies whose boards this archive does not have, not slug mismatches.
 
 ### 3d. Filtering
 
-- **Excluded by preference** — nine categories held in a registry in `filters.py`:
+- **Excluded by preference** — ten categories held in a registry in `filters.py`:
   `qa`, `management`, `network`, `systems`, `security`, `analyst`, `firmware`,
-  `early_career`, `flight`. Distinct from the
+  `early_career`, `flight`, `architect`. Distinct from the
   blocklist below, which means "not a software job at all": these *are* software jobs, and
   each is individually reversible with `--include-roles CATEGORY`. `is_excluded_role`
   returns the matching **category name**, so `purge` can report why a row went without
@@ -452,7 +452,7 @@ companies whose boards this archive does not have, not slug mismatches.
   almost every posting carries. Both lists allow two words between a qualifier and the
   role noun, over curated subsets in each direction; a title saying "Software Engineer"
   outright outranks the block side, which is what keeps "Optical Software Engineer" while
-  dropping "Optical Design Engineer". Nine categories are then excluded by preference and
+  dropping "Optical Design Engineer". Ten categories are then excluded by preference and
   restorable with `--include-roles`.
 - **US eligibility** — a *can't-rule-it-out* test, not a guarantee. Bare `Remote`,
   missing locations and anything unrecognised are **accepted**; only a named non-US place

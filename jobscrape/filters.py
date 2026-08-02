@@ -253,8 +253,20 @@ _NOT_SOFTWARE_TERMS = [
     # Two words of slack: "Instrumentation and Controls Programmer" and
     # "Laser and Tool Room Programmer" are the real shapes, and requiring
     # adjacency here would repeat the very bug this round is fixing elsewhere.
-    r"\b(cnc|cmm|nc|machine\s+tool|laser|mill|lathe|tool\s+room|metering|"
-    r"metrology|instrumentation)\b(?:\s+\w+){0,2}\s+programmer\b",
+    # `cam` is computer-aided manufacturing and `av` is audio-visual system
+    # programming (Crestron, AMX) — both are "programmer" in a sense that has
+    # nothing to do with software engineering.
+    #
+    # The separator class allows a slash: "Senior CNC Machinist/Programmer" was
+    # written with one and slipped straight through a rule that demanded a
+    # space. That is the third time this week a separator assumption has cost
+    # real rows, in three different patterns.
+    r"\b(cnc|cmm|nc|cam|av|machine\s+tool|laser|mill|lathe|tool\s+room|metering|"
+    r"metrology|instrumentation|machinist)\b(?:[\s/&-]+\w+){0,2}[\s/&-]+programmer\b",
+    # Clinical-trial biostatistics. A distinct profession that writes SAS, not
+    # a software engineering role — and the same employers the wet-lab rule
+    # already covers.
+    r"\b(statistical|clinical|sas|biostatistic\w*)\s+programmer\b",
     r"\bprogrammer\s+analyst\b",
     # Recruiting / admin roles that mention engineering.
     r"\bengineer(ing)?\s+(technician|technologist|aide|assistant|clerk|"
@@ -357,7 +369,12 @@ MANAGEMENT_LEVELS = frozenset({"manager", "director", "executive"})
 
 #: The role nouns a category word can modify. Shared by the three patterns
 #: below so they widen together and cannot drift apart.
-_ROLE_NOUN = r"(?:engineer|architect|administrator|analyst|specialist|developer)"
+#: `programmer` is here so `_SYSTEMS_RE` and `_NETWORK_RE` can see "Systems
+#: Programmer" and "Network Programmer" at all — without it the categories
+#: covered every other role noun and silently skipped that one.
+_ROLE_NOUN = (
+    r"(?:engineer|architect|administrator|analyst|specialist|developer|programmer)"
+)
 
 #: Up to two words may sit between the category word and the role noun.
 #:
@@ -635,8 +652,15 @@ _SYSTEMS_RE = re.compile(
 #: **Embedded systems used to be here and is not any more** — it belongs to the
 #: `firmware` category now, which is excluded outright. Backend stays, firmware
 #: goes.
+#:
+#: **Systems programming used to be here too.** The argument for it was that
+#: systems programming means OS and compiler work; measured against the archive
+#: it means mainframe sysprog, which is administration. It is now part of the
+#: `systems` category like every other "Systems X" title, and
+#: `--include-roles systems` restores it — `\bsystems?\s+programmer\b` is still
+#: in the accept list for exactly that reason.
 _SOFTWARE_SYSTEMS_RE = re.compile(
-    r"\bdistributed\s+systems?\b|\bsystems?\s+programm",
+    r"\bdistributed\s+systems?\b",
     re.I,
 )
 
@@ -698,6 +722,25 @@ _FLIGHT_RE = re.compile(
     re.I,
 )
 
+#: Architecture roles, of every stripe.
+#:
+#: A preference and not a judgement, which is why it belongs here: an Architect
+#: at a software company writes software, and the accept list takes these on
+#: purpose — `(cloud|software|data|platform|security|enterprise|application|
+#: infrastructure|devops|integration)\s+architect` is in `_SOFTWARE_TERMS` and
+#: stays there, because `--include-roles architect` restoring nothing would be
+#: worse than not having the flag.
+#:
+#: Deliberately the whole word rather than a curated subset. Three architect
+#: senses were already excluded through other categories — `Systems Architect`
+#: via `systems`, `Network Architect` via `network`, `Solutions Architect` and
+#: `Enterprise Architect` via `_NOT_SOFTWARE_TERMS` — so a partial rule here
+#: would have left the archive with an arbitrary half of them and no way to
+#: describe which half. Measured: 1,342 open postings, led by Data Architect
+#: (70), Controls Software Architect (30), Software Architect (29), Cloud
+#: Architect (26), AI Architect (19), Technical Architect (17).
+_ARCHITECT_RE = re.compile(r"\barchitect\b", re.I)
+
 #: Category name -> matcher. A registry rather than one boolean parameter per
 #: category: with six of them, separate flags would mean six booleans threaded
 #: through five function signatures and the CLI, and wiring one to only half the
@@ -718,6 +761,7 @@ EXCLUDED_ROLES: dict[str, Any] = {
     "firmware": lambda text: bool(_FIRMWARE_RE.search(text)),
     "early_career": lambda text: bool(_EARLY_CAREER_RE.search(text)),
     "flight": lambda text: bool(_FLIGHT_RE.search(text)),
+    "architect": lambda text: bool(_ARCHITECT_RE.search(text)),
 }
 
 #: Stable order for the CLI's `choices` and for anything that reports by

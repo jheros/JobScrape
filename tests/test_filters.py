@@ -32,7 +32,6 @@ from jobscrape.models import Job
         "Machine Learning Engineer",
         "Data Engineer",
         "iOS Developer",
-        "Principal Architect, Cloud Platform",
         "Python Developer",
     ],
 )
@@ -99,7 +98,13 @@ def test_genuinely_ambiguous_words_still_take_department_confirmation() -> None:
     """
     assert is_software_role("Scientist", "Machine Learning") is True
     assert is_software_role("Scientist", None) is False
-    assert is_software_role("Architect", "Platform Engineering") is True
+    # "Architect" is now an excluded PREFERENCE, checked before the department
+    # fallback ever runs — so the department can no longer confirm it, and the
+    # flag is what restores it instead. The fallback itself is unchanged; this
+    # title simply stopped being one of its cases.
+    assert is_software_role("Architect", "Platform Engineering") is False
+    assert is_software_role("Architect", "Platform Engineering",
+                            allow_roles={"architect"}) is True
     assert is_software_role("Architect", "Facilities") is False
 
 
@@ -848,8 +853,9 @@ def test_exclusions_do_not_re_admit_non_software_roles() -> None:
         # — correctly, since it is an avionics role. Two categories overlapping
         # is fine; asserting a single-flag round-trip on such a title is not.
         ("Spacecraft Data Systems Engineer", "systems"),
+        # "Systems Architect" left for the same reason, when `architect` became
+        # a category — see test_two_categories_both_have_to_be_released.
 
-        ("Systems Architect", "systems"),
         ("Security Engineer", "security"),
         ("Senior Security Engineer", "security"),
         ("Application Security Engineer", "security"),
@@ -902,15 +908,41 @@ def test_titles_the_filter_never_wanted_stay_rejected(title: str, category: str)
     assert is_software_role(title, allow_roles=[category]) is False
 
 
+def test_two_categories_both_have_to_be_released() -> None:
+    """A title can sit in more than one excluded category, and then one flag is
+    not enough — which is correct, not a bug.
+
+    "Systems Architect" is the case `architect` created: it was a `systems`
+    round-trip case until that category existed. `is_excluded_role` reports the
+    first match in registry order, so the reported reason is `systems`, but
+    releasing only `systems` still leaves `architect` holding it.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role("Systems Architect") == "systems"
+    assert is_software_role("Systems Architect") is False
+    assert is_software_role("Systems Architect", allow_roles={"systems"}) is False
+    assert is_software_role("Systems Architect", allow_roles={"architect"}) is False
+    assert is_software_role(
+        "Systems Architect", allow_roles={"systems", "architect"}
+    ) is True
+
+
 def test_distributed_systems_is_software_not_systems_engineering() -> None:
-    """Backend stays. Distributed systems is core backend work and systems
-    programming is OS/compiler work; neither is the systems-engineering
-    discipline being excluded, and the suite asserted the first of these should
-    be kept before the category existed."""
+    """Backend stays: distributed systems is core backend work, not the
+    systems-engineering discipline being excluded, and the suite asserted this
+    before the category existed.
+
+    **Systems programming used to be carved out here too**, on the argument
+    that it means OS and compiler work. Measured against the archive it means
+    mainframe sysprog, which is administration — so it joined the `systems`
+    category with every other "Systems X" title. See
+    `test_systems_programmer_is_a_systems_role`.
+    """
     from jobscrape.filters import is_excluded_role
 
     for title in ("Distributed Systems Engineer", "Senior Distributed Systems Engineer",
-                  "Systems Programmer", "Senior Software Engineer - Distributed Systems"):
+                  "Senior Software Engineer - Distributed Systems"):
         assert is_excluded_role(title) is None, title
         assert is_software_role(title) is True, title
 
@@ -937,6 +969,7 @@ def test_each_flag_re_admits_only_its_own_category() -> None:
         "firmware": "Firmware Engineer",
         "early_career": "Software Engineering Intern",
         "flight": "Flight Software Engineer",
+        "architect": "Data Architect",
     }
     assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
     for category, title in sample.items():
@@ -1186,3 +1219,91 @@ def test_the_software_word_survives_all_of_it(title: str) -> None:
 )
 def test_real_postings_the_first_draft_wrongly_dropped(title: str) -> None:
     assert is_software_role(title) is True, title
+
+
+# --- architect: the tenth preference category ------------------------------
+
+
+ARCHITECT_TITLES = [
+    "Data Architect",
+    "Cloud Architect",
+    "AI Architect",
+    "Technical Architect",
+    "Software Architect",
+    "Integration Architect",
+    "Application Architect",
+    "Infrastructure Architect",
+    "Principal Data Architect",
+    "Controls Software Architect, Steward Observatory",
+]
+
+
+@pytest.mark.parametrize("title", ARCHITECT_TITLES)
+def test_architects_are_excluded_by_preference(title: str) -> None:
+    """1,342 open postings, and the whole word rather than a curated subset.
+
+    Three architect senses were already excluded through other categories —
+    `Systems Architect` via `systems`, `Network Architect` via `network`,
+    `Solutions Architect` via `_NOT_SOFTWARE_TERMS` — so a partial rule would
+    have left an arbitrary half of them with no way to describe which half.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == "architect", title
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize("title", ARCHITECT_TITLES)
+def test_include_roles_architect_restores_every_one(title: str) -> None:
+    """The check a half-working flag fails.
+
+    Excluding these while ALSO removing their accept patterns would look
+    identical from the default path and quietly restore nothing — the exact
+    shape `_SOFTWARE_TERMS` warns about in three separate comments. So the
+    accepts stay, and this asserts they do.
+    """
+    assert is_software_role(title, allow_roles={"architect"}) is True, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Systems Programmer", "Senior Systems Programmer", "Systems Programmer I"],
+)
+def test_systems_programmer_is_a_systems_role(title: str) -> None:
+    """`_SOFTWARE_SYSTEMS_RE` used to rescue this from the `systems` category,
+    arguing that systems programming means OS and compiler work. Measured
+    against the archive it means mainframe sysprog, which is administration —
+    the same thing every other "Systems X" title in that category is."""
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == "systems", title
+    assert is_software_role(title) is False, title
+    # Same round-trip: the accept pattern stays so the flag means something.
+    assert is_software_role(title, allow_roles={"systems"}) is True, title
+
+
+def test_distributed_systems_is_still_rescued() -> None:
+    """The arm of `_SOFTWARE_SYSTEMS_RE` that stays, and has its own reason:
+    distributed systems is core backend work, not systems engineering."""
+    assert is_software_role("Distributed Systems Engineer") is True
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # A slash, not a space — the rule demanded whitespace between the
+        # qualifier and the noun, which is the third separator assumption to
+        # cost real rows this week.
+        "Senior CNC Machinist/Programmer",
+        # Computer-aided manufacturing, and audio-visual system programming.
+        "CAM Programmer",
+        "Sr. AV Programmer",
+        # Clinical-trial biostatistics: a distinct profession that writes SAS.
+        "SAS Programmer",
+        "Principal Statistical Programmer",
+        "Senior Clinical Programmer I",
+        "Senior Statistical Programmer",
+    ],
+)
+def test_more_non_software_programmers(title: str) -> None:
+    assert is_software_role(title) is False, title

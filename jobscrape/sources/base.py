@@ -103,7 +103,12 @@ DEFAULT_QUERIES = [
     "platform engineer",
     "cloud engineer",
     "infrastructure engineer",
-    "software architect",
+    # "software architect" was here for one day. `architect` became an excluded
+    # category, so every posting the term returned was searched for, paid for
+    # and discarded — the third time this list has had to drop a term for that
+    # reason, after "qa engineer" and "security engineer". The invariant test in
+    # tests/test_query_budget.py is what caught it, which is the whole point of
+    # asserting every term against the role filter.
     "web developer",
     "python developer",
     "java developer",
