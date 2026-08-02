@@ -1,0 +1,526 @@
+{
+  "_source": "https://api.apify.com/v2/acts/nlZZi3lZre4fM9IET/builds/default",
+  "_actor": "\ud83d\ude80 Indeed Jobs Scraper | Pay Per Result | Remove Duplicate Jobs",
+  "_actor_id": "nlZZi3lZre4fM9IET",
+  "_build_number": "0.0.20",
+  "_fetched_note": "Vendored from the endpoint above, which is public and needs no token. Refresh with tests/fixtures/apify/refresh.py when an actor changes.",
+  "dataset": {
+    "actorSpecification": 1,
+    "title": "Indeed job dataset schema",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "fields": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "normalizedTitle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "jobCategory": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "jobUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "datePublished": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "dateScraped": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "searchKeyword": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "streetAddress": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "city": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "state": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "country": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "postalCode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "baseSalary_min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "baseSalary_max": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "salary_period": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "salary_currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "applyUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "company": {
+          "type": "object",
+          "properties": {
+            "companyName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "companyShortName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "companyPageUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "logoImgUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "logoImgUrl2x": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "companyAddress": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "companyType": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "estimatedEmployeeCount": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "estimatedRevenue": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "industryType": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "industrySector": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "corporateLink": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ceoName": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ceoPhotoUrl": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "attributes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description_text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description_html": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matchedKeywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unmatchedKeywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "keywordMatchScorePercentage": {
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      }
+    },
+    "views": {
+      "job_info": {
+        "title": "Job Info",
+        "description": "Key job-related fields: position, links, dates, location, types, and compensation.",
+        "transformation": {
+          "flatten": [
+            "company",
+            "location"
+          ],
+          "fields": [
+            "title",
+            "company.companyName",
+            "company.logoImgUrl",
+            "location.city",
+            "location.state",
+            "location.country",
+            "key",
+            "normalizedTitle",
+            "jobCategory",
+            "jobUrl",
+            "datePublished",
+            "dateScraped",
+            "searchKeyword",
+            "location.streetAddress",
+            "location.postalCode",
+            "attributes",
+            "baseSalary_min",
+            "baseSalary_max",
+            "salary_period",
+            "salary_currency",
+            "applyUrl",
+            "description_text"
+          ]
+        },
+        "display": {
+          "component": "table",
+          "properties": {
+            "title": {
+              "label": "Job Title",
+              "format": "text"
+            },
+            "company.companyName": {
+              "label": "Company",
+              "format": "text"
+            },
+            "company.logoImgUrl": {
+              "label": "Company Logo",
+              "format": "image"
+            },
+            "location.city": {
+              "label": "City",
+              "format": "text"
+            },
+            "location.state": {
+              "label": "State/Province",
+              "format": "text"
+            },
+            "location.country": {
+              "label": "Country",
+              "format": "text"
+            },
+            "key": {
+              "label": "ID",
+              "format": "text"
+            },
+            "normalizedTitle": {
+              "label": "Normalized Title",
+              "format": "text"
+            },
+            "jobCategory": {
+              "label": "Category",
+              "format": "text"
+            },
+            "jobUrl": {
+              "label": "Job Link",
+              "format": "link"
+            },
+            "datePublished": {
+              "label": "Published",
+              "format": "date"
+            },
+            "dateScraped": {
+              "label": "Scraped At",
+              "format": "date"
+            },
+            "searchKeyword": {
+              "label": "Search Keyword",
+              "format": "text"
+            },
+            "location.streetAddress": {
+              "label": "Street Address",
+              "format": "text"
+            },
+            "location.postalCode": {
+              "label": "Postal Code",
+              "format": "text"
+            },
+            "attributes": {
+              "label": "Attributes",
+              "format": "array"
+            },
+            "baseSalary_min": {
+              "label": "Salary (min)",
+              "format": "number"
+            },
+            "baseSalary_max": {
+              "label": "Salary (max)",
+              "format": "number"
+            },
+            "salary_period": {
+              "label": "Salary Period",
+              "format": "text"
+            },
+            "salary_currency": {
+              "label": "Currency",
+              "format": "text"
+            },
+            "applyUrl": {
+              "label": "Apply URL",
+              "format": "link"
+            },
+            "description_text": {
+              "label": "Description (text)",
+              "format": "text"
+            }
+          }
+        }
+      },
+      "company": {
+        "title": "Company",
+        "description": "Company profile extracted from the job posting.",
+        "transformation": {
+          "flatten": [
+            "company"
+          ],
+          "fields": [
+            "key",
+            "title",
+            "company.companyName",
+            "company.companyShortName",
+            "company.companyPageUrl",
+            "company.logoImgUrl",
+            "company.logoImgUrl2x",
+            "company.companyAddress",
+            "company.companyType",
+            "company.estimatedEmployeeCount",
+            "company.estimatedRevenue",
+            "company.industryType",
+            "company.industrySector",
+            "company.corporateLink",
+            "company.ceoName",
+            "company.ceoPhotoUrl"
+          ]
+        },
+        "display": {
+          "component": "table",
+          "properties": {
+            "key": {
+              "label": "Job ID",
+              "format": "text"
+            },
+            "title": {
+              "label": "Job Title",
+              "format": "text"
+            },
+            "company.companyName": {
+              "label": "Company Name",
+              "format": "text"
+            },
+            "company.companyShortName": {
+              "label": "Short Name",
+              "format": "text"
+            },
+            "company.companyPageUrl": {
+              "label": "Company Page",
+              "format": "link"
+            },
+            "company.logoImgUrl": {
+              "label": "Logo",
+              "format": "image"
+            },
+            "company.logoImgUrl2x": {
+              "label": "Logo 2x",
+              "format": "image"
+            },
+            "company.companyAddress": {
+              "label": "Address",
+              "format": "text"
+            },
+            "company.companyType": {
+              "label": "Type",
+              "format": "text"
+            },
+            "company.estimatedEmployeeCount": {
+              "label": "Employee Count",
+              "format": "text"
+            },
+            "company.estimatedRevenue": {
+              "label": "Revenue",
+              "format": "text"
+            },
+            "company.industryType": {
+              "label": "Industry",
+              "format": "text"
+            },
+            "company.industrySector": {
+              "label": "Sector",
+              "format": "text"
+            },
+            "company.corporateLink": {
+              "label": "Corporate Link",
+              "format": "link"
+            },
+            "company.ceoName": {
+              "label": "CEO Name",
+              "format": "text"
+            },
+            "company.ceoPhotoUrl": {
+              "label": "CEO Photo",
+              "format": "image"
+            }
+          }
+        }
+      },
+      "profile_match": {
+        "title": "Profile Match",
+        "description": "Resume keyword matching results \u2014 score your profile against each job description.",
+        "transformation": {
+          "flatten": [
+            "company"
+          ],
+          "fields": [
+            "title",
+            "company.companyName",
+            "keywordMatchScorePercentage",
+            "matchedKeywords",
+            "unmatchedKeywords",
+            "applyUrl"
+          ]
+        },
+        "display": {
+          "component": "table",
+          "properties": {
+            "title": {
+              "label": "Job Title",
+              "format": "text"
+            },
+            "company.companyName": {
+              "label": "Company",
+              "format": "text"
+            },
+            "keywordMatchScorePercentage": {
+              "label": "Match Score %",
+              "format": "number"
+            },
+            "matchedKeywords": {
+              "label": "Matched Skills",
+              "format": "array"
+            },
+            "unmatchedKeywords": {
+              "label": "Missing Skills",
+              "format": "array"
+            },
+            "applyUrl": {
+              "label": "Apply",
+              "format": "link"
+            }
+          }
+        }
+      }
+    }
+  }
+}

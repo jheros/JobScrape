@@ -171,6 +171,26 @@ def employment_type(posting: dict[str, Any] | None) -> str | None:
     return str(value) if value else None
 
 
+def industry(posting: dict[str, Any] | None) -> str | None:
+    """schema.org's `industry` — the employer's market, not the team.
+
+    Distinct from `occupationalCategory`, which several adapters here already
+    read into `department`: that is the function a role performs
+    ("Software Engineering"), while this is the market the employer trades in
+    ("Primary/Secondary Education"). Jobvite is the source that actually
+    populates it.
+
+    A list is joined rather than dropped — schema.org permits repeated values
+    and a couple of boards emit two.
+    """
+    if not posting:
+        return None
+    value = posting.get("industry")
+    if isinstance(value, list):
+        return ", ".join(str(v).strip() for v in value if v) or None
+    return str(value).strip() or None if value is not None else None
+
+
 def description(posting: dict[str, Any] | None) -> str | None:
     if not posting:
         return None

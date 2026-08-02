@@ -21,7 +21,7 @@ from typing import Any
 from ... import db
 from ...filters import apply_filters_counted
 from ...http import Fetcher
-from . import client, mapper_for
+from . import client, resolve_mapper
 
 log = logging.getLogger("jobscrape.apify")
 
@@ -104,15 +104,15 @@ async def ingest_run(
         result.error = "run carries no defaultDatasetId"
         return result
 
-    # The actor id in a run is opaque, so fall back to the build's actor name
-    # when one is present — `mapper_for` matches on the readable form.
-    mapper = mapper_for(result.actor) or mapper_for(str(info.get("actorTaskId") or ""))
-    if mapper is None:
-        mapper = mapper_for(str(info.get("buildId") or ""))
+    # `resolve_mapper`, not `mapper_for`: a run's `actId` is an opaque id
+    # (`nlZZi3lZre4fM9IET`), and matching it against the substrings "indeed" and
+    # "linkedin" returned None for every real run — so this branch fired every
+    # time and nothing was ever ingested.
+    mapper = await resolve_mapper(fetcher, result.actor)
     if mapper is None:
         result.error = (
-            f"no mapper for actor {result.actor!r} — expected one whose name "
-            f"contains 'indeed' or 'linkedin'"
+            f"no mapper for actor {result.actor!r} — configure "
+            f"APIFY_INDEED_ACTOR / APIFY_LINKEDIN_ACTOR, or check the actor is public"
         )
         return result
 

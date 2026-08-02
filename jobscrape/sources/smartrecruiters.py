@@ -173,6 +173,11 @@ class SmartRecruiters(BoardSource):
                     employment_type=(item.get("typeOfEmployment") or {}).get("label"),
                     department=(item.get("department") or {}).get("label")
                     or (item.get("function") or {}).get("label"),
+                    # The employer's market, e.g. {"id": "management_consulting",
+                    # "label": "Management Consulting"}. Already in the payload;
+                    # it was simply being thrown away.
+                    industry=(detail.get("industry") or item.get("industry")
+                              or {}).get("label"),
                     posted_at=item.get("releasedDate") or detail.get("releasedDate"),
                     description_html=html or None,
                     description_text=html_to_text(html) or None,

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -169,7 +171,11 @@ def test_linkedin_maps_every_field() -> None:
     assert job.company == "Globex Industries"
     assert job.company_slug == "globex"          # from the Lever apply URL
     assert job.location_raw == "San Francisco, CA"
-    assert job.department == "Software Development"
+    # `sector` is the employer's MARKET, so it lands in `industry`. It used to
+    # be written into `department`, which is the team a role sits in — two
+    # different facets sharing one column. LinkedIn publishes no department.
+    assert job.industry == "Software Development"
+    assert job.department is None
     assert job.employment_type == "full_time"    # normalised from "Full-time"
     assert job.workplace_type == "hybrid"        # from workType, not the prose
     assert job.seniority == "staff"              # from the title, see below
@@ -207,6 +213,32 @@ def test_linkedin_experience_level_does_not_override_the_title() -> None:
     assert job is not None
     assert job.seniority == "staff"
     assert LINKEDIN_ITEM["experienceLevel"] == "Mid-Senior level"
+
+
+def test_easy_apply_skips_the_ats_parse() -> None:
+    """`applyType` states outright what `ats_link` otherwise has to guess.
+
+    An Easy Apply link stays on linkedin.com, so the parse is guaranteed to
+    find no board — the slug falls back to the company name. EXTERNAL still
+    resolves one, and a missing `applyType` still tries, since the field is
+    nullable and declining would cost a real slug.
+    """
+    easy = linkedin.to_job({**LINKEDIN_ITEM, "applyType": "EASY_APPLY"})
+    assert easy is not None and easy.company_slug == "globex-industries"
+
+    external = linkedin.to_job({**LINKEDIN_ITEM, "applyType": "EXTERNAL"})
+    assert external is not None and external.company_slug == "globex"
+
+    assert "applyType" not in LINKEDIN_ITEM
+    assert linkedin.to_job(LINKEDIN_ITEM).company_slug == "globex"
+
+
+def test_linkedin_falls_back_to_the_company_industry() -> None:
+    """`companyIndustry` only exists with `enrichCompanyData: true`, so it is
+    the fallback rather than the primary."""
+    item = {k: v for k, v in LINKEDIN_ITEM.items() if k != "sector"}
+    job = linkedin.to_job({**item, "companyIndustry": "Hospitals and Health Care"})
+    assert job is not None and job.industry == "Hospitals and Health Care"
 
 
 @pytest.mark.parametrize(
@@ -285,6 +317,167 @@ def test_mapper_for_picks_by_actor_name() -> None:
     # An actor this app cannot read must not be guessed at.
     assert mapper_for("someone~glassdoor-scraper") is None
     assert mapper_for(None) is None
+
+
+# --- resolving an actor by its opaque id ------------------------------------
+#
+# A run reports `actId` as `nlZZi3lZre4fM9IET`, never `user~name`. `mapper_for`
+# matches on the name *containing* "indeed" or "linkedin", so it returned None
+# for every real run and ingestion failed with "no mapper for actor" every
+# single time. The suite was green because every fixture here was a name.
+
+
+def _resolve(actor, *, name=None, configured=()):
+    """`resolve_mapper` with the network stubbed and the cache cleared."""
+    from jobscrape.sources.apify import _RESOLVED, client, resolve_mapper
+
+    async def actor_name(_fetcher, _actor):
+        return name
+
+    original_lookup = client.actor_name
+    original_config = (config.APIFY_INDEED_ACTOR, config.APIFY_LINKEDIN_ACTOR)
+    client.actor_name = actor_name
+    if configured:
+        config.APIFY_INDEED_ACTOR, config.APIFY_LINKEDIN_ACTOR = configured
+    _RESOLVED.clear()
+    try:
+        return asyncio.run(resolve_mapper(None, actor))
+    finally:
+        client.actor_name = original_lookup
+        config.APIFY_INDEED_ACTOR, config.APIFY_LINKEDIN_ACTOR = original_config
+        _RESOLVED.clear()
+
+
+def test_an_opaque_actor_id_resolves_through_the_api() -> None:
+    """The case that was broken in production and green in this file."""
+    assert _resolve("nlZZi3lZre4fM9IET",
+                    name="cheap_scraper~indeed-job-scraper") is indeed
+    assert _resolve("2rJKkhh7vjpX7pvjg",
+                    name="cheap_scraper~linkedin-job-scraper") is linkedin
+
+
+def test_a_configured_actor_id_resolves_with_no_request() -> None:
+    """`name=None` stands in for the API being unreachable: a user who put the
+    id in `APIFY_INDEED_ACTOR` must not need it."""
+    assert _resolve("nlZZi3lZre4fM9IET", name=None,
+                    configured=("nlZZi3lZre4fM9IET", "")) is indeed
+
+
+def test_a_readable_actor_name_still_resolves_without_a_request() -> None:
+    assert _resolve("cheap_scraper~linkedin-job-scraper", name=None) is linkedin
+
+
+def test_an_unknown_actor_resolves_to_nothing() -> None:
+    """Guessing would write another actor's fields into these columns."""
+    assert _resolve("aBcDeFgHiJkLmNoPq", name="someone~glassdoor-scraper") is None
+    assert _resolve("", name="cheap_scraper~indeed-job-scraper") is None
+
+
+# --- the mappers against the actors' PUBLISHED schemas -----------------------
+#
+# Both defects in this feature came from fixtures written from a prose summary
+# of the actor's marketing page: the fixtures agreed with the mappers and
+# neither agreed with the actor. These read the vendored schema instead —
+# `tests/fixtures/apify/*-dataset-schema.json`, straight from
+# `GET /v2/acts/{id}/builds/default`, refreshable with `refresh.py`.
+
+FIXTURES = Path(__file__).parent / "fixtures" / "apify"
+
+#: Every `x.get("field")` in a mapper's source, so a renamed or mistyped field
+#: is a test failure rather than a silently empty column.
+_GET_RE = re.compile(r'(\w+)\.get\("([A-Za-z_][A-Za-z0-9_]*)"\)')
+
+#: Which local name holds which part of an item. Declared rather than inferred:
+#: `loc` and `company_obj` are nested objects, and treating their keys as
+#: top-level fields would assert the wrong thing.
+_SCOPES = {
+    "indeed": {"item": (), "loc": ("location",), "company_obj": ("company",)},
+    "linkedin": {"item": ()},
+}
+
+
+def _schema_properties(actor: str) -> dict[str, Any]:
+    data = json.loads((FIXTURES / f"{actor}-dataset-schema.json").read_text())
+    return data["dataset"]["fields"]["properties"]
+
+
+def _fields_read(module: Any) -> set[tuple[tuple[str, ...], str]]:
+    """(path, field) pairs the mapper reads, extracted from its source."""
+    source = Path(module.__file__).read_text()
+    scopes = _SCOPES[module.SOURCE]
+    return {
+        (scopes[holder], name)
+        for holder, name in _GET_RE.findall(source)
+        if holder in scopes
+    }
+
+
+@pytest.mark.parametrize("module", [indeed, linkedin])
+def test_every_field_a_mapper_reads_exists_in_the_published_schema(module) -> None:
+    properties = _schema_properties(module.SOURCE)
+    missing = []
+    for path, name in sorted(_fields_read(module)):
+        node = properties
+        for parent in path:
+            node = node.get(parent, {}).get("properties", {})
+        if name not in node:
+            missing.append(".".join((*path, name)))
+    assert not missing, (
+        f"{module.SOURCE} mapper reads fields the actor does not publish: {missing}"
+    )
+
+
+@pytest.mark.parametrize("module", [indeed, linkedin])
+def test_a_mapper_survives_every_field_the_actor_can_send(module) -> None:
+    """Exercised against the FULL declared shape, not the subset I knew about.
+
+    The item is built from the schema, so a field added by a future build
+    arrives here automatically — including the ones no mapper reads, which is
+    where a crash would otherwise be found in production.
+    """
+    item = {**_item_from_schema(module.SOURCE), **_IDENTITY[module.SOURCE]}
+    job = module.to_job(item)
+    assert job is not None
+    assert job.source == module.SOURCE
+    assert job.title and job.company and job.job_url
+
+
+def _item_from_schema(actor: str) -> dict[str, Any]:
+    """A dataset item with every declared field populated by its declared type."""
+    def value(spec: dict[str, Any], name: str) -> Any:
+        declared = spec.get("type")
+        kinds = declared if isinstance(declared, list) else [declared]
+        kind = next((k for k in kinds if k != "null"), "string")
+        if kind == "object":
+            return {k: value(v, k) for k, v in (spec.get("properties") or {}).items()}
+        if kind == "array":
+            items = spec.get("items") or {}
+            return [value(items, name)] if items.get("type") == "object" else [name]
+        if kind == "number":
+            return 1
+        if kind == "boolean":
+            return True
+        return name
+
+    return {k: value(v, k) for k, v in _schema_properties(actor).items()}
+
+
+#: The few fields that must carry a *usable* value rather than their own name,
+#: because the mapper checks identity and would otherwise drop the item.
+_IDENTITY = {
+    "indeed": {
+        "key": "abc123",
+        "title": "Senior Backend Engineer",
+        "jobUrl": "https://www.indeed.com/viewjob?jk=abc123",
+        "company": {"companyName": "Acme Corp", "industrySector": "Software"},
+    },
+    "linkedin": {
+        "jobId": "3912847",
+        "jobTitle": "Staff Platform Engineer",
+        "companyName": "Globex Industries",
+        "jobUrl": "https://www.linkedin.com/jobs/view/3912847",
+    },
+}
 
 
 # --- the webhook receiver ---------------------------------------------------
@@ -457,8 +650,16 @@ def _stub_client(monkeypatch, run: dict | None, items: list[dict]) -> None:
     async def dataset_items(_fetcher, _dataset_id, max_items=None):
         return items[:max_items] if max_items else items
 
+    async def actor_name(_fetcher, actor):
+        """The id->name lookup, offline. Returns the id unchanged, so an actor
+        named in `actId` resolves and an opaque one does not."""
+        return actor
+
     monkeypatch.setattr(client, "run_info", run_info)
     monkeypatch.setattr(client, "dataset_items", dataset_items)
+    monkeypatch.setattr(client, "actor_name", actor_name)
+    from jobscrape.sources import apify
+    apify._RESOLVED.clear()
 
 
 SUCCEEDED_RUN = {

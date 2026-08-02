@@ -1,0 +1,691 @@
+{
+  "_source": "https://api.apify.com/v2/acts/2rJKkhh7vjpX7pvjg/builds/default",
+  "_actor": "linkedin-webscraper",
+  "_actor_id": "2rJKkhh7vjpX7pvjg",
+  "_build_number": "0.0.38",
+  "_fetched_note": "Vendored from the endpoint above, which is public and needs no token. Refresh with tests/fixtures/apify/refresh.py when an actor changes.",
+  "dataset": {
+    "actorSpecification": 1,
+    "title": "LinkedIn Jobs dataset schema",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "fields": {
+      "type": "object",
+      "properties": {
+        "jobId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Unique LinkedIn job identifier"
+        },
+        "jobTitle": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Job position title"
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Job location as text"
+        },
+        "salaryInfo": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Salary range as formatted strings (e.g., ['$69100.00', '$129200.00'])"
+        },
+        "postedTime": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Human-readable posted time (e.g., '2 days ago')"
+        },
+        "publishedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "ISO 8601 date when job was published"
+        },
+        "searchString": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Search query that found this job"
+        },
+        "jobUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "LinkedIn job posting URL"
+        },
+        "companyName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Company name"
+        },
+        "companyUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "LinkedIn company page URL"
+        },
+        "companyLogo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Company logo image URL"
+        },
+        "companyId": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "LinkedIn company identifier"
+        },
+        "companyDescription": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Company description (when enrichCompanyData=true)"
+        },
+        "companyEmployeeCount": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Number of employees (when enrichCompanyData=true)"
+        },
+        "companyWebsite": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Company website URL (when enrichCompanyData=true)"
+        },
+        "companyAddress": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "Company address details (when enrichCompanyData=true)",
+          "properties": {
+            "streetAddress": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "addressLocality": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "addressRegion": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "postalCode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "addressCountry": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "companyIndustry": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Industry category from the LinkedIn company page About section (when enrichCompanyData=true)"
+        },
+        "companyEmployeeCountRange": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Employee count range displayed on the company page, e.g. '1,001-5,000 employees' (when enrichCompanyData=true)"
+        },
+        "companyOrganizationType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Organisation type, e.g. 'Privately Held', 'Public Company' (when enrichCompanyData=true)"
+        },
+        "companyFoundedDate": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Year the company was founded (when enrichCompanyData=true)"
+        },
+        "companySpecialties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of company specialties from the About section (when enrichCompanyData=true)"
+        },
+        "companyFollowersCount": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Number of LinkedIn followers the company has (when enrichCompanyData=true)"
+        },
+        "companyOfficeLocations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of office addresses listed on the company page (when enrichCompanyData=true)"
+        },
+        "companyAffiliatedPages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Names of affiliated LinkedIn company pages (when enrichCompanyData=true)"
+        },
+        "companyRecentPosts": {
+          "type": "array",
+          "description": "Recent posts published by the company on LinkedIn (when enrichCompanyData=true)",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string",
+                "description": "Post text content"
+              },
+              "datePublished": {
+                "type": "string",
+                "description": "ISO 8601 date the post was published"
+              },
+              "url": {
+                "type": "string",
+                "description": "URL to the post"
+              }
+            }
+          }
+        },
+        "jobDescription": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Full job description (plain text)"
+        },
+        "applicationsCount": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Number of applications received"
+        },
+        "contractType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Employment type (Full-time, Part-time, etc.)"
+        },
+        "experienceLevel": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Required experience level"
+        },
+        "yearsOfExperience": {
+          "type": "array",
+          "description": "Structured years of experience requirements extracted from the job description",
+          "items": {
+            "type": "object",
+            "properties": {
+              "years": {
+                "type": "string",
+                "description": "Normalized value: '5', '3+', '2-5'"
+              },
+              "context": {
+                "type": "string",
+                "description": "Surrounding text providing context for the requirement"
+              },
+              "lang": {
+                "type": "string",
+                "description": "Detected language: en, fr, de, es, nl"
+              }
+            }
+          }
+        },
+        "workType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Job function/work type"
+        },
+        "sector": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Industry sector"
+        },
+        "applyUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "URL to apply for the job"
+        },
+        "applyType": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Application type: EASY_APPLY or EXTERNAL"
+        },
+        "posterFullName": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Recruiter/poster full name"
+        },
+        "posterProfileUrl": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Recruiter LinkedIn profile URL"
+        },
+        "dynamicFilterMatch": {
+          "type": "boolean",
+          "description": "Indicates whether the job passed all enabled dynamic (post-fetch) filters. True when no dynamic filters are configured or all configured filters matched. False when the job did not meet the criteria \u2014 it is still saved to the dataset. See the \ud83d\udd0e Dynamic Filters section in the input schema for available filters."
+        },
+        "matchedKeywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resume keywords from 'resumeKeywords' input that were found in the job description. Only present when 'resumeKeywords' input is provided."
+        },
+        "unmatchedKeywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Resume keywords from 'resumeKeywords' input that were NOT found in the job description. Only present when 'resumeKeywords' input is provided."
+        },
+        "keywordMatchScorePercentage": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Percentage of your resume keywords found in the job description (0\u2013100). Computed as: round(matched \u00f7 total \u00d7 100). Example: 3 out of 5 keywords matched = 60. Only present when 'resumeKeywords' input is provided."
+        }
+      }
+    },
+    "views": {
+      "overview": {
+        "title": "Job Overview",
+        "description": "Key job information: title, company, location, salary, and application details.",
+        "transformation": {
+          "flatten": [
+            "companyAddress"
+          ],
+          "fields": [
+            "dynamicFilterMatch",
+            "jobTitle",
+            "companyName",
+            "companyLogo",
+            "location",
+            "salaryInfo",
+            "contractType",
+            "experienceLevel",
+            "yearsOfExperience",
+            "workType",
+            "postedTime",
+            "publishedAt",
+            "applicationsCount",
+            "jobDescription",
+            "applyUrl",
+            "applyType",
+            "jobUrl",
+            "posterFullName",
+            "posterProfileUrl",
+            "searchString",
+            "jobId",
+            "matchedKeywords",
+            "unmatchedKeywords",
+            "keywordMatchScorePercentage"
+          ]
+        },
+        "display": {
+          "component": "table",
+          "properties": {
+            "jobTitle": {
+              "label": "Job Title",
+              "format": "text"
+            },
+            "companyName": {
+              "label": "Company",
+              "format": "text"
+            },
+            "companyLogo": {
+              "label": "Company Logo",
+              "format": "image"
+            },
+            "location": {
+              "label": "Location",
+              "format": "text"
+            },
+            "salaryInfo": {
+              "label": "Salary Range",
+              "format": "array"
+            },
+            "contractType": {
+              "label": "Contract Type",
+              "format": "text"
+            },
+            "experienceLevel": {
+              "label": "Experience",
+              "format": "text"
+            },
+            "yearsOfExperience": {
+              "label": "Years of Experience",
+              "format": "array"
+            },
+            "workType": {
+              "label": "Work Type",
+              "format": "text"
+            },
+            "postedTime": {
+              "label": "Posted",
+              "format": "text"
+            },
+            "publishedAt": {
+              "label": "Published Date",
+              "format": "date"
+            },
+            "applicationsCount": {
+              "label": "Applications",
+              "format": "text"
+            },
+            "jobDescription": {
+              "label": "Job Description",
+              "format": "text"
+            },
+            "applyUrl": {
+              "label": "Apply URL",
+              "format": "link"
+            },
+            "applyType": {
+              "label": "Apply Type",
+              "format": "text"
+            },
+            "jobUrl": {
+              "label": "Job URL",
+              "format": "link"
+            },
+            "posterFullName": {
+              "label": "Recruiter Name",
+              "format": "text"
+            },
+            "posterProfileUrl": {
+              "label": "Recruiter Profile",
+              "format": "link"
+            },
+            "searchString": {
+              "label": "Search Query",
+              "format": "text"
+            },
+            "jobId": {
+              "label": "Job ID",
+              "format": "text"
+            },
+            "dynamicFilterMatch": {
+              "label": "Dynamic Filter Match",
+              "format": "boolean"
+            },
+            "matchedKeywords": {
+              "label": "Matched Keywords",
+              "format": "array"
+            },
+            "unmatchedKeywords": {
+              "label": "Missing Keywords",
+              "format": "array"
+            },
+            "keywordMatchScorePercentage": {
+              "label": "Match Score (%)",
+              "format": "number"
+            }
+          }
+        }
+      },
+      "company": {
+        "title": "Company Details",
+        "description": "Company information including profile, address, and metrics (requires enrichCompanyData=true).",
+        "transformation": {
+          "flatten": [
+            "companyAddress"
+          ],
+          "fields": [
+            "dynamicFilterMatch",
+            "companyName",
+            "companyLogo",
+            "companyId",
+            "companyDescription",
+            "sector",
+            "companyEmployeeCount",
+            "companyWebsite",
+            "companyUrl",
+            "companyAddress.streetAddress",
+            "companyAddress.addressLocality",
+            "companyAddress.addressRegion",
+            "companyAddress.postalCode",
+            "companyAddress.addressCountry",
+            "companyIndustry",
+            "companyEmployeeCountRange",
+            "companyOrganizationType",
+            "companyFoundedDate",
+            "companySpecialties",
+            "companyFollowersCount",
+            "companyOfficeLocations",
+            "companyAffiliatedPages",
+            "companyRecentPosts",
+            "jobTitle",
+            "jobId"
+          ]
+        },
+        "display": {
+          "component": "table",
+          "properties": {
+            "companyName": {
+              "label": "Company Name",
+              "format": "text"
+            },
+            "companyLogo": {
+              "label": "Logo",
+              "format": "image"
+            },
+            "companyId": {
+              "label": "Company ID",
+              "format": "text"
+            },
+            "companyDescription": {
+              "label": "Description",
+              "format": "text"
+            },
+            "sector": {
+              "label": "Industry Sector",
+              "format": "text"
+            },
+            "companyIndustry": {
+              "label": "Company Industry",
+              "format": "text"
+            },
+            "companyEmployeeCount": {
+              "label": "Employees (exact)",
+              "format": "number"
+            },
+            "companyEmployeeCountRange": {
+              "label": "Employees (range)",
+              "format": "text"
+            },
+            "companyOrganizationType": {
+              "label": "Organisation Type",
+              "format": "text"
+            },
+            "companyFoundedDate": {
+              "label": "Founded",
+              "format": "text"
+            },
+            "companySpecialties": {
+              "label": "Specialties",
+              "format": "array"
+            },
+            "companyFollowersCount": {
+              "label": "Followers",
+              "format": "number"
+            },
+            "companyOfficeLocations": {
+              "label": "Office Locations",
+              "format": "array"
+            },
+            "companyAffiliatedPages": {
+              "label": "Affiliated Pages",
+              "format": "array"
+            },
+            "companyRecentPosts": {
+              "label": "Recent Posts",
+              "format": "array"
+            },
+            "companyWebsite": {
+              "label": "Website",
+              "format": "link"
+            },
+            "companyUrl": {
+              "label": "Company Page",
+              "format": "link"
+            },
+            "companyAddress.streetAddress": {
+              "label": "Street",
+              "format": "text"
+            },
+            "companyAddress.addressLocality": {
+              "label": "City",
+              "format": "text"
+            },
+            "companyAddress.addressRegion": {
+              "label": "State/Region",
+              "format": "text"
+            },
+            "companyAddress.postalCode": {
+              "label": "Postal Code",
+              "format": "text"
+            },
+            "companyAddress.addressCountry": {
+              "label": "Country",
+              "format": "text"
+            },
+            "jobTitle": {
+              "label": "Job Title",
+              "format": "text"
+            },
+            "jobId": {
+              "label": "Job ID",
+              "format": "text"
+            },
+            "dynamicFilterMatch": {
+              "label": "Dynamic Filter Match",
+              "format": "boolean"
+            }
+          }
+        }
+      },
+      "profileMatch": {
+        "title": "Profile Match",
+        "description": "How well each job matches your profile. Scores every job description against the skills you provided in 'resumeKeywords'. Only populated when 'resumeKeywords' input is provided.",
+        "transformation": {
+          "fields": [
+            "dynamicFilterMatch",
+            "jobTitle",
+            "companyName",
+            "location",
+            "keywordMatchScorePercentage",
+            "matchedKeywords",
+            "unmatchedKeywords",
+            "jobUrl",
+            "jobId"
+          ]
+        },
+        "display": {
+          "component": "table",
+          "properties": {
+            "jobTitle": {
+              "label": "Job Title",
+              "format": "text"
+            },
+            "companyName": {
+              "label": "Company",
+              "format": "text"
+            },
+            "location": {
+              "label": "Location",
+              "format": "text"
+            },
+            "keywordMatchScorePercentage": {
+              "label": "Match Score (%)",
+              "format": "number"
+            },
+            "matchedKeywords": {
+              "label": "Matched Skills",
+              "format": "array"
+            },
+            "unmatchedKeywords": {
+              "label": "Missing Skills",
+              "format": "array"
+            },
+            "jobUrl": {
+              "label": "Job URL",
+              "format": "link"
+            },
+            "jobId": {
+              "label": "Job ID",
+              "format": "text"
+            },
+            "dynamicFilterMatch": {
+              "label": "Dynamic Filter Match",
+              "format": "boolean"
+            }
+          }
+        }
+      }
+    }
+  }
+}

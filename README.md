@@ -2,7 +2,8 @@
 
 Collects **software job postings in the United States** for a date range you specify,
 capturing as much per-job detail as each source exposes: direct link, apply link,
-full description, company, location, salary, department, employment type and dates.
+full description, company, location, salary, department, industry, employment type
+and dates.
 
 Coverage comes from going straight to the applicant tracking systems (ATS) that
 companies post through, rather than to a single aggregator. Company boards are
@@ -348,9 +349,9 @@ Columns:
 
 ```text
 job_url, title, company, location_raw, city, state, country, workplace_type,
-seniority, is_remote, posted_at, employment_type, department, salary_min,
-salary_max, salary_currency, salary_raw, skills, source, company_slug,
-apply_url, updated_at, description_text
+seniority, is_remote, posted_at, employment_type, department, industry,
+salary_min, salary_max, salary_currency, salary_raw, skills, source,
+company_slug, apply_url, updated_at, description_text
 ```
 
 ### The nine fields every job carries
@@ -394,6 +395,13 @@ options)"* will read as remote — about 24% of what it adds. The word `virtual`
 largest single source of error (mostly "virtual interviews"); removing it from
 `REMOTE_MENTION` in `jobscrape/models.py` is a one-line change if the remote count ever
 looks inflated.
+
+**`department` vs `industry`** — two different facets that used to share one column.
+`department` is the team or function a role sits in ("Platform Engineering", "Software
+Development"); `industry` is the market the *employer* trades in ("Management Consulting",
+"Hospitals and Health Care"). Four sources state the industry — SmartRecruiters, Workable,
+Jobvite and LinkedIn via Apify — so it sits around 11% populated and is NULL elsewhere,
+which is honest rather than guessed.
 
 **`skills`** — a comma-separated list from a closed **722-term** vocabulary of languages,
 frontend and backend frameworks, mobile, datastores, cloud services, DevOps and platform

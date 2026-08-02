@@ -26,32 +26,95 @@ Two things worth knowing before reading further:
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
+from ... import config
 from . import ats_link, client, indeed, linkedin  # noqa: F401  (re-exported)
 
-#: Actor id -> the module that maps its output. Keyed on the *slug* portion
-#: (`indeed-job-scraper`) rather than the full `user~actor` string, because the
-#: webhook payload reports a numeric actor id and the configured value may be
-#: either form; `mapper_for` reconciles them.
+log = logging.getLogger("jobscrape.apify")
+
+#: Keyword found in an actor's *name* -> the module that maps its output.
 MAPPERS = {
     "indeed": indeed,
     "linkedin": linkedin,
 }
 
+#: Resolved actor id -> mapper, so an id is looked up over the network once per
+#: process rather than once per run.
+_RESOLVED: dict[str, Any] = {}
+
 
 def mapper_for(actor: str | None):
-    """Pick a mapper from whatever Apify called the actor, or ``None``.
+    """Pick a mapper from an actor's readable NAME, or ``None``.
 
-    The payload's `actorId` is an opaque id, while the configured value is
-    usually `user~actor-name`, so neither can be compared directly. Matching on
-    the substring is crude but total: an actor whose name contains neither word
-    is not one this app knows how to read, and returning ``None`` is the honest
-    answer rather than guessing a schema.
+    Matches `cheap_scraper~indeed-job-scraper` and `indeed-job-scraper`. It
+    cannot match an opaque id — use :func:`resolve_mapper` for that, which is
+    what every real code path needs.
     """
     name = (actor or "").lower()
     for key, module in MAPPERS.items():
         if key in name:
             return module
     return None
+
+
+async def resolve_mapper(fetcher, actor: str | None):
+    """Pick a mapper for whatever a *run* reports as its actor.
+
+    A run's `actId` is an **opaque id** — `nlZZi3lZre4fM9IET`, not
+    `cheap_scraper~indeed-job-scraper`. `mapper_for` matches on the name
+    containing "indeed" or "linkedin", so it returns ``None`` for every real
+    run, and ingestion failed with "no mapper for actor" every time. The two
+    fallbacks originally written beside it (`actorTaskId`, `buildId`) are opaque
+    ids too, so they could not have helped.
+
+    Three steps, cheapest first:
+
+    1. **The configured values.** `APIFY_INDEED_ACTOR` and `APIFY_LINKEDIN_ACTOR`
+       may hold either form, so a direct comparison resolves the common case
+       with no request.
+    2. **The name, if this already is one.** Covers `user~actor-name` and tests.
+    3. **Ask Apify.** `GET /v2/acts/{id}` is public for a public actor and
+       returns the readable `name`. Cached per process.
+
+    ``None`` when nothing matches — the honest answer, since guessing a schema
+    would write another actor's fields into these columns.
+    """
+    raw = (actor or "").strip()
+    if not raw:
+        return None
+    if raw in _RESOLVED:
+        return _RESOLVED[raw]
+
+    configured = (
+        (config.APIFY_INDEED_ACTOR, indeed),
+        (config.APIFY_LINKEDIN_ACTOR, linkedin),
+    )
+    for value, module in configured:
+        if value and raw.lower() == value.strip().lower():
+            _RESOLVED[raw] = module
+            return module
+
+    module = mapper_for(raw)
+    if module is not None:
+        _RESOLVED[raw] = module
+        return module
+
+    # A lookup failure is not a reason to abort ingestion — it is a reason to
+    # report "no mapper", the same as an unknown actor. Anything raised here
+    # (404 on a private actor, a timeout, no fetcher at all) would otherwise
+    # propagate out of `ingest_run` as a traceback instead of a message.
+    try:
+        name = await client.actor_name(fetcher, raw)
+    except Exception as exc:                      # noqa: BLE001 - reported, not raised
+        # Deliberately NOT cached: a timeout must not pin this actor to "no
+        # mapper" for the life of the process.
+        log.warning("apify: could not look up actor %s: %s", raw, exc)
+        return None
+    module = mapper_for(name)
+    _RESOLVED[raw] = module
+    return module
 
 
 # Imported LAST, and that ordering is load-bearing: `ingest` calls
@@ -67,5 +130,6 @@ def mapper_for(actor: str | None):
 from . import ingest  # noqa: E402,F401  (must follow `mapper_for`)
 
 __all__ = [
-    "MAPPERS", "ats_link", "client", "indeed", "ingest", "linkedin", "mapper_for",
+    "MAPPERS", "ats_link", "client", "indeed", "ingest", "linkedin",
+    "mapper_for", "resolve_mapper",
 ]

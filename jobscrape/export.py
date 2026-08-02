@@ -20,7 +20,7 @@ log = logging.getLogger("jobscrape.export")
 COLUMNS = [
     "job_url", "title", "company", "location_raw", "city", "state", "country",
     "workplace_type", "seniority", "is_remote", "posted_at",
-    "employment_type", "department",
+    "employment_type", "department", "industry",
     "salary_min", "salary_max", "salary_currency", "salary_raw",
     "skills",
     "source", "company_slug", "apply_url", "updated_at",

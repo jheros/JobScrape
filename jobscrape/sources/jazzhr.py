@@ -119,6 +119,7 @@ class JazzHR(BoardSource):
                     is_remote=jsonld.is_remote(posting),
                     workplace_hint="remote" if jsonld.is_remote(posting) else None,
                     employment_type=jsonld.employment_type(posting),
+                    industry=jsonld.industry(posting),
                     department=posting.get("occupationalCategory") or None,
                     posted_at=posting.get("datePosted"),
                     salary_min=low,

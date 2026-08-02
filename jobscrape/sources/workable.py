@@ -87,6 +87,7 @@ class Workable(BoardSource):
                     ),
                     employment_type=item.get("employment_type"),
                     department=item.get("department") or item.get("function"),
+                    industry=item.get("industry"),
                     posted_at=item.get("published_on") or item.get("created_at"),
                     description_html=html or None,
                     raw=item if with_details else {},

@@ -78,6 +78,7 @@ class Jobvite(BoardSource):
                 location_raw=jsonld.location_text(posting),
                 is_remote=jsonld.is_remote(posting),
                 employment_type=jsonld.employment_type(posting),
+                industry=jsonld.industry(posting),
                 posted_at=(posting or {}).get("datePosted"),
                 salary_min=lo,
                 salary_max=hi,

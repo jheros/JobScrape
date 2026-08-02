@@ -141,7 +141,12 @@ def to_job(item: dict[str, Any]) -> Job | None:
         company_slug=board[1] if board else None,
         job_url=job_url or apply_url,
         apply_url=apply_url or job_url,
+        # `jobCategory` is a function ("Software Development"), so it stays in
+        # `department`. The employer's market is a separate pair of fields on
+        # the nested company object, and that is what `industry` wants.
         department=_text(item.get("jobCategory")),
+        industry=(_text(company_obj.get("industrySector"))
+                  or _text(company_obj.get("industryType"))),
         employment_type=_ATTRIBUTE_JOIN.join(attributes) or None,
         workplace_hint=_workplace_hint(attributes),
         posted_at=_text(item.get("datePublished")),

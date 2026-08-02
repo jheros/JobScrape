@@ -797,6 +797,9 @@ class Job:
     seniority: str | None = None
     employment_type: str | None = None
     department: str | None = None
+    #: The employer's market, distinct from `department` (the team). LinkedIn
+    #: calls it `sector`, SmartRecruiters/Workable/Jobvite call it `industry`.
+    industry: str | None = None
     posted_at: str | None = None
     updated_at: str | None = None
     salary_min: float | None = None
@@ -812,6 +815,10 @@ class Job:
         self.company = (self.company or "").strip()
         self.source_job_id = str(self.source_job_id)
         self.location_raw = clean_location(self.location_raw)
+        # Four sources fill this and they disagree about blanks: SmartRecruiters
+        # ships `{"label": ""}`, Workable ships a bare space. An empty string in
+        # the column would read as "we know the industry and it is nothing".
+        self.industry = (self.industry or "").strip() or None
         # A link that is not http(s) is not a job link. Both of these are raw
         # third-party strings and both are rendered straight into an `href` by
         # the dashboard, so a posting carrying `javascript:fetch('/api/jobs/bulk'…)`

@@ -255,6 +255,21 @@ path shared by the webhook and the manual `apify-pull` command.
 Re-delivery needs no guard: `upsert_jobs` is keyed on `(source, source_job_id)` with
 `ON CONFLICT DO UPDATE`, so a run processed twice converges.
 
+**The mappers are checked against the actors' published schemas, not against fixtures
+written here.** Both blocking defects this feature shipped with came from the same root
+cause — the mappers were built from a prose summary of the actor's marketing page, so the
+fixtures agreed with the mappers and neither agreed with the actor. The second one made
+every ingestion fail: a run reports its actor as an opaque id (`nlZZi3lZre4fM9IET`), and
+resolution matched on the *name* containing "indeed" or "linkedin", so `resolve_mapper`
+now looks the id up via `GET /v2/acts/{id}` and caches the answer per process.
+
+Each actor's dataset schema is vendored under `tests/fixtures/apify/` from
+`GET /v2/acts/{id}/builds/default` (public, no token; refresh with `refresh.py`). Two
+tests read it: one asserts every field a mapper reads is actually published, the other
+builds an item *from* the schema with every declared field populated and maps it. Indeed
+declares 21 fields and LinkedIn 40; nothing unmapped is lost, since `raw_json` keeps the
+whole payload.
+
 Downstream, nothing is special-cased — the same role filter, US-eligibility test,
 workplace cascade, seniority ladder and skill extraction as a Greenhouse posting.
 

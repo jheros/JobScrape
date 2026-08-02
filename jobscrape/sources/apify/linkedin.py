@@ -69,7 +69,16 @@ def to_job(item: dict[str, Any]) -> Job | None:
 
     # LinkedIn's "Easy Apply" links stay on linkedin.com and name no board; an
     # external apply link usually points straight at the employer's ATS.
-    board = ats_link.board_slug(apply_url) or ats_link.board_slug(job_url)
+    #
+    # `applyType` states which it is — "EASY_APPLY" or "EXTERNAL" — so the parse
+    # is skipped outright for Easy Apply rather than run against a URL that is
+    # known in advance to name no board. Anything else (including a missing
+    # value) still gets parsed: the field is nullable, and declining to look
+    # would cost a real slug whenever it is absent.
+    if _text(item.get("applyType")) == "EASY_APPLY":
+        board = None
+    else:
+        board = ats_link.board_slug(apply_url) or ats_link.board_slug(job_url)
 
     return Job(
         source=SOURCE,
@@ -80,7 +89,13 @@ def to_job(item: dict[str, Any]) -> Job | None:
         job_url=job_url or apply_url,
         apply_url=apply_url or job_url,
         location_raw=_text(item.get("location")),
-        department=_text(item.get("sector")),
+        # `sector` is the schema's "Industry sector" — a market ("Software
+        # Development", "Hospitals and Health Care"), not the team a role sits
+        # in. It used to land in `department`, which put two different facets in
+        # one column. `companyIndustry` is the same facet read off the company
+        # page and only exists with `enrichCompanyData: true`, so it is the
+        # fallback rather than the primary.
+        industry=_text(item.get("sector")) or _text(item.get("companyIndustry")),
         # Raw ATS vocabulary; `classify_employment_type` maps it to the
         # controlled one, and abstains on anything it does not recognise.
         employment_type=_text(item.get("contractType")),
@@ -88,10 +103,11 @@ def to_job(item: dict[str, Any]) -> Job | None:
         # negations first, so "Remote work is not available" cannot invert.
         workplace_hint=_text(item.get("workType")),
         posted_at=_text(item.get("publishedAt")) or _text(item.get("postedTime")),
-        # The actor documents one description field and does not say whether it
-        # is markup. Passing it as HTML is safe either way: `html_to_text`
-        # leaves plain text alone, and the column it feeds is the text one.
-        description_html=_text(item.get("jobDescription")),
+        # The schema documents this as "Full job description (plain text)", so
+        # it is passed as text. It went through `description_html` before, which
+        # happened to be harmless — `html_to_text` leaves plain text alone — but
+        # would have mangled any description that later arrives with markup.
+        description_text=_text(item.get("jobDescription")),
         salary_raw=_salary_raw(item),
         raw=item,
     )

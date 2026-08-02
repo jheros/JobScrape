@@ -50,6 +50,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     seniority         TEXT,
     employment_type   TEXT,
     department        TEXT,
+    -- The employer's market ("Management Consulting"), NOT the team a role sits
+    -- in — that is `department`, and conflating the two put two different
+    -- facets in one column. Filled by smartrecruiters, workable, jobvite and
+    -- LinkedIn-via-Apify; NULL everywhere else, which is honest.
+    industry          TEXT,
     posted_at         TIMESTAMPTZ,
     updated_at        TIMESTAMPTZ,
     salary_min        DOUBLE PRECISION,
@@ -213,7 +218,7 @@ CREATE INDEX IF NOT EXISTS idx_status_value   ON job_status (status);
 JOB_COLUMNS = [
     "source", "source_job_id", "title", "company", "company_slug", "job_url",
     "apply_url", "location_raw", "city", "state", "country", "is_remote",
-    "workplace_type", "seniority", "employment_type", "department",
+    "workplace_type", "seniority", "employment_type", "department", "industry",
     "posted_at", "updated_at",
     "salary_min", "salary_max", "salary_currency", "salary_raw",
     "description_text", "raw_json",
@@ -449,7 +454,14 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
     updatable = [c for c in JOB_COLUMNS if c not in ("source", "source_job_id")]
     # Descriptions are expensive to obtain; never overwrite a good one with NULL.
     preserve = {"description_text", "posted_at", "salary_min",
-                "salary_max", "salary_currency", "raw_json"}
+                "salary_max", "salary_currency", "raw_json",
+                # SmartRecruiters carries this on the DETAIL payload, and a
+                # posting already stored is refreshed from the listing alone —
+                # so an unpreserved assignment would erase the industry off
+                # every row on the very next sweep of its board. It describes
+                # the employer, not the opening, so a stale value cannot be
+                # wrong in the way a stale salary could.
+                "industry"}
     #: Columns where a *value* means "I could not tell", so it must be treated
     #: like NULL rather than like an answer.
     #:

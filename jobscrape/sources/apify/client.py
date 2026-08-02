@@ -53,6 +53,33 @@ async def run_info(fetcher: Fetcher, run_id: str) -> dict[str, Any] | None:
     return inner if isinstance(inner, dict) else data
 
 
+async def actor_name(fetcher: Fetcher, actor: str) -> str | None:
+    """The actor's readable name, given its opaque id.
+
+    A run reports `actId` as an id like `nlZZi3lZre4fM9IET`, which says nothing
+    about which schema its dataset follows. This is the lookup that turns it
+    back into `indeed-job-scraper`.
+
+    Public for a public actor, so the token is sent but not required — an actor
+    that 404s here simply yields ``None`` and the caller declines to map it.
+    Cached: an actor's name does not change within a run, and this would
+    otherwise be one request per webhook delivery.
+    """
+    data = await fetcher.get_json(
+        f"{config.APIFY_API}/acts/{actor}",
+        headers=_headers() if config.APIFY_TOKEN else None,
+    )
+    if not isinstance(data, dict):
+        return None
+    inner = data.get("data")
+    inner = inner if isinstance(inner, dict) else data
+    name = inner.get("name")
+    username = inner.get("username")
+    if isinstance(name, str) and name:
+        return f"{username}~{name}" if isinstance(username, str) and username else name
+    return None
+
+
 async def dataset_items(
     fetcher: Fetcher, dataset_id: str, max_items: int | None = None
 ) -> list[dict[str, Any]]:

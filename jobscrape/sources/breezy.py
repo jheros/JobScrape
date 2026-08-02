@@ -117,6 +117,7 @@ class Breezy(BoardSource):
                     department=department if isinstance(department, str) else None,
                     posted_at=item.get("published_date") or item.get("creation_date"),
                     salary_raw=item.get("salary") if isinstance(item.get("salary"), str) else None,
+                    industry=jsonld.industry(detail),
                     description_html=jsonld.description(detail),
                     raw=detail or item if with_details else {},
             )
