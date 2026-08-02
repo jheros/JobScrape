@@ -1029,3 +1029,160 @@ def test_the_gap_is_bounded_at_two_words() -> None:
     assert is_excluded_role("Systems Platform Integration Engineer") == "systems"  # 2
     # Four words between: too far to be the same noun phrase.
     assert is_excluded_role("Systems that support our growing team Engineer") is None
+
+
+# --- what a wider board reach exposed --------------------------------------
+#
+# Going from ~17,000 live boards to 32,910 brought in retailers, grocers,
+# hospital systems, pharmaceutical companies and semiconductor fabs — employers
+# whose vocabulary overlaps software's without meaning any of the same things.
+# Three accept patterns that were harmless while every board belonged to a tech
+# company were admitting ~490 of 52,089 open postings between them.
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # `(back|front|full)[\s-]?end` used to match with no role noun at all.
+        # These are the real titles it was admitting, in descending volume.
+        "Pharmacy Technician Back End - Full Time",          # 111, a pharmacy chain
+        "Teammate Endzone & Loyalty (Front End)",            # 66, a sporting-goods retailer
+        "Advisor - Endzone and Loyalty (Front End)",
+        "Team Captain Endzone & Loyalty (Front End)",
+        "FRONT END/CASHIER",
+        "FRONT END/ASST DEPT LEADER",
+        "Front End Team Leader",                             # 32, a discount retailer
+        "Front End Sales Associate / Cashier",
+        "Machine Operator US- Back End Days",
+        "Behavioral Health Specialist (FT, Back End Nights)",
+    ],
+)
+def test_front_and_back_end_need_a_role_noun(title: str) -> None:
+    """"Front end" is a software tier only inside a software title.
+
+    In a shop it is the checkout; on a production line the back end is the far
+    end of the line; in a pharmacy it is the dispensing counter. The bare term
+    was the sole thing keeping 492 such postings.
+    """
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Front End Engineer",
+        "Front-End Developer",
+        "Frontend Developer",
+        "Senior Backend Developer",
+        "Java Backend Engineer",
+        "Back-End Software Engineer",
+        "Front End Web Developer",
+        "Frontend Engineering Lead",
+        "Full Stack Engineer",
+        "Engineer, Frontend",           # the noun-first spelling
+    ],
+)
+def test_front_and_back_end_still_qualify_with_one(title: str) -> None:
+    """The half that must not be lost — these are why the term exists."""
+    assert is_software_role(title) is True, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # The blocklist reads discipline-then-noun, so it caught "ASIC Design
+        # Engineer" and sailed past the same job written the other way round.
+        # These qualified on the accept side's bare seniority+noun rule, which
+        # asks nothing about the discipline.
+        "Principal Engineer, ASIC Design",
+        "Principal Engineer, Design Verification",
+        "Staff Engineer, SRAM Circuit Design",
+        "Principal/Sr. Principal Engineer - Structural Analysis",
+        # Qualifiers stack in chip titles: three words between the discipline
+        # and the noun, one more than the two-word gap allows.
+        "ASIC Design and Integration Engineer",
+        # `mobile engineer` is a bare accept, and building maintenance uses it.
+        "Mobile Engineer - Multi-Site Facilities",
+    ],
+)
+def test_a_hardware_discipline_after_the_role_noun_is_blocked(title: str) -> None:
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Lab work reaches the allowlist through the word "Scientist": both
+        # `research scientist` and `principal scientist` accept it on seniority
+        # alone, with nothing said about the field.
+        "Principal Scientist, Bioassay Methods Development",
+        "Research Scientist - Analytical Development",
+        "Principal Scientist, Upstream Process, Process Development",
+        "Principal Scientist - Chemical Biology & Proximity-Based Degraders",
+        "Associate Staff Scientist - Clinical Variant Curator",
+        "Senior or Principal Scientist, Formulation and Process",
+    ],
+)
+def test_wet_lab_science_is_not_software(title: str) -> None:
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # The exemption, doing the same work it does for hardware. A biotech
+        # employs software engineers; the test is the discipline in the title,
+        # never the industry of the employer.
+        "Robotics Software Engineer - Cell Therapy Automation",
+        "Software Engineer, Genomics Platform",
+        # A bare "Research Scientist" at an AI lab is exactly the posting this
+        # archive wants, and it is spelled identically to the pharma one. Only
+        # a named laboratory technique separates them.
+        "Research Scientist",
+        "Machine Learning Research Scientist",
+        "Principal Research Scientist",
+        # Titles inside suspect wording that are nonetheless real software.
+        "Frontend Engineer (Civil Aviation)",
+        "Staff Software Engineer - Payroll AI",
+        "Silicon Validation Software Engineer",
+        "Mobile Engineer",
+        "iOS Developer",
+    ],
+)
+def test_the_software_word_survives_all_of_it(title: str) -> None:
+    assert is_software_role(title) is True, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Every one of these was a REAL posting the first draft of the rules
+        # above threw away. They are here because reading the drop list against
+        # the live archive is the only thing that found them — the unit cases
+        # were all green.
+        #
+        # A trailing clause names the domain served, not the discipline
+        # practised, whenever the title already named a software role.
+        "Forward Deployed Engineer - Aerospace",
+        "Frontend Engineer (Civil Aviation)",
+        # `soc` is a chip word AND the Security Operations Centre.
+        "Senior Backend Engineer, SOC & Threat Hunting",
+        # Five hardware disciplines are also software product names.
+        "Java Developer - with Polymer JS Experience",
+        "Data / Cloud Native Engineer - Palantir Foundry Experience",
+        # The stack sits between the tier and the noun.
+        "Back-End Java Spring Boot Engineer - Banking Sector",
+        "Senior Developer 1 - Front End",
+        # The closed-up spelling is a software signal on its own: measured
+        # across 52,205 open postings it carries a retail or shift marker in 26
+        # of 4,066 titles, against 195 of 1,253 for the spaced form.
+        "Frontend Team Lead",
+        "Backend Studio Lead (.NET)",
+        # Software roles in life sciences are named after their own discipline,
+        # so the word "software" is not there to rescue them.
+        "Senior Data Engineer - Digital Pathology (Hybrid)",
+        "AI Scientist - Image Analysis & Digital Pathology",
+    ],
+)
+def test_real_postings_the_first_draft_wrongly_dropped(title: str) -> None:
+    assert is_software_role(title) is True, title

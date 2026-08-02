@@ -21,7 +21,42 @@ from .models import Job, infer_country
 _SOFTWARE_TERMS = [
     r"software\s+(engineer|developer|architect|dev)",
     r"\bsde\b", r"\bswe\b", r"\bsdet\b",
-    r"(back|front|full)[\s-]?end",
+    # A role noun is REQUIRED beside it — the same rule a bare `architect` gets
+    # further down, and for the same reason. "Front end" is a software tier only
+    # inside a software title; everywhere else it is the front of a shop and the
+    # back of a production line. Measured on 52,089 open postings, the bare form
+    # was the sole thing admitting 492 of them: "Pharmacy Technician Back End"
+    # (111, CVS), "Teammate Endzone & Loyalty (Front End)" (66, a sporting-goods
+    # retailer), "FRONT END/CASHIER", "Front End Team Leader", "Machine Operator
+    # US - Back End Days", "Behavioral Health Specialist (FT, Back End Nights)".
+    #
+    # None of that was visible while the sweep only reached tech companies'
+    # boards; it arrived with the retailers, grocers and hospital systems that
+    # came in when board coverage went from ~17,000 live boards to 32,910.
+    #
+    # THE SPELLING IS THE DISCRIMINATOR, and it was worth measuring rather than
+    # assuming. Across 52,205 open postings, the closed-up form `frontend` /
+    # `backend` carries a retail or shift marker in 26 of 4,066 titles (1%,
+    # and two of those 26 are software anyway); the spaced form does in 195 of
+    # 1,253 (16%). Software writes "Backend Engineer"; a supermarket writes
+    # "Front End Team Leader". So the closed-up form still qualifies alone, and
+    # only the spaced form has to earn it.
+    # `(?<![a-z0-9])` rather than `\b` on the left: an underscore IS a word
+    # character, so `\b` refuses to fire in ".NET Developer_backend".
+    r"(?<![a-z0-9])(frontend|backend|fullstack)\b",
+    # Up to three intervening words, because the stack usually sits between:
+    # "Back-End Java Spring Boot Engineer" is a real posting this dropped when
+    # the noun had to be adjacent.
+    # The separator class covers slashes and commas, not just space and hyphen:
+    # "Front End/ CSS/ HTML /Email Developer" is a real posting that stacks the
+    # whole stack between the tier and the noun.
+    r"(back|front|full)[\s-]end[\s,:/–—-]*(?:\w+[\s,:/–—-]+){0,3}"
+    r"(engineer|develop|dev\b|programmer|architect|web|software|technolog)",
+    # And the noun-first spelling. Brackets are in the separator class because
+    # a title routinely parenthesises the tier: "Mid-Level Everything Engineer
+    # (Front End)".
+    r"(engineer|developer|architect|programmer)[\s,:/()\[\]–—-]+\s*"
+    r"(?:\w+[\s,:/()\[\]–—-]+){0,2}(back|front|full)[\s-]end",
     r"full[\s-]?stack",
     r"\bweb\s+developer\b", r"\bprogrammer\b",
     r"\bmobile\s+(engineer|developer)", r"\b(ios|android)\s+(engineer|developer)",
@@ -394,8 +429,48 @@ _HARDWARE_DISCIPLINE = (
     r"packaging|materials|thermal|acoustic|automotive|marine|agricultural|"
     r"metallurgical|metallurgy|foundry|boiler|elevator|refrigeration|pipeline|"
     r"drilling|subsea|hydraulic|pneumatic|corrosion|ceramics|polymer|"
-    r"asic|fpga|rtl|vlsi|silicon|semiconductor|analog|\bpcb\b|\brf\b"
+    r"asic|fpga|rtl|vlsi|silicon|semiconductor|analog|\bpcb\b|\brf\b|"
+    # Added with the reversed rule below. `circuit`, `sram` and `soc` are chip
+    # work under any spelling; `facilities` is building maintenance, which is
+    # where "Mobile Engineer - Multi-Site Facilities" comes from — the accept
+    # list's bare `mobile engineer` reads that as an app developer.
+    # `soc` is deliberately absent, though it is a chip word: it is also the
+    # Security Operations Centre, and "Senior Backend Engineer, SOC & Threat
+    # Hunting" is a real posting it cost. The `_SILICON` words below cover the
+    # chip titles without that ambiguity.
+    r"circuit|sram|design\s+verification|physical\s+design|facilities"
 )
+
+#: The subset safe to match AFTER the role noun — a curated list again, and for
+#: a sharper reason than the forward rule's.
+#:
+#: Reading backwards from the noun crosses whatever the title puts in the
+#: trailing clause, and that clause is where product names live. Five words in
+#: `_HARDWARE_DISCIPLINE` are also software: **foundry** (Palantir Foundry),
+#: **polymer** (Polymer JS), **materials** (Material UI), **packaging**
+#: (software packaging) and **pipeline** (data pipelines). Each one cost a real
+#: posting when the whole list was used here — "Java Developer - with Polymer JS
+#: Experience" and "Data / Cloud Native Engineer - Palantir Foundry Experience"
+#: are the two the archive caught.
+_HARDWARE_REVERSED = (
+    r"mechanical|civil|structural|electrical|chemical|aerospace|petroleum|"
+    r"mining|nuclear|geotechnical|hardware|photonic|metallurgical|metallurgy|"
+    r"boiler|elevator|refrigeration|drilling|subsea|hydraulic|pneumatic|"
+    r"corrosion|ceramics|circuit|sram|design\s+verification|physical\s+design|"
+    r"facilities|asic|fpga|rtl|vlsi|silicon|semiconductor"
+)
+
+#: Disciplines so unambiguous that no distance limit applies — see the reversed
+#: rule below. A software title never contains these words except beside
+#: "software" itself, which `_names_software` already rescues.
+#:
+#: `soc` is deliberately NOT here, though it is a chip word. At any distance it
+#: also matches the security sense — "Senior Backend Engineer, SOC & Threat
+#: Hunting" is a Security Operations Centre, and blocking it cost a real
+#: posting. It stays in `_HARDWARE_DISCIPLINE` above, where adjacency to the
+#: role noun disambiguates it.
+_SILICON = r"asic|fpga|rtl|vlsi|silicon|semiconductor|sram|design\s+verification"
+
 _HARDWARE_NEAR_RE = re.compile(
     rf"\b(?:{_HARDWARE_DISCIPLINE})\b{_GAP}(?:engineer|developer)\b"
     # The three role nouns named as unwanted. Blocked wherever they appear
@@ -404,7 +479,94 @@ _HARDWARE_NEAR_RE = re.compile(
     # Chip Design Engineer", "SoC Machine Learning Design Engineer" and "Mobile
     # Device Engineer" all qualified on `ai` / `machine learning` / `mobile`
     # while being chip design and device management. 34 postings.
-    rf"|\b(?:design|simulation|device)\s+(?:engineer|developer)\b",
+    rf"|\b(?:design|simulation|device)\s+(?:engineer|developer)\b"
+    # THE REVERSED SHAPE. Everything above reads left to right — discipline,
+    # then role noun — so it catches "ASIC Design Engineer" and sails past
+    # "Principal Engineer, ASIC Design", which is the same job written the other
+    # way round. 109 open postings were getting in through that: "Principal
+    # Engineer, Design Verification" (Analog Devices), "Principal Engineer, ASIC
+    # Design" (Micron), "Staff Engineer, SRAM Circuit Design" (Samsung
+    # Semiconductor), "Principal/Sr. Principal Engineer - Structural Analysis".
+    #
+    # They qualify on the accept side's bare `(staff|principal|distinguished)
+    # \s+(engineer|developer)` rule, which asks for seniority and a role noun and
+    # nothing about the discipline at all.
+    # The silicon subset at ANY distance, because chip titles stack qualifiers:
+    # "ASIC Design and Integration Engineer" puts three words between the
+    # discipline and the noun, one more than `_GAP` allows.
+    # `lead` and `manager` are in the role-noun set for the silicon arm only,
+    # because chip titles use them where software would say "engineer": "ASIC
+    # DFT Emulation Technical Lead", "Senior Custom ASIC Engineering Lead",
+    # "RTL Design Tech Lead (ASIC/SoC)". Safe here and nowhere else — a silicon
+    # word has to be present, and the exemption still rescues "Lead Software
+    # Engineer - C++, FPGA".
+    rf"|\b(?:{_SILICON})\b.*\b(?:engineer|developer|architect|lead|manager)\b",
+    re.I,
+)
+
+#: The reversed shape — discipline AFTER the role noun — held separately
+#: because it needs a wider exemption than `_names_software`.
+#:
+#: Reading backwards from the noun crosses the trailing clause, and that clause
+#: is as often the *domain served* as the discipline practised. "Frontend
+#: Engineer (Civil Aviation)" is front-end work in aviation and "Forward
+#: Deployed Engineer - Aerospace" is a software role at a software company; both
+#: look identical to "Principal Engineer - Structural Analysis" as far as a
+#: regex can tell. The one thing separating them is that the first two already
+#: NAME a software discipline before the clause starts, so this arm stands down
+#: whenever the title does — see `_UNAMBIGUOUS_SOFTWARE_RE`.
+#:
+#: Brackets stay out of the separator class here, unlike the accept side's
+#: mirror of it, for the same reason: a parenthesised clause is a domain.
+_HARDWARE_REVERSED_RE = re.compile(
+    rf"\b(?:engineer|developer|architect)\b[\s,:/–—-]+\s*(?:\w+[\s-]+){{0,2}}"
+    rf"(?:{_HARDWARE_REVERSED})\b"
+    rf"|\b(?:engineer|developer|architect|lead|manager)\b.*\b(?:{_SILICON})\b",
+    re.I,
+)
+
+#: Wet-lab work, which reaches the allowlist through the word "Scientist".
+#:
+#: `\bresearch\s+(engineer|scientist)\b` and `(staff|principal|distinguished)
+#: \s+(engineer|developer|scientist)` both accept a bare "Scientist" on
+#: seniority alone, with nothing said about the field. That is correct for
+#: "Research Scientist" at an AI lab and wrong for "Principal Scientist,
+#: Bioassay Methods Development" — and the pharmaceutical companies that post
+#: the second kind only entered this archive when board coverage widened.
+#:
+#: Deliberately narrow: every entry names a laboratory technique or a biological
+#: subject, never an industry. "Scientist at a biotech" is not the test —
+#: biotechs employ plenty of software engineers, and one of them is the reason
+#: the exemption below applies here too ("Robotics Software Engineer — Cell
+#: Therapy Automation", AstraZeneca). Measured: 41 open postings, of which that
+#: one is the only genuine software title.
+_LIFE_SCIENCE_TERMS = [
+    r"\bbioassay\b", r"\bradiochem", r"\bchemical\s+biology\b",
+    r"\banalytical\s+development\b", r"\b(up|down)stream\s+process",
+    r"\bin\s+(vivo|vitro)\b", r"\bassay\s+develop", r"\bclinical\s+variant\b",
+    r"\bformulation\b", r"\bmedicinal\s+chem", r"\bimmunolog", r"\btoxicolog",
+    r"\bmolecular\s+biolog", r"\b(cell|gene)\s+therapy\b", r"\bcell\s+culture\b",
+    r"\bhistolog", r"\bpatholog", r"\bpharmacokinetic", r"\bbiomarker\b",
+    r"\bmicrobiolog", r"\bantibod",
+]
+_LIFE_SCIENCE_RE = re.compile("|".join(_LIFE_SCIENCE_TERMS), re.I)
+
+#: Role nouns that name a software discipline outright, for the exemption above.
+#: Narrower than `_SOFTWARE_RE` on purpose — that one accepts a bare "Principal
+#: Scientist" on seniority, which is the very thing being filtered here, so
+#: reusing it would make the rule a no-op.
+_UNAMBIGUOUS_SOFTWARE_RE = re.compile(
+    r"\b(data|backend|frontend|full[\s-]?stack|platform|devops|sre|ml|machine\s+learning)"
+    r"[\s-]*(engineer|developer)\b"
+    r"|\b(back|front)[\s-]end\s+(engineer|developer)\b"
+    r"|\b(devops|sre|site\s+reliability)\b"
+    # "AI Scientist - Image Analysis & Digital Pathology" is a machine-learning
+    # role at a pharmaceutical company, which is exactly the shape this whole
+    # rule risks losing.
+    r"|\b(ai|ml|machine\s+learning|computer\s+vision)[\s-]+(scientist|researcher)\b"
+    r"|\bforward[\s-]?deployed\s+engineer\b"
+    r"|\bui\b(\s*/\s*ux)?\s+(engineer|developer)\b"
+    r"|\bsoftware\s+(engineer|developer|architect)\b",
     re.I,
 )
 
@@ -627,6 +789,22 @@ def is_software_role(
     # says "Software Engineer" outright — that exemption is what keeps "Optical
     # Software Engineer" while dropping "Optical Design Engineer".
     if _HARDWARE_NEAR_RE.search(text) and not _names_software(text):
+        return False
+    # Same rule for wet-lab work, but a WIDER exemption. See _LIFE_SCIENCE_RE:
+    # the hardware exemption asks for the word "software", and that is too
+    # narrow here because the software roles in this industry are named after
+    # their own discipline — "Senior Data Engineer - Digital Pathology" is a
+    # data engineer, and losing it to the word "pathology" is the mistake this
+    # rule is most likely to make.
+    if _LIFE_SCIENCE_RE.search(text) and not (
+        _names_software(text) or _UNAMBIGUOUS_SOFTWARE_RE.search(text)
+    ):
+        return False
+    # The reversed hardware shape, with that same wider exemption — see
+    # `_HARDWARE_REVERSED_RE` for why it cannot reuse `_names_software` alone.
+    if _HARDWARE_REVERSED_RE.search(text) and not (
+        _names_software(text) or _UNAMBIGUOUS_SOFTWARE_RE.search(text)
+    ):
         return False
     if _SOFTWARE_RE.search(text) or _QUALIFIED_SOFTWARE_RE.search(text):
         return True
