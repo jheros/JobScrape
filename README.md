@@ -654,14 +654,52 @@ title × location × department combination.
 
 ## Scheduling
 
-Because the archive accumulates, a daily run is what eventually gives complete period
-coverage — it captures postings before they close. `scripts/daily.sh` does this: it
-fetches a 3-day lookback (so a missed run self-heals) and re-runs discovery weekly
-rather than daily, since the set of boards changes slowly.
+Because the archive accumulates, running on a schedule is what eventually gives complete
+period coverage — it captures postings before they close. `scripts/schedule.sh` has two
+modes, and both run the whole pipeline into Postgres: discover, validate, fetch, dedupe.
+There is no export; the database is the deliverable.
+
+| mode | window | discovery | validate cap |
+| --- | --- | --- | --- |
+| `daily` | last 24 hours | certificate transparency + curated lists | 1,500 boards |
+| `weekly` | last 2 months | every vector, including the Common Crawl sweep | 6,000 boards |
 
 ```cron
-0 6 * * * /path/to/project/scripts/daily.sh >> /path/to/project/data/cron.log 2>&1
+CRON_TZ=Asia/Bangkok
+0 7 * * 1-6  /srv/jobscrape/scripts/schedule.sh daily  >> /srv/jobscrape/data/cron.log 2>&1
+0 7 * * 0    /srv/jobscrape/scripts/schedule.sh weekly >> /srv/jobscrape/data/cron.log 2>&1
 ```
+
+**The daily runs Monday–Saturday, not every day.** Both jobs want 07:00, so a
+seven-day daily would start at the same instant as the weekly every Sunday. Two
+concurrent fetches are the one failure this project has no defence against — they
+read-modify-write the same board-health counters with no row locking, interleave closures
+with upserts so postings flap closed and open, and double the request rate against the
+same hosts, and 429s cause under-collection. The weekly's 2-month window is a strict
+superset of the daily's 24 hours, so Sunday loses nothing. The script also takes a
+`flock` on top of that, in case a weekly sweep ever overruns 24 hours.
+
+`CRON_TZ` is honoured by Vixie cron (Debian/Ubuntu) and cronie (RHEL). If yours ignores
+it, the same schedule in UTC is `0 0 * * 1-6` and `0 0 * * 0` — 07:00 GMT+7 is 00:00 UTC.
+Getting this wrong shifts every run by seven hours and nothing will tell you.
+
+Two things about the windows are worth knowing before you tune them:
+
+- **`--since` is a calendar date, not a timestamp.** "Last 24 hours" is therefore
+  yesterday's date — asking for today at 07:00 would miss everything posted between 07:00
+  and midnight yesterday.
+- **Any window drops postings that carry no date at all**, by design: including them
+  would misrepresent the period you asked for. That is ~1% of the archive (295 of 49,706
+  when this was written), concentrated in Workday. The weekly is what eventually catches
+  them, which is part of why it exists.
+
+Cost runs the other way from what you might expect: a *narrow* window is nearly as cheap
+as no window, because `skippable_ids` skips any previously-rejected posting whose date
+falls outside it. The 2-month weekly is the expensive one — it re-downloads every posting
+rejected on a date basis in the last 60 days.
+
+See `docs/DEPLOYMENT.md` for installing this on a server. The Apify actors are scheduled
+separately, by Apify itself, and push to `jobscrape webhook`; nothing here affects them.
 
 ## Politeness and rate limiting
 

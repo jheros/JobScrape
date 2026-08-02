@@ -11,11 +11,11 @@ against live endpoints and are reproducible with the commands shown.
 ## The shape of it
 
 ```text
-                    ┌──────────── ENTRY POINTS ────────────┐
-                    │  CLI          dashboard      scripts  │
-                    │  python -m    (FastAPI)      sweep.sh  │
-                    │  jobscrape                   daily.sh  │
-                    └──────────────────┬───────────────────┘
+                    ┌───────────── ENTRY POINTS ──────────────┐
+                    │  CLI          dashboard      scripts     │
+                    │  python -m    (FastAPI)      sweep.sh    │
+                    │  jobscrape                   schedule.sh │
+                    └───────────────────┬─────────────────────┘
                                        │
         ┌──────────────┬───────────────┼───────────────┬──────────────┐
         ▼              ▼               ▼               ▼              ▼
@@ -679,6 +679,11 @@ limiting is a board whose jobs never reach your dataset. Adding it recovered Ash
 ./scripts/sweep.sh              # once: discover → validate → fetch everything
 python -m jobscrape dashboard   # then work at http://127.0.0.1:8000
 ```
+
+Unattended, `scripts/schedule.sh daily|weekly` is the same pipeline on a cron schedule —
+a 24-hour window six days a week and a 2-month window on the seventh. See the README's
+Scheduling section for why the daily skips Sunday, and `docs/DEPLOYMENT.md` for putting it
+on a server.
 
 - **Overview** tells you the single highest-leverage next action.
 - **Refresh Now** re-fetches. Repeat sweeps are much cheaper than the first, because

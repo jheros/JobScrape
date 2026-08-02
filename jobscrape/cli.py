@@ -426,97 +426,123 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
         run_id = int(inherited) if inherited else db.start_run(
             conn, _command_line(), "fetch", pid=os.getpid()
         )
-        async with Fetcher(use_cache=not args.no_cache) as fetcher:
-            # ATS boards: the coverage backbone.
-            for ats in boards_map:
-                if ats not in selected:
-                    continue
-                board_totals, board_funnel = await _fetch_boards(
-                    conn, fetcher, ats, since, until, args, boards_map
-                )
-                grand_total += board_totals["new"] + board_totals["refreshed"]
-                per_source[ats] = {**board_totals, **board_funnel.as_dict()}
-
-            # Query-style sources.
-            for name, source in globals_map.items():
-                if name not in selected:
-                    continue
-                ok, reason = source.available()
-                if not ok:
-                    log.info("%-16s skipped — %s", name, reason)
-                    continue
-                log.info("%-16s fetching...", name)
-                try:
-                    jobs = await source.fetch(
-                        fetcher, since=since, until=until, max_results=args.max_results
+        # Everything from here is wrapped so a crash still CLOSES the run row.
+        #
+        # `finish_run` used to be reachable only on the success path, so any
+        # exception escaping the source loop left `status='running'` forever.
+        # `db.mark_stale_runs` documents what that costs: it blocks the
+        # dashboard from starting another fetch, and the next dashboard start
+        # then clears every running row indiscriminately, live ones included.
+        #
+        # Interactively you see the traceback and move on. On a schedule nobody
+        # sees it — the run simply never ends, and `/health` reports a stale
+        # archive with no reason attached. The exception is re-raised, so the
+        # CLI still exits non-zero and cron still notices.
+        try:
+            async with Fetcher(use_cache=not args.no_cache) as fetcher:
+                # ATS boards: the coverage backbone.
+                for ats in boards_map:
+                    if ats not in selected:
+                        continue
+                    board_totals, board_funnel = await _fetch_boards(
+                        conn, fetcher, ats, since, until, args, boards_map
                     )
-                except Exception as exc:
-                    log.warning("%-16s failed: %s", name, exc)
-                    continue
-                kept_jobs, gfunnel = apply_filters_counted(
-                    jobs, since=since, until=until,
-                    software_only=not args.all_roles, us_only=not args.worldwide,
-                    allow_roles=_allowed_roles(args),
-                )
-                per_source[name] = gfunnel.as_dict()
-                if kept_jobs:
-                    inserted, updated = db.upsert_jobs(conn, kept_jobs)
-                    grand_total += inserted + updated
-                    per_source[name].update(new=inserted, refreshed=updated)
-                    log.info(
-                        "%-16s %d seen, %d matched (%d new, %d updated)",
-                        name, len(jobs), len(kept_jobs), inserted, updated,
-                    )
-                    dedupe.resolve_many(conn, (j.company_slug for j in kept_jobs))
-                else:
-                    log.info("%-16s %d seen, 0 matched filters", name, len(jobs))
+                    grand_total += board_totals["new"] + board_totals["refreshed"]
+                    per_source[ats] = {**board_totals, **board_funnel.as_dict()}
 
-                # Source-wide closure: a global source's jobs are otherwise
-                # unreachable by the per-board sweep, so without this they never
-                # close. It is only sound against a crawl that walked its WHOLE
-                # result set.
-                #
-                # Every one of these adapters stops early and returns what it
-                # has when a page fails, when a page budget runs out, or when
-                # --max-results caps it — so a rate-limited run is
-                # indistinguishable from a genuinely shrunken catalogue unless
-                # the adapter says which it was. Closing against a truncated
-                # "seen" set retires postings the run simply never reached, and
-                # the 48h grace hides it until failures repeat, which is exactly
-                # when rate-limiting happens. `is_complete` reads a plain list
-                # as incomplete, so an adapter that forgets to say under-closes
-                # rather than deleting live jobs.
-                if not is_complete(jobs):
-                    log.info(
-                        "%-16s closure skipped — crawl was incomplete "
-                        "(capped, budget-limited, or a page failed)", name,
+                # Query-style sources.
+                for name, source in globals_map.items():
+                    if name not in selected:
+                        continue
+                    ok, reason = source.available()
+                    if not ok:
+                        log.info("%-16s skipped — %s", name, reason)
+                        continue
+                    log.info("%-16s fetching...", name)
+                    try:
+                        jobs = await source.fetch(
+                            fetcher, since=since, until=until, max_results=args.max_results
+                        )
+                    except Exception as exc:
+                        log.warning("%-16s failed: %s", name, exc)
+                        continue
+                    kept_jobs, gfunnel = apply_filters_counted(
+                        jobs, since=since, until=until,
+                        software_only=not args.all_roles, us_only=not args.worldwide,
+                        allow_roles=_allowed_roles(args),
                     )
-                elif not jobs:
-                    # A run that returned nothing proves the crawl failed, not
-                    # that the source is empty.
-                    log.info("%-16s closure skipped — returned no postings", name)
-                else:
-                    closed = db.mark_board_closures(
-                        conn, name, None, {j.source_job_id for j in jobs}
-                    )
-                    if closed:
-                        per_source[name]["closed"] = closed
-                        log.info("%-16s %d postings closed (unseen > %dh)",
-                                  name, closed, config.CLOSURE_GRACE_HOURS)
-                    conn.commit()
+                    per_source[name] = gfunnel.as_dict()
+                    if kept_jobs:
+                        inserted, updated = db.upsert_jobs(conn, kept_jobs)
+                        grand_total += inserted + updated
+                        per_source[name].update(new=inserted, refreshed=updated)
+                        log.info(
+                            "%-16s %d seen, %d matched (%d new, %d updated)",
+                            name, len(jobs), len(kept_jobs), inserted, updated,
+                        )
+                        dedupe.resolve_many(conn, (j.company_slug for j in kept_jobs))
+                    else:
+                        log.info("%-16s %d seen, 0 matched filters", name, len(jobs))
 
-            log.info("HTTP: %s", dict(fetcher.stats))
-            http_stats = dict(fetcher.stats)
+                    # Source-wide closure: a global source's jobs are otherwise
+                    # unreachable by the per-board sweep, so without this they never
+                    # close. It is only sound against a crawl that walked its WHOLE
+                    # result set.
+                    #
+                    # Every one of these adapters stops early and returns what it
+                    # has when a page fails, when a page budget runs out, or when
+                    # --max-results caps it — so a rate-limited run is
+                    # indistinguishable from a genuinely shrunken catalogue unless
+                    # the adapter says which it was. Closing against a truncated
+                    # "seen" set retires postings the run simply never reached, and
+                    # the 48h grace hides it until failures repeat, which is exactly
+                    # when rate-limiting happens. `is_complete` reads a plain list
+                    # as incomplete, so an adapter that forgets to say under-closes
+                    # rather than deleting live jobs.
+                    if not is_complete(jobs):
+                        log.info(
+                            "%-16s closure skipped — crawl was incomplete "
+                            "(capped, budget-limited, or a page failed)", name,
+                        )
+                    elif not jobs:
+                        # A run that returned nothing proves the crawl failed, not
+                        # that the source is empty.
+                        log.info("%-16s closure skipped — returned no postings", name)
+                    else:
+                        closed = db.mark_board_closures(
+                            conn, name, None, {j.source_job_id for j in jobs}
+                        )
+                        if closed:
+                            per_source[name]["closed"] = closed
+                            log.info("%-16s %d postings closed (unseen > %dh)",
+                                      name, closed, config.CLOSURE_GRACE_HOURS)
+                        conn.commit()
 
-        total = db.stats(conn)["total_jobs"]
-        db.finish_run(conn, run_id, "ok", {
-            "sources": per_source,
-            "http": http_stats,
-            "rows_touched": grand_total,
-            "total_jobs": total,
-            "since": str(since) if since else None,
-            "until": str(until) if until else None,
-        })
+                log.info("HTTP: %s", dict(fetcher.stats))
+                http_stats = dict(fetcher.stats)
+
+            total = db.stats(conn)["total_jobs"]
+            db.finish_run(conn, run_id, "ok", {
+                "sources": per_source,
+                "http": http_stats,
+                "rows_touched": grand_total,
+                "total_jobs": total,
+                "since": str(since) if since else None,
+                "until": str(until) if until else None,
+            })
+        except BaseException as exc:                # noqa: BLE001 - recorded, then re-raised
+            # BaseException, not Exception: a scheduled run is as likely to be
+            # killed (SIGINT/SIGTERM from a timeout or a deploy) as to fail, and
+            # a KeyboardInterrupt that leaves the row open is the same problem.
+            try:
+                db.finish_run(conn, run_id, "failed",
+                              error=f"{type(exc).__name__}: {exc}")
+            except Exception:                       # noqa: BLE001
+                # The bookkeeping write is best-effort. If the connection is
+                # what died, this fails too — and the ORIGINAL error is the one
+                # worth propagating, not a secondary complaint about logging it.
+                log.exception("could not record run %s as failed", run_id)
+            raise
     log.info("Fetch complete. %d rows touched; %d total jobs in database.", grand_total, total)
     return 0
 

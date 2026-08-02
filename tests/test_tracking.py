@@ -212,3 +212,75 @@ def test_run_events_paginate_from_a_cursor(tmp_path) -> None:
         assert len(first) == 5
         rest = db.run_events(conn, run_id, after_id=first[2]["id"])
         assert [e["message"] for e in rest] == ["line 3", "line 4"]
+
+
+# --- a scheduled run has to close its own row, even when it crashes ---------
+
+
+def _fetch_args(**kw: object):
+    """The `cmd_fetch` namespace, with every stage disabled but the loop."""
+    import argparse
+
+    defaults = dict(
+        db=None, since=None, until=None, sources=["greenhouse"], companies=1,
+        unchecked=0, all_boards=True, concurrency=2, all_roles=False,
+        worldwide=False, include_roles=None, include_qa=False,
+        include_management=False, refetch_details=False, include_restricted=False,
+        max_results=None, no_cache=True,
+    )
+    return argparse.Namespace(**{**defaults, **kw})
+
+
+def test_a_crashing_fetch_records_the_run_as_failed(monkeypatch, _isolated_db) -> None:
+    """`finish_run` used to be reachable only on the success path.
+
+    Any exception escaping the source loop therefore left `status='running'`
+    forever, which blocks the dashboard from starting another fetch and makes
+    the next `mark_stale_runs` clear every live run alongside the dead one.
+    Interactively you see the traceback; on a schedule nobody does, and the run
+    simply never ends.
+    """
+    import asyncio
+
+    from jobscrape import cli
+
+    async def boom(*_a, **_kw):
+        raise RuntimeError("board fetch exploded")
+
+    monkeypatch.setattr(cli, "_fetch_boards", boom)
+
+    with pytest.raises(RuntimeError, match="exploded"):
+        asyncio.run(cli.cmd_fetch(_fetch_args()))
+
+    row = _isolated_db.execute(
+        "SELECT status, error, ended_at FROM runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert row["ended_at"] is not None
+    assert "exploded" in (row["error"] or "")
+
+
+def test_an_interrupted_fetch_also_closes_its_row(monkeypatch, _isolated_db) -> None:
+    """Caught as BaseException, not Exception.
+
+    A scheduled run is as likely to be killed — a timeout, a deploy, Ctrl-C —
+    as it is to fail, and an interrupt that leaves the row open is the same
+    problem wearing a different exception class.
+    """
+    import asyncio
+
+    from jobscrape import cli
+
+    async def interrupted(*_a, **_kw):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "_fetch_boards", interrupted)
+
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(cli.cmd_fetch(_fetch_args()))
+
+    row = _isolated_db.execute(
+        "SELECT status, error FROM runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row["status"] == "failed"
+    assert "KeyboardInterrupt" in (row["error"] or "")
