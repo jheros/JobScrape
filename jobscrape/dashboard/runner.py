@@ -38,6 +38,13 @@ STAGES: dict[str, list[str]] = {
     "discover-fast": ["discover", "--vector", "ct", "--vector", "github"],
     "validate": ["validate", "--concurrency", "6"],
     "fetch": ["fetch"],
+    # What the dashboard's "Fetch jobs" date-range card actually targets: a
+    # plain fetch plus an Apify pull and cross-source dedupe, as one
+    # subprocess — see `cmd_fetch`'s own `--with-apify` handling. Plain
+    # "fetch" (above) stays available for anything that wants just the board/
+    # global sources (e.g. `daily-schedule`'s own internal fetch step, which
+    # already runs apify-pull as its own separate composite member).
+    "fetch-with-apify": ["fetch", "--with-apify"],
     "export": ["export", "--format", "csv", "--format", "xlsx"],
     "apify-pull": ["apify-pull", "--last", "3"],
     "dedupe": ["dedupe", "--backfill"],
@@ -71,6 +78,11 @@ STAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "daily-schedule": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
     "weekly-schedule": ("discover", "validate", "fetch", "dedupe", "stats"),
     "full-sweep": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
+    # "fetch" itself is deliberately NOT a STAGE_GROUPS key (every entry
+    # above lists it as a flat member) — this composite is named differently
+    # so that stays true, rather than "fetch" being simultaneously a plain
+    # leaf stage and a composite reserving other stages.
+    "fetch-with-apify": ("fetch", "apify-pull", "dedupe"),
 }
 
 

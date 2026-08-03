@@ -208,8 +208,8 @@ def test_chart_escapes_untrusted_labels() -> None:
 def test_stage_allowlist_prevents_arbitrary_commands() -> None:
     """The web layer must never be able to assemble its own command line."""
     assert set(STAGES) == {
-        "discover", "discover-fast", "validate", "fetch", "export",
-        "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
+        "discover", "discover-fast", "validate", "fetch", "fetch-with-apify",
+        "export", "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
         "daily-schedule", "weekly-schedule", "full-sweep",
     }
     known_subcommands = {
@@ -260,6 +260,37 @@ async def test_composite_blocks_its_own_members(tmp_path, monkeypatch) -> None:
     with pytest.raises(RuntimeError):
         await manager.start("discover")
     # The composite itself must still show as one run, not six.
+    assert len(manager.active()) == 1
+
+
+async def test_fetch_with_apify_blocks_its_own_members(tmp_path, monkeypatch) -> None:
+    """The dashboard's "Fetch jobs" card runs `fetch-with-apify`, which
+    internally also touches `apify-pull` and `dedupe` (see `cmd_fetch`'s
+    `--with-apify` handling) — a manual click on either while it's running
+    must be refused, same as any other composite's members."""
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeProcess:
+        pid = 4244
+        stdout = None
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("fetch-with-apify")
+    assert manager.is_running("fetch")
+    assert manager.is_running("apify-pull")
+    assert manager.is_running("dedupe")
+    with pytest.raises(RuntimeError):
+        await manager.start("apify-pull")
+    with pytest.raises(RuntimeError):
+        await manager.start("dedupe")
     assert len(manager.active()) == 1
 
 

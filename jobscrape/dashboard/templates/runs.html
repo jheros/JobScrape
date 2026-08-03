@@ -52,7 +52,8 @@
   <h2>Fetch jobs in a date range</h2>
   <p class="sub-tight">
     Only postings dated within this range are collected. Leave both blank to
-    fetch everything, same as a plain fetch.
+    fetch everything. Also pulls the last 3 successful Apify runs (Indeed/
+    LinkedIn) and cross-source dedupes afterward, in the same run.
   </p>
   <form id="fetch-range-form" class="form-grid">
     <label>From date

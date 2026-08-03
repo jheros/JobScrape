@@ -90,7 +90,7 @@
       submitBtn.disabled = true;
       submitBtn.textContent = "Starting…";
       var body = new URLSearchParams(new FormData(fetchRangeForm)).toString();
-      post("/api/runs/fetch/start", body).then(function (res) {
+      post("/api/runs/fetch-with-apify/start", body).then(function (res) {
         if (!res.ok) {
           alert(res.data.error || "Could not start");
           submitBtn.disabled = false;

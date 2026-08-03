@@ -579,6 +579,23 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                 # worth propagating, not a secondary complaint about logging it.
                 log.exception("could not record run %s as failed", run_id)
             raise
+
+    # `--with-apify`: run as its own sibling step, same pattern
+    # `cmd_schedule_run` already uses to compose `cmd_discover`/`cmd_fetch`/
+    # `cmd_apify_pull`/`cmd_dedupe` — a direct in-process call, not a new
+    # subprocess, so it shares this invocation's `--db` and inherits whatever
+    # `JOBSCRAPE_RUN_ID` was set for the dashboard's own bookkeeping.
+    # `ingest_and_record` opens its own `runs` row per Apify run ingested
+    # regardless of that env var, so this can add more than one history row —
+    # already true of the standalone "Apify pull" button, not new here.
+    if getattr(args, "with_apify", False):
+        rc = await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
+        if rc:
+            return rc
+        rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+        if rc:
+            return rc
+
     log.info("Fetch complete. %d rows touched; %d total jobs in database.", grand_total, total)
     return 0
 
@@ -1265,6 +1282,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("--refetch-details", action="store_true",
                          help="re-download descriptions for postings already stored "
                               "(slow; only needed to repair existing rows)")
+    p_fetch.add_argument("--with-apify", action="store_true",
+                         help="also pull the last 3 successful Apify actor runs "
+                              "(Indeed/LinkedIn) and cross-source dedupe afterward")
 
     # export
     p_exp = sub.add_parser("export", help="write collected jobs to a file")

@@ -188,6 +188,14 @@ def test_export_is_also_a_window_stage(client) -> None:
     assert {"fetch", "export"} <= _WINDOW_STAGES
 
 
+def test_fetch_with_apify_is_also_a_window_stage(client) -> None:
+    """`fetch-with-apify`'s argv starts with "fetch" too, so the dashboard's
+    "Fetch jobs" card (which targets this stage, not plain "fetch") still
+    accepts a date range."""
+    from jobscrape.dashboard.app import _WINDOW_STAGES
+    assert "fetch-with-apify" in _WINDOW_STAGES
+
+
 # --- schedule -----------------------------------------------------------
 
 
