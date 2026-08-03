@@ -484,9 +484,11 @@ async def stream_events(run_id: int, after: int = 0) -> StreamingResponse:
                 idle = 0
                 for row in rows:
                     cursor = row["id"]
+                    ts = row["ts"]
                     payload = json.dumps({
                         "id": row["id"], "message": row["message"],
-                        "level": row["level"], "ts": row["ts"],
+                        "level": row["level"],
+                        "ts": ts.isoformat() if isinstance(ts, datetime_cls) else ts,
                     })
                     yield f"data: {payload}\n\n"
             else:

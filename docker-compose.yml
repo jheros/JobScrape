@@ -1,0 +1,24 @@
+# See docs/DOCKER.md for the full deployment story — in particular why this
+# uses `network_mode: host` and binds 0.0.0.0, and what that means for
+# exposure (this deployment is, by explicit choice, unauthenticated and
+# unfirewalled on whatever network the host is on).
+services:
+  dashboard:
+    build: .
+    container_name: jobscrape-dashboard
+    # Host networking: the container reaches the server's own Postgres at
+    # localhost with no extra network config, and binding 0.0.0.0:8088 inside
+    # the container IS 0.0.0.0:8088 on the host — no -p mapping to reason
+    # about. Only sound because this is a real Linux host, not Docker
+    # Desktop's VM.
+    network_mode: host
+    command: ["dashboard", "--host", "0.0.0.0", "--port", "8088"]
+    env_file:
+      - .env
+    volumes:
+      # Read-write: the Settings page (jobscrape/dashboard/envfile.py) edits
+      # this file live. Must be a real host file, never baked into the image.
+      - ./.env:/app/.env
+      # HTTP cache + exports (config.DATA_DIR/CACHE_DIR/EXPORT_DIR).
+      - ./data:/app/data
+    restart: unless-stopped

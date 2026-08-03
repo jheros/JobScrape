@@ -1,0 +1,25 @@
+# The image must never contain secrets or local data — .env and data/ are
+# bind-mounted at runtime instead (see docker-compose.yml / docs/DOCKER.md).
+.env
+.env.*
+data/
+
+.git/
+.github/
+graphify-out/
+*.md
+!README.md
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+tests/
+scripts/
+docs/
