@@ -204,3 +204,89 @@ def test_purge_on_a_clean_archive_changes_nothing(_isolated_db) -> None:
     db.upsert_jobs(conn, [_job("a", "Senior Software Engineer")])
     assert cmd_purge(_args()) == 0
     assert _ids(conn) == {"a"}
+
+
+# --- auto-purge on every fetch ------------------------------------------------
+#
+# `cmd_fetch` calls the same `_purge_archive` helper at the end of every
+# successful run — see its own docstring for why: a posting stored under an
+# OLDER, looser rule never gets re-checked on its own, only what a fetch just
+# inserted did (via `apply_filters_counted`). These tests mock out
+# `_fetch_boards` so no network call happens; the point is the pass over
+# ALREADY-STORED rows that follows.
+
+
+def _fetch_args(**kw: Any):
+    """The `cmd_fetch` namespace, scoped to one board so nothing real is
+    touched — mirrors `tests/test_tracking.py`'s fixture of the same name."""
+    import argparse
+
+    defaults = dict(
+        db=None, since=None, until=None, sources=["greenhouse"], companies=1,
+        unchecked=0, all_boards=True, concurrency=2, all_roles=False,
+        worldwide=False, all_workplaces=False, include_roles=None, include_qa=False,
+        include_management=False, refetch_details=False, include_restricted=False,
+        max_results=None, no_cache=True,
+    )
+    return argparse.Namespace(**{**defaults, **kw})
+
+
+@pytest.fixture()
+def _no_op_fetch_boards(monkeypatch):
+    """Every board reports "nothing new" without any network call, so the
+    fetch itself contributes nothing — isolating the auto-purge pass over
+    what was already stored before this run started."""
+    from jobscrape import cli
+    from jobscrape.filters import FilterFunnel
+
+    async def fake(*_args: Any, **_kwargs: Any) -> Any:
+        return {"new": 0, "refreshed": 0}, FilterFunnel()
+
+    monkeypatch.setattr(cli, "_fetch_boards", fake)
+
+
+async def test_a_successful_fetch_auto_purges_drifted_postings(
+    _isolated_db, _no_op_fetch_boards,
+) -> None:
+    from jobscrape.cli import cmd_fetch
+    from jobscrape.dashboard.analytics import _stats_dict
+
+    conn = _isolated_db
+    db.upsert_jobs(conn, [
+        _job("keep", "Senior Software Engineer"),
+        _job("drift", "QA Engineer"),  # stored under a since-tightened rule
+    ])
+
+    assert await cmd_fetch(_fetch_args()) == 0
+    assert _ids(conn) == {"keep"}
+
+    row = conn.execute("SELECT stats FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert _stats_dict(row["stats"])["purged"] == 1
+
+
+async def test_a_clean_fetch_reports_zero_purged(_isolated_db, _no_op_fetch_boards) -> None:
+    from jobscrape.cli import cmd_fetch
+    from jobscrape.dashboard.analytics import _stats_dict
+
+    conn = _isolated_db
+    db.upsert_jobs(conn, [_job("keep", "Senior Software Engineer")])
+
+    assert await cmd_fetch(_fetch_args()) == 0
+    assert _ids(conn) == {"keep"}
+
+    row = conn.execute("SELECT stats FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    assert _stats_dict(row["stats"])["purged"] == 0
+
+
+async def test_auto_purge_respects_this_fetchs_own_role_flags(
+    _isolated_db, _no_op_fetch_boards,
+) -> None:
+    """A fetch run with `--include-qa` must not have its own auto-purge pass
+    turn around and delete the QA posting it was just told to keep."""
+    from jobscrape.cli import cmd_fetch
+
+    conn = _isolated_db
+    db.upsert_jobs(conn, [_job("qa", "QA Engineer")])
+
+    assert await cmd_fetch(_fetch_args(include_qa=True)) == 0
+    assert _ids(conn) == {"qa"}

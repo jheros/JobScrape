@@ -535,6 +535,27 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                 log.info("HTTP: %s", dict(fetcher.stats))
                 http_stats = dict(fetcher.stats)
 
+            # Auto-purge. This fetch's own inserts already passed the CURRENT
+            # role/company/workplace rules (`apply_filters_counted` above),
+            # but a row stored under a since-tightened rule never gets
+            # re-checked on its own — that's what `_purge_archive` exists for
+            # (see its docstring). Running it after every fetch means that
+            # cleanup just happens, with nothing to click or review; it always
+            # deletes for real (never `--dry-run`) since there is no one here
+            # to review a preview.
+            purge_summary = _purge_archive(
+                conn,
+                allow_roles=_allowed_roles(args),
+                remote_only=not getattr(args, "all_workplaces", False),
+            )
+            if purge_summary["deleted"]:
+                log.info(
+                    "Purge: removed %d posting(s) no longer matching the current "
+                    "role/company/workplace rules (%s)",
+                    purge_summary["deleted"],
+                    ", ".join(f"{k}={v}" for k, v in purge_summary["by_reason"].most_common()),
+                )
+
             total = db.stats(conn)["total_jobs"]
             db.finish_run(conn, run_id, "ok", {
                 "sources": per_source,
@@ -543,6 +564,7 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                 "total_jobs": total,
                 "since": str(since) if since else None,
                 "until": str(until) if until else None,
+                "purged": purge_summary["deleted"],
             })
         except BaseException as exc:                # noqa: BLE001 - recorded, then re-raised
             # BaseException, not Exception: a scheduled run is as likely to be
@@ -616,72 +638,129 @@ def cmd_migrate_from_sqlite(args: argparse.Namespace) -> int:
     return 0
 
 
+def _purge_archive(
+    conn: db.Connection, *, allow_roles: set[str], remote_only: bool, dry_run: bool = False,
+) -> dict[str, Any]:
+    """Re-apply the current role/company/workplace rules to stored postings
+    and delete the ones that no longer pass. Shared by `cmd_purge` (explicit,
+    CLI-driven, dry-run-first) and `cmd_fetch` (automatic, after every
+    successful fetch, always for real — see `cmd_fetch`'s own call site).
+
+    The archive is written once per posting and never re-evaluated, so a
+    filter change only ever affects *future* fetches. This applies it
+    retroactively.
+
+    Role, workplace and blocked employers only, and the distinction is the
+    point: those three are ARCHIVE-WIDE rules — "this is not a software job",
+    "we do not publish onsite roles" — true of a posting whenever you look at
+    it. Region and date are per-RUN parameters, so re-applying those here
+    would delete rows a past run legitimately kept for a window you asked for
+    at the time.
+
+    Returns `{"total", "doomed", "by_reason", "deleted", "released"}` —
+    `"doomed"` is the full list of rows that failed, so a caller that wants a
+    sample (`cmd_purge --sample`) can slice it; a caller that only cares about
+    the count (`cmd_fetch`) can just read `"deleted"`.
+    """
+    rows = conn.execute(
+        # `length(description_text)`, never the column: the workplace rule
+        # only asks how long it is, and pulling ~5 KB x 60,000 rows to
+        # answer that would be several hundred megabytes for nothing.
+        "SELECT source, source_job_id, title, department, company, company_slug, "
+        "posted_at, workplace_type, "
+        "coalesce(length(description_text), 0) AS description_len FROM jobs"
+    ).fetchall()
+
+    def verdict(row: Any) -> str | None:
+        """Why this row would go, or None to keep it."""
+        # First, and named, so the report says WHICH employer went rather
+        # than lumping them under a role or workplace verdict.
+        if (apply_filters_mod.is_blocked_company(row["company_slug"])
+                or apply_filters_mod.is_blocked_company(row["company"])):
+            return f"blocked employer ({row['company']})"
+        if not apply_filters_mod.is_software_role(
+            row["title"], row["department"], allow_roles=allow_roles,
+        ):
+            # The category, so the report says WHICH preference removed it.
+            return apply_filters_mod.is_excluded_role(row["title"], allow_roles) or "other"
+        workplace = row["workplace_type"] or "unknown"
+        if remote_only and not apply_filters_mod.keeps_workplace(
+            workplace, row["description_len"]
+        ):
+            # An `unknown` dies for a different reason than an `onsite` —
+            # it had enough description to have said so and did not — and
+            # the dry run should say which, since one of them is a
+            # judgement call and the other is the posting's own words.
+            if workplace == "unknown":
+                return "not remote (unknown, described)"
+            return f"not remote ({workplace})"
+        return None
+
+    verdicts = [(r, verdict(r)) for r in rows]
+    doomed = [r for r, why in verdicts if why]
+    by_reason: collections.Counter[str] = collections.Counter()
+    for _row, why in verdicts:
+        if why:
+            by_reason[why] += 1
+
+    summary: dict[str, Any] = {
+        "total": len(rows), "doomed": doomed, "by_reason": by_reason,
+        "deleted": 0, "released": 0,
+    }
+    if not doomed or dry_run:
+        return summary
+
+    # Record before deleting, so the next sweep skips these instead of
+    # re-downloading and re-rejecting them. This is what posting_seen is for.
+    # Keyed on company_SLUG, not the display name. `record_rejected`'s third
+    # argument is `company_slug` and `skippable_ids` reads it back against
+    # `companies.slug`, so writing "Anduril Industries" where `anduril`
+    # belongs means the lookup never matches and the promise this block
+    # makes — "recorded as rejected so they are not re-fetched" — is void.
+    # 8,524 rows in the archive were written that way before this was fixed.
+    by_source: dict[tuple[str, str], list[tuple[str, str | None]]] = {}
+    for r in doomed:
+        key = (r["source"], r["company_slug"] or "")
+        by_source.setdefault(key, []).append((r["source_job_id"], r["posted_at"]))
+    for (source, company_slug), entries in by_source.items():
+        db.record_rejected(conn, source, company_slug, entries)
+
+    deleted, released = db.delete_jobs(
+        conn, [(r["source"], r["source_job_id"]) for r in doomed]
+    )
+    summary["deleted"] = deleted
+    summary["released"] = released
+    return summary
+
+
 def cmd_purge(args: argparse.Namespace) -> int:
     """Re-apply the current role filter to stored postings and remove failures.
 
-    The archive is written once per posting and never re-evaluated, so a filter
-    change only ever affects *future* fetches. This applies it retroactively.
-
-    Role, workplace and blocked employers only, and the distinction is the
-    point: those three are ARCHIVE-WIDE rules — "this is not a software job", "we do not publish onsite
-    roles" — true of a posting whenever you look at it. Region and date are
-    per-RUN parameters, so re-applying those here would delete rows a past run
-    legitimately kept for a window you asked for at the time.
+    See `_purge_archive` for what actually gets re-checked and why. This is
+    the explicit, CLI-driven wrapper: it reports what would go (grouped, plus
+    a sample if asked) before doing anything, and honours `--dry-run`. The
+    dashboard's Runs page fetch action runs the same underlying check
+    automatically after every fetch — see `cmd_fetch` — so this command is
+    for a manual, reviewed pass (or a dry-run preview) rather than the only
+    way postings get cleaned up.
     """
     allow_roles = _allowed_roles(args)
     remote_only = not getattr(args, "all_workplaces", False)
     with db.session(args.db) as conn:
-        rows = conn.execute(
-            # `length(description_text)`, never the column: the workplace rule
-            # only asks how long it is, and pulling ~5 KB x 60,000 rows to
-            # answer that would be several hundred megabytes for nothing.
-            "SELECT source, source_job_id, title, department, company, company_slug, "
-            "posted_at, workplace_type, "
-            "coalesce(length(description_text), 0) AS description_len FROM jobs"
-        ).fetchall()
-
-        def verdict(row: Any) -> str | None:
-            """Why this row would go, or None to keep it."""
-            # First, and named, so the report says WHICH employer went rather
-            # than lumping them under a role or workplace verdict.
-            if (apply_filters_mod.is_blocked_company(row["company_slug"])
-                    or apply_filters_mod.is_blocked_company(row["company"])):
-                return f"blocked employer ({row['company']})"
-            if not apply_filters_mod.is_software_role(
-                row["title"], row["department"], allow_roles=allow_roles,
-            ):
-                # The category, so the report says WHICH preference removed it.
-                return apply_filters_mod.is_excluded_role(row["title"], allow_roles) or "other"
-            workplace = row["workplace_type"] or "unknown"
-            if remote_only and not apply_filters_mod.keeps_workplace(
-                workplace, row["description_len"]
-            ):
-                # An `unknown` dies for a different reason than an `onsite` —
-                # it had enough description to have said so and did not — and
-                # the dry run should say which, since one of them is a
-                # judgement call and the other is the posting's own words.
-                if workplace == "unknown":
-                    return "not remote (unknown, described)"
-                return f"not remote ({workplace})"
-            return None
-
-        verdicts = [(r, verdict(r)) for r in rows]
-        doomed = [r for r, why in verdicts if why]
+        summary = _purge_archive(
+            conn, allow_roles=allow_roles, remote_only=remote_only, dry_run=args.dry_run,
+        )
+        total, doomed = summary["total"], summary["doomed"]
         if not doomed:
             log.info("Nothing to purge: all %d stored postings still pass the filters.",
-                     len(rows))
+                     total)
             return 0
 
         # Show what is going, grouped, before anything is destroyed.
-        by_reason: collections.Counter[str] = collections.Counter()
-        for _row, why in verdicts:
-            if why:
-                by_reason[why] += 1
-
         log.info("%s %d of %d stored postings (%.1f%%)",
                  "Would purge" if args.dry_run else "Purging",
-                 len(doomed), len(rows), 100 * len(doomed) / len(rows))
-        for reason, count in by_reason.most_common():
+                 len(doomed), total, 100 * len(doomed) / total)
+        for reason, count in summary["by_reason"].most_common():
             if count:
                 log.info("    %-20s %6d", reason, count)
         if args.sample:
@@ -692,33 +771,14 @@ def cmd_purge(args: argparse.Namespace) -> int:
             log.info("Dry run: nothing deleted. Re-run without --dry-run to apply.")
             return 0
 
-        # Record before deleting, so the next sweep skips these instead of
-        # re-downloading and re-rejecting them. This is what posting_seen is for.
-        # Keyed on company_SLUG, not the display name. `record_rejected`'s third
-        # argument is `company_slug` and `skippable_ids` reads it back against
-        # `companies.slug`, so writing "Anduril Industries" where `anduril`
-        # belongs means the lookup never matches and the promise this block
-        # makes — "recorded as rejected so they are not re-fetched" — is void.
-        # 8,524 rows in the archive were written that way before this was fixed.
-        by_source: dict[tuple[str, str], list[tuple[str, str | None]]] = {}
-        for r in doomed:
-            key = (r["source"], r["company_slug"] or "")
-            by_source.setdefault(key, []).append((r["source_job_id"], r["posted_at"]))
-        for (source, company_slug), entries in by_source.items():
-            db.record_rejected(conn, source, company_slug, entries)
-
-        deleted, released = db.delete_jobs(
-            conn, [(r["source"], r["source_job_id"]) for r in doomed]
-        )
-
         log.info("Deleted %d posting(s); %d recorded as rejected so they are not re-fetched",
-                 deleted, len(doomed))
-        if released:
+                 summary["deleted"], len(doomed))
+        if summary["released"]:
             log.info(
                 "Released %d duplicate(s) whose canonical was purged — they were "
                 "suppressed by a row that no longer exists. Run "
                 "`python -m jobscrape dedupe --backfill` to re-cluster them.",
-                released,
+                summary["released"],
             )
     return 0
 

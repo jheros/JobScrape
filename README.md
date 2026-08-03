@@ -697,7 +697,18 @@ Override with `--all-roles` and `--worldwide`.
 ### Removing roles already collected
 
 The archive is written once per posting and never re-evaluated, so a filter change only
-affects future fetches. To apply it retroactively:
+affects future fetches on its own. **`fetch` now closes that gap itself**: every successful
+fetch ends with a pass that re-applies the current role/company/workplace rules to the
+*whole* stored archive and deletes whatever no longer passes — automatically, every time,
+with nothing to remember or click. This is exactly what the standalone `purge` command
+below does; `fetch` just runs it at the end unconditionally (never `--dry-run`, since there
+is no one there to review a preview), using that same fetch's own `--all-roles`/
+`--worldwide`/`--all-workplaces`/`--include-*` flags — so a fetch run with `--include-qa`
+doesn't turn around and delete the QA postings it was just told to keep.
+
+`purge` itself is still there for a manual, reviewed pass — a dry run to see what a rule
+change *would* remove before it happens on the next fetch, or a one-off cleanup without
+running a whole fetch:
 
 ```bash
 python -m jobscrape purge --dry-run --sample 10   # look first
@@ -710,9 +721,10 @@ passes — role only, since region and date are per-run choices rather than arch
 rules. Purged postings are recorded in `posting_seen` so the next sweep skips them instead
 of downloading them again, and your triage notes in `job_status` are untouched.
 
-It is the only destructive command in the project. Reversing it means re-fetching, and
-`--include-qa` alone will *not* bring back postings already turned away — those are recorded
-as rejected and skipped, so pair it with `--refetch-details`.
+It is the only destructive operation in the project (whether run by hand or automatically
+after a fetch). Reversing it means re-fetching, and `--include-qa` alone will *not* bring
+back postings already turned away — those are recorded as rejected and skipped, so pair it
+with `--refetch-details`.
 
 ### Why runs are faster than they look
 
