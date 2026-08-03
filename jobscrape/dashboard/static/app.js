@@ -80,6 +80,44 @@
     });
   });
 
+  // --- fetch in a date range -----------------------------------------------
+  var fetchRangeForm = document.getElementById("fetch-range-form");
+  if (fetchRangeForm) {
+    fetchRangeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var submitBtn = fetchRangeForm.querySelector("button[type=submit]");
+      var label = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Starting…";
+      var body = new URLSearchParams(new FormData(fetchRangeForm)).toString();
+      post("/api/runs/fetch/start", body).then(function (res) {
+        if (!res.ok) {
+          alert(res.data.error || "Could not start");
+          submitBtn.disabled = false;
+          submitBtn.textContent = label;
+          return;
+        }
+        window.location.href = "/runs";
+      });
+    });
+
+    // Presets only ever set "From date" and clear "To date" (open-ended
+    // through today) — the same "bound since, leave until open" shape the
+    // daily/weekly schedule already uses. Computed client-side; the server
+    // never sees "12h" or "1 month", only the resulting calendar date.
+    document.querySelectorAll("[data-preset-hours]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var hours = parseInt(btn.getAttribute("data-preset-hours"), 10);
+        var since = new Date(Date.now() - hours * 3600 * 1000);
+        var iso = since.getFullYear() + "-"
+          + String(since.getMonth() + 1).padStart(2, "0") + "-"
+          + String(since.getDate()).padStart(2, "0");
+        document.getElementById("fetch-since").value = iso;
+        document.getElementById("fetch-until").value = "";
+      });
+    });
+  }
+
   // --- live log via SSE ---------------------------------------------------
   // One element per run (`id="live-log-<run_id>"`), not a single shared id:
   // a composite schedule run and a manually-started, non-conflicting stage

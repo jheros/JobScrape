@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BeforeValidator
 
-from .. import config, db, scam
+from .. import config, db, filters, scam
 from ..observability import health as health_check
 from . import analytics, charts, envfile
 from . import scheduler as scheduler_module
@@ -305,10 +305,39 @@ async def settings_page(request: Request) -> HTMLResponse:
 
 # --- actions --------------------------------------------------------------
 
+#: Stages whose underlying subcommand actually declares `add_window()`
+#: (`--since`/`--until`) — the only ones a date range may be posted against.
+_WINDOW_STAGES = frozenset(
+    stage for stage, argv in STAGES.items() if argv[0] in ("fetch", "export")
+)
+
+
 @app.post("/api/runs/{stage}/start")
-async def start_stage(stage: str, extra: str = Form("")) -> JSONResponse:
+async def start_stage(
+    stage: str, extra: str = Form(""), since: str = Form(""), until: str = Form(""),
+) -> JSONResponse:
+    window = None
+    if since.strip() or until.strip():
+        if stage not in _WINDOW_STAGES:
+            return JSONResponse(
+                {"error": f"{stage!r} does not accept a date range"}, status_code=400,
+            )
+        try:
+            since_date = filters.parse_date(since) if since.strip() else None
+            until_date = filters.parse_date(until) if until.strip() else None
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if since_date and until_date and since_date > until_date:
+            return JSONResponse(
+                {"error": f"--since ({since_date}) is after --until ({until_date})"},
+                status_code=400,
+            )
+        window = (since_date, until_date)
+
     try:
-        info = await manager.start(stage, extra.split() if extra.strip() else None)
+        info = await manager.start(
+            stage, extra.split() if extra.strip() else None, window=window,
+        )
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
     return JSONResponse(info)

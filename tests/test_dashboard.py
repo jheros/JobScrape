@@ -297,6 +297,60 @@ async def test_stopping_a_composite_frees_its_whole_group(tmp_path, monkeypatch)
     assert manager.active() == []
 
 
+async def test_window_appends_since_and_until_to_argv(tmp_path, monkeypatch) -> None:
+    """A `window` is built only from already-validated `date` objects (the
+    dashboard route parses them with `filters.parse_date` first) — this just
+    checks `start()` turns that into the right trailing argv."""
+    from datetime import date
+
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeProcess:
+        pid = 5001
+        stdout = None
+
+        async def wait(self):
+            return 0
+
+    captured: dict[str, tuple] = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["argv"] = args
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("fetch", window=(date(2026, 7, 1), date(2026, 7, 31)))
+    assert captured["argv"][-4:] == ("--since", "2026-07-01", "--until", "2026-07-31")
+
+
+async def test_window_with_only_since_omits_until(tmp_path, monkeypatch) -> None:
+    from datetime import date
+
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeProcess:
+        pid = 5002
+        stdout = None
+
+        async def wait(self):
+            return 0
+
+    captured: dict[str, tuple] = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["argv"] = args
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("fetch", window=(date(2026, 7, 1), None))
+    assert captured["argv"][-2:] == ("--since", "2026-07-01")
+    assert "--until" not in captured["argv"]
+
+
 def test_progress_parsing() -> None:
     manager = RunManager()
     from jobscrape.dashboard.runner import ActiveRun

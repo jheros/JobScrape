@@ -155,6 +155,39 @@ def test_health_reports_real_dependency_state(client) -> None:
     assert "database" in payload["checks"]
 
 
+# --- fetch date range -------------------------------------------------------
+#
+# Only the validation-rejection paths are exercised here — none of these ever
+# reach `manager.start()`, so no subprocess is spawned. The accepted-window
+# case (argv actually built right) is a `RunManager`-level test instead
+# (tests/test_dashboard.py), the same way every other `RunManager` behaviour
+# is tested without going through a real HTTP request.
+
+
+def test_fetch_start_rejects_an_unparseable_date(client) -> None:
+    response = client.post("/api/runs/fetch/start", data={"since": "not-a-date"})
+    assert response.status_code == 400
+
+
+def test_fetch_start_rejects_since_after_until(client) -> None:
+    response = client.post("/api/runs/fetch/start", data={
+        "since": "2026-08-01", "until": "2026-07-01",
+    })
+    assert response.status_code == 400
+
+
+def test_a_window_against_a_non_window_stage_is_rejected(client) -> None:
+    response = client.post("/api/runs/discover/start", data={"since": "2026-08-01"})
+    assert response.status_code == 400
+
+
+def test_export_is_also_a_window_stage(client) -> None:
+    """`export` also declares `add_window()` — confirms `_WINDOW_STAGES` isn't
+    hard-coded to just `fetch`, without actually starting a real export."""
+    from jobscrape.dashboard.app import _WINDOW_STAGES
+    assert {"fetch", "export"} <= _WINDOW_STAGES
+
+
 # --- schedule -----------------------------------------------------------
 
 

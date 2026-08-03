@@ -49,12 +49,38 @@
 </div>
 
 <div class="card">
+  <h2>Fetch jobs in a date range</h2>
+  <p class="sub-tight">
+    Only postings dated within this range are collected. Leave both blank to
+    fetch everything, same as a plain fetch.
+  </p>
+  <form id="fetch-range-form" class="form-grid">
+    <label>From date
+      <input type="date" name="since" id="fetch-since">
+    </label>
+    <label>To date
+      <input type="date" name="until" id="fetch-until">
+    </label>
+    <div class="form-actions">
+      <button class="btn" type="submit">{{ icons.icon('play') }} Fetch jobs</button>
+    </div>
+  </form>
+  <div class="btn-row mt-md">
+    <button class="btn ghost btn-sm" type="button" data-preset-hours="12">Last 12h</button>
+    <button class="btn ghost btn-sm" type="button" data-preset-hours="24">Last 1d</button>
+    <button class="btn ghost btn-sm" type="button" data-preset-hours="168">Last 1w</button>
+    <button class="btn ghost btn-sm" type="button" data-preset-hours="336">Last 2w</button>
+    <button class="btn ghost btn-sm" type="button" data-preset-hours="720">Last 1 month</button>
+    <button class="btn ghost btn-sm" type="button" data-preset-hours="1440">Last 2 months</button>
+  </div>
+</div>
+
+<div class="card">
   <h2>Run one stage</h2>
   <div class="btn-row">
     <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
     <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
     <button class="btn ghost" data-start-stage="validate" data-label="Validate">{{ icons.icon('play') }} Validate boards</button>
-    <button class="btn ghost" data-start-stage="fetch" data-label="Fetch">{{ icons.icon('play') }} Fetch jobs</button>
     <button class="btn ghost" data-start-stage="export" data-label="Export">{{ icons.icon('play') }} Export</button>
     <button class="btn ghost" data-start-stage="apify-pull" data-label="Apify pull">{{ icons.icon('play') }} Apify pull</button>
     <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">{{ icons.icon('play') }} Dedupe</button>

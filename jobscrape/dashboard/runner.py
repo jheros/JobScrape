@@ -20,7 +20,7 @@ import re
 import signal
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from .. import config, db
@@ -181,7 +181,12 @@ class RunManager:
         return bool(self._active)
 
     # -- lifecycle ---------------------------------------------------------
-    async def start(self, stage: str, extra: list[str] | None = None) -> dict[str, Any]:
+    async def start(
+        self,
+        stage: str,
+        extra: list[str] | None = None,
+        window: tuple[date | None, date | None] | None = None,
+    ) -> dict[str, Any]:
         if stage not in STAGES:
             raise ValueError(f"unknown stage {stage!r}")
         async with self._lock:
@@ -194,8 +199,23 @@ class RunManager:
                     else f"{stage} conflicts with the running {blocker}"
                 )
 
+            # `window` is built ONLY from `date` objects the caller (the
+            # dashboard route) already validated with `filters.parse_date` —
+            # never from a raw string. That's what keeps this different from
+            # `extra`: a value-taking flag like `--since` must never ride the
+            # free-text allowlist (see `SAFE_EXTRA_FLAGS`'s docstring), but a
+            # `date` object has no way to smuggle an arbitrary token, so
+            # building `--since <isoformat>` from one here is safe.
+            window_argv: list[str] = []
+            if window:
+                since, until = window
+                if since:
+                    window_argv += ["--since", since.isoformat()]
+                if until:
+                    window_argv += ["--until", until.isoformat()]
+
             argv = [sys.executable, "-m", "jobscrape", *STAGES[stage],
-                    *safe_extra(extra)]
+                    *safe_extra(extra), *window_argv]
             command = " ".join(argv[2:])
 
             with db.session(self.db_path) as conn:
