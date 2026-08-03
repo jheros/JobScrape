@@ -272,6 +272,22 @@ _NOT_SOFTWARE_TERMS = [
     r"\bengineer(ing)?\s+(technician|technologist|aide|assistant|clerk|"
     r"intern(ship)?\s+program\s+coordinator|manager\s+of\s+facilities)",
     r"\b(engineering|technical|software)\s+recruiter\b",
+    # Teaching. A teaching job is a teaching job whoever employs you, which is
+    # why bootcamps are here alongside universities: "Software Engineer
+    # Instructor" (General Assembly), "Lead Instructor: GenAI" (Correlation
+    # One) and "Adjunct Faculty (Data Science and AI)" are the same work. 107
+    # postings, and they reached the accept list through `data science` and
+    # `software engineer` sitting in the subject they teach.
+    r"\b(professor|adjunct|faculty|lecturer|postdoc|instructor|teaching\s+assistant)\b",
+    # On-site hardware repair. Spelled WITH the role noun so "Field Service
+    # Software Engineer" — which writes software *for* a field-service
+    # operation — survives, while "Field Service Engineer - Airports Security &
+    # Audio Systems" does not.
+    r"\bfield\s+service\s+(engineer|technician|specialist|representative)\b",
+    # The phrase only. A bare `\bbd\b` is two letters shared with Becton
+    # Dickinson and half a dozen other things, and would be a standing
+    # liability for zero present benefit — the archive has no such row today.
+    r"\bbusiness\s+development\b",
     r"\brecruiter\b", r"\bsourcer\b",
     r"\bengineering\s+(assistant|aide|clerk|admin(istrator)?\s+of\s+records)",
     # "Developer" in non-software senses.
@@ -455,7 +471,11 @@ _HARDWARE_DISCIPLINE = (
     # Security Operations Centre, and "Senior Backend Engineer, SOC & Threat
     # Hunting" is a real posting it cost. The `_SILICON` words below cover the
     # chip titles without that ambiguity.
-    r"circuit|sram|design\s+verification|physical\s+design|facilities"
+    r"circuit|sram|design\s+verification|physical\s+design|facilities|"
+    # Semiconductor metrology and lithography — "Electron Beam Product
+    # Engineer" (KLA) reaches the accept list through the bare `product
+    # engineer` term.
+    r"electron\s+beam|e-beam|ebeam"
 )
 
 #: The subset safe to match AFTER the role noun — a curated list again, and for
@@ -741,6 +761,47 @@ _FLIGHT_RE = re.compile(
 #: Architect (26), AI Architect (19), Technical Architect (17).
 _ARCHITECT_RE = re.compile(r"\barchitect\b", re.I)
 
+#: Mainframe and its ecosystem.
+#:
+#: A preference, and one that REVERSES an earlier decision: `\bmainframe\s+
+#: (engineer|developer|programmer)` and `\bcobol\b` are in the accept list on
+#: purpose, and they stay there so `--include-roles mainframe` restores these.
+#: Mainframe development is software; it is simply not the software wanted here.
+#:
+#: `db2` AND `z/os` are deliberately absent, both for the same reason and both
+#: found by measuring rather than by reasoning. Between them they matched one
+#: title three times — "Data Engineer II — DB2 z/OS, Oracle, SQL Server,
+#: PostgreSQL, or Netezza" — which is an ordinary data engineer listing every
+#: database they might touch. `z/os` contributed nothing else at all: its only
+#: other match was already caught by `mainframe`.
+#:
+#: `jcl` matches nothing today and stays anyway. It is Job Control Language,
+#: which exists nowhere but a mainframe, so it cannot become a false positive.
+_MAINFRAME_RE = re.compile(r"\b(mainframe|cobol|jcl|ims)\b", re.I)
+
+#: Configuring somebody else's enterprise platform.
+#:
+#: Not the vendors as EMPLOYERS — that is `BLOCKED_COMPANIES`, a different list.
+#: This is the consultancy that implements their product. Every one of the 19
+#: Palantir postings measured was Deloitte, Booz Allen, Guidehouse, L3Harris or
+#: Endava deploying Foundry for a client; not one was a job at Palantir.
+#:
+#: `foundry` alone is deliberately ABSENT: it caught NXP's "APAC Foundry
+#: Operations Senior Principal Engineer", which is a *semiconductor* foundry.
+#: Only the vendor names match, and `epic` is guarded against Epic Games.
+_VENDOR_PLATFORM_RE = re.compile(
+    r"\b(palantir|peoplesoft|oracle\s+fusion|servicenow|sap|workday)\b"
+    r"|\bepic\b(?!\s*games)",
+    re.I,
+)
+
+#: Industrial control and materials handling — SCADA, sortation lines.
+#:
+#: `plc` is absent on purpose: "Senior Software Engineer - C# / PLC" is a
+#: software job that happens to talk to a controller, and the line between that
+#: and "CNC/PLC Production Engineer" is not one a title match can draw.
+_INDUSTRIAL_RE = re.compile(r"\b(scada|flexsort|sortation)\b", re.I)
+
 #: Category name -> matcher. A registry rather than one boolean parameter per
 #: category: with six of them, separate flags would mean six booleans threaded
 #: through five function signatures and the CLI, and wiring one to only half the
@@ -762,6 +823,9 @@ EXCLUDED_ROLES: dict[str, Any] = {
     "early_career": lambda text: bool(_EARLY_CAREER_RE.search(text)),
     "flight": lambda text: bool(_FLIGHT_RE.search(text)),
     "architect": lambda text: bool(_ARCHITECT_RE.search(text)),
+    "mainframe": lambda text: bool(_MAINFRAME_RE.search(text)),
+    "vendor_platform": lambda text: bool(_VENDOR_PLATFORM_RE.search(text)),
+    "industrial": lambda text: bool(_INDUSTRIAL_RE.search(text)),
 }
 
 #: Stable order for the CLI's `choices` and for anything that reports by

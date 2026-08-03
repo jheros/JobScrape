@@ -117,7 +117,6 @@ def test_genuinely_ambiguous_words_still_take_department_confirmation() -> None:
         "Reliability Engineer", "Member of Technical Staff", "MLOps Engineer",
         "LLM Engineer", "Computer Vision Engineer", "BI Engineer",
         "Distributed Systems Engineer", "Kernel Developer", "Release Engineer",
-        "Mainframe Engineer", "COBOL Programmer",
         "Rails Developer", "Flutter Developer", "Engineer, Platform",
         "Solidity Developer", "ETL Developer",
         # Rescued when the bare word stopped qualifying: these were carried by
@@ -970,6 +969,9 @@ def test_each_flag_re_admits_only_its_own_category() -> None:
         "early_career": "Software Engineering Intern",
         "flight": "Flight Software Engineer",
         "architect": "Data Architect",
+        "mainframe": "Mainframe Developer",
+        "vendor_platform": "Palantir Data Engineer",
+        "industrial": "SCADA Programmer",
     }
     assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
     for category, title in sample.items():
@@ -1202,7 +1204,14 @@ def test_the_software_word_survives_all_of_it(title: str) -> None:
         "Senior Backend Engineer, SOC & Threat Hunting",
         # Five hardware disciplines are also software product names.
         "Java Developer - with Polymer JS Experience",
-        "Data / Cloud Native Engineer - Palantir Foundry Experience",
+        # "Data / Cloud Native Engineer - Palantir Foundry Experience" was here
+        # too, rescued when a bare `foundry` in the hardware rule was wrongly
+        # catching Palantir's product. It is now dropped ON PURPOSE by the
+        # `vendor_platform` category — the same title, first a false positive
+        # and later a deliberate exclusion. Kept as a comment because the
+        # hardware-rule fix it guards is still live: see
+        # test_the_tightenings_that_measurement_forced, where NXP's
+        # semiconductor "Foundry Operations" role stands in for it.
         # The stack sits between the tier and the noun.
         "Back-End Java Spring Boot Engineer - Banking Sector",
         "Senior Developer 1 - Front End",
@@ -1403,3 +1412,126 @@ def test_the_deleted_employer_adapters_are_gone() -> None:
     assert "amazon" not in GLOBAL_SOURCES and "amazon" not in ALL_SOURCE_NAMES
     assert "apple" not in GLOBAL_SOURCES and "apple" not in ALL_SOURCE_NAMES
     assert "uber" in GLOBAL_SOURCES, "Uber is not blocked and stays"
+
+
+# --- three more preference categories, and three more blocklist entries -----
+#
+# All six came from one list of titles that were still getting through. What
+# they have in common is that each reached the accept list honestly — through
+# `data science` in the subject a professor teaches, `software engineer` in the
+# title of a Workday integrator, `product engineer` on a semiconductor role.
+
+
+@pytest.mark.parametrize(
+    "title,category",
+    [
+        ("Mainframe Developer (COBOL)", "mainframe"),
+        ("Junior Mainframe Developer (COBOL)", "mainframe"),
+        ("Senior Mainframe Storage Engineer", "mainframe"),
+        ("Software Engineer Lead, COBOL, Systematics", "mainframe"),
+        ("IMS Application DBA", "mainframe"),
+        ("IMS Database Administrator", "mainframe"),
+
+        # Not the vendors as employers — that is BLOCKED_COMPANIES. This is the
+        # consultancy implementing their product: all 19 Palantir postings
+        # measured were Deloitte, Booz Allen, Guidehouse, L3Harris or Endava.
+        ("Palantir Data Engineer", "vendor_platform"),
+        ("Forward Deployed Engineer (Palantir)", "vendor_platform"),
+        ("Data Engineer - Palantir Foundry", "vendor_platform"),
+        ("PeopleSoft Application Developer", "vendor_platform"),
+        ("Principal Software Engineer (Oracle Fusion)", "vendor_platform"),
+        ("Software Engineer III - ServiceNow", "vendor_platform"),
+        ("Sr. SAP Commerce Platform Engineer", "vendor_platform"),
+        ("SENIOR SOFTWARE ENGINEER - Workday", "vendor_platform"),
+        ("Integration Engineer (Epic Integration Specialist)", "vendor_platform"),
+
+        ("SCADA Programmer", "industrial"),
+        ("Software Engineer, SCADA", "industrial"),
+        ("Flexsort Software Engineer", "industrial"),
+    ],
+)
+def test_the_three_new_categories(title: str, category: str) -> None:
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == category, title
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize(
+    "title,category",
+    [
+        ("Mainframe Developer (COBOL)", "mainframe"),
+        ("Software Engineer Lead, COBOL, Systematics", "mainframe"),
+        ("Palantir Data Engineer", "vendor_platform"),
+        ("Principal Software Engineer (Oracle Fusion)", "vendor_platform"),
+        ("Software Engineer III - ServiceNow", "vendor_platform"),
+        ("Software Engineer, SCADA", "industrial"),
+        ("Flexsort Software Engineer", "industrial"),
+    ],
+)
+def test_the_new_categories_round_trip_through_their_flag(title: str, category: str) -> None:
+    """The check a half-working flag fails.
+
+    `\\bmainframe\\s+(engineer|developer|programmer)` and `\\bcobol\\b` are in the
+    ACCEPT list on purpose and stay there; the others qualify through `software
+    engineer` and `data engineer`. Either way `--include-roles` has to give them
+    back, or the flag is decoration.
+    """
+    assert is_software_role(title, allow_roles={category}) is True, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Both of these were found by measuring the draft rules against the
+        # archive, not by thinking about them.
+        #
+        # `db2` and `z/os` matched one title three times — an ordinary data
+        # engineer listing every database they might touch. `z/os` contributed
+        # nothing else whatsoever: its only other match was already caught by
+        # the word "mainframe".
+        "Data Engineer II - DB2 z/OS, Oracle, SQL Server, PostgreSQL, or Netezza",
+        # A bare `foundry` in the vendor-platform rule caught a SEMICONDUCTOR
+        # foundry, which is the opposite kind of job.
+        "APAC Foundry Operations Senior Principal Engineer",
+        # `plc` is absent from `industrial` for the same reason: this is a
+        # software job that happens to talk to a controller.
+        "Senior Software Engineer - C# / PLC (m/f/d)",
+        # `epic` is guarded — Epic Games is a software employer, Epic Systems
+        # is the EHR whose integrators are the target.
+        "Senior Software Engineer, Epic Games",
+    ],
+)
+def test_the_tightenings_that_measurement_forced(title: str) -> None:
+    assert is_software_role(title) is True, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Adjunct Faculty (Data Science and Artificial Intelligence)",
+        "Lecturer, LIS/Data Science/Creative Computing",
+        "Research Scientist, Assist/Assoc/Full Professor",
+        # Bootcamps too: teaching software engineering is a teaching job
+        # whoever employs you.
+        "Software Engineer Instructor",
+        "Software Engineering Instructor Lead",
+        "Lead Instructor: GenAI",
+        # On-site hardware repair.
+        "Field Service Engineer - AIS",
+        "Field Service Engineer - Airports Security & Audio Systems",
+        # Semiconductor, reached through the bare `product engineer` term.
+        "Electron Beam Product Engineer",
+        "Business Development Manager",
+    ],
+)
+def test_teaching_field_service_and_e_beam_are_not_software(title: str) -> None:
+    """These are in the blocklist rather than the preference registry: they are
+    not software jobs under any preference, which is the line that list draws."""
+    assert is_software_role(title) is False, title
+
+
+def test_field_service_needs_its_role_noun() -> None:
+    """"Field Service Software Engineer" writes software FOR a field-service
+    operation, which is why the rule names the noun instead of the phrase."""
+    assert is_software_role("Field Service Software Engineer") is True

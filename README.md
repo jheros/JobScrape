@@ -604,9 +604,23 @@ row is dropped rather than allowed to pollute the dataset.
   | `early_career` | intern, internship, co-op, apprentice, trainee, new grad, university/college grad | `--include-roles early_career` |
   | `flight` | flight software, flight control/test/systems, avionics — embedded software on a vehicle | `--include-roles flight` |
   | `architect` | **every** architect title — Data, Cloud, AI, Technical, Application, Integration, Infrastructure, and Software Architect too | `--include-roles architect` |
+  | `mainframe` | mainframe, COBOL, JCL, IMS | `--include-roles mainframe` |
+  | `vendor_platform` | configuring somebody else's enterprise platform — Palantir/Foundry, SAP, ServiceNow, Workday, Oracle Fusion, PeopleSoft, Epic | `--include-roles vendor_platform` |
+  | `industrial` | SCADA, sortation and materials-handling control | `--include-roles industrial` |
 
   `--include-roles` is repeatable. `--include-qa` and `--include-management` remain as
   shorthand for the first two.
+
+  `vendor_platform` is about the **work**, not the employer: every Palantir posting
+  measured was a consultancy deploying Foundry for a client — Deloitte, Booz Allen,
+  Guidehouse, L3Harris — and none was a job at Palantir. Blocking a vendor as an *employer*
+  is a different list, `BLOCKED_COMPANIES`.
+
+  Note that a title beginning "Software Engineer" **can** be excluded by these, because the
+  `_names_software` exemption applies to the not-software blocklist and never to the
+  preference registry — a "QA Software Engineer" is still QA, and a "Software Engineer III
+  - ServiceNow" is still ServiceNow configuration. `--include-roles` is what brings them
+  back.
 
   `architect` is deliberately the whole word rather than a curated subset. Three architect
   senses were already excluded through other categories — `Systems Architect` via
