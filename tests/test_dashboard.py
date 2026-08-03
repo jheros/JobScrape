@@ -189,10 +189,42 @@ def test_series_slots_are_never_cycled() -> None:
     assert len(set(charts.SERIES)) == 4
 
 
+def test_stacked_bars_colors_override_by_key_not_position() -> None:
+    """Coverage's live/unchecked/empty/dead needs a specific hue per segment
+    regardless of where it falls in the stack — e.g. "live" must render
+    green even though it's declared first (stacking position 0, which
+    defaults to the blue slot)."""
+    rows = [{"ats": "greenhouse", "live": 500, "dead": 100}]
+    svg = charts.stacked_bars(
+        rows, label_key="ats", segments=[("live", "Live"), ("dead", "Dead")],
+        colors={"live": "var(--series-3)", "dead": "var(--series-2)"},
+    )
+    assert 'fill="var(--series-3)"' in svg
+    assert 'fill="var(--series-2)"' in svg
+    assert 'fill="var(--series-1)"' not in svg  # the default position-0 slot
+
+
+def test_stacked_bars_without_colors_keeps_positional_default() -> None:
+    rows = [{"ats": "greenhouse", "live": 500, "dead": 100}]
+    svg = charts.stacked_bars(
+        rows, label_key="ats", segments=[("live", "Live"), ("dead", "Dead")],
+    )
+    assert 'fill="var(--series-1)"' in svg  # position 0, unchanged behaviour
+
+
 def test_legend_is_present_for_multiple_series() -> None:
     out = charts.legend([("a", "Alpha"), ("b", "Beta")])
     assert out.count("legend-item") == 2
     assert "Alpha" in out and "Beta" in out
+
+
+def test_legend_colors_match_stacked_bars_when_given() -> None:
+    out = charts.legend(
+        [("live", "Live"), ("dead", "Dead")],
+        colors={"live": "var(--series-3)", "dead": "var(--series-2)"},
+    )
+    assert "background:var(--series-3)" in out
+    assert "background:var(--series-2)" in out
 
 
 def test_chart_escapes_untrusted_labels() -> None:

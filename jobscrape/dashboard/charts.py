@@ -212,11 +212,22 @@ def stacked_bars(
     label_key: str,
     segments: Sequence[tuple[str, str]],
     label: str = "",
+    colors: dict[str, str] | None = None,
 ) -> str:
     """One stacked bar per row.
 
-    ``segments`` is ``[(key, display name), …]`` in the order they should stack;
-    slots are assigned in the palette's fixed order and never cycled.
+    ``segments`` is ``[(key, display name), …]`` in the order they should
+    stack; by default a slot is assigned in the palette's fixed order and
+    never cycled (position 0 -> ``SERIES[0]``, and so on).
+
+    ``colors``, if given, maps a segment ``key`` to an explicit swatch from
+    that SAME validated set (e.g. ``{"live": SERIES[2]}``) — for a case like
+    Coverage's live/unchecked/empty/dead, where reading better ("live" as the
+    green slot, not whichever hue happens to stack first) matters more than
+    stacking order, and the two need not match. This still only ever draws
+    from the four already-validated hues; it does not introduce new ones or
+    touch the status palette (see the module docstring for why that one's
+    excluded here) — it just decouples "which hue" from "which position".
 
     A 2px surface gap separates adjacent fills, and each segment wide enough to
     hold text is labelled with its value — that is the relief the light-mode
@@ -246,9 +257,10 @@ def stacked_bars(
                 continue
             w = (value / total) * track
             draw = max(w - GAP, 1)
+            fill = (colors or {}).get(key, SERIES[slot % len(SERIES)])
             out.append(
                 f'<rect x="{x:.1f}" y="{y}" width="{draw:.1f}" height="{row_h}" '
-                f'rx="{RADIUS}" fill="{SERIES[slot % len(SERIES)]}">'
+                f'rx="{RADIUS}" fill="{fill}">'
                 f'<title>{_esc(name)} — {_esc(display)}: {int(value):,} '
                 f'({value / total * 100:.0f}%)</title></rect>'
             )
@@ -265,12 +277,17 @@ def stacked_bars(
 </svg>"""
 
 
-def legend(segments: Sequence[tuple[str, str]]) -> str:
-    """Always present for two or more series, so identity is never colour-alone."""
+def legend(segments: Sequence[tuple[str, str]], colors: dict[str, str] | None = None) -> str:
+    """Always present for two or more series, so identity is never colour-alone.
+
+    ``colors`` must match whatever was passed to `stacked_bars` for the same
+    chart, so a swatch here always means the same hue as in the chart itself.
+    """
     items = "".join(
         f'<span class="legend-item"><span class="swatch" '
-        f'style="background:{SERIES[i % len(SERIES)]}"></span>{_esc(name)}</span>'
-        for i, (_, name) in enumerate(segments)
+        f'style="background:{(colors or {}).get(key, SERIES[i % len(SERIES)])}"></span>'
+        f'{_esc(name)}</span>'
+        for i, (key, name) in enumerate(segments)
     )
     return f'<div class="legend">{items}</div>'
 

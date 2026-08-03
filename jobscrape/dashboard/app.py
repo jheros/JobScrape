@@ -228,14 +228,26 @@ async def coverage(request: Request) -> HTMLResponse:
             ("live", "Live"), ("unchecked", "Unchecked"),
             ("empty", "Empty"), ("dead", "Dead"),
         ]
+        # This is a status breakdown (good/pending/meh/bad), not an arbitrary
+        # category — but charts.SERIES's status palette is explicitly ruled
+        # out for a 4-way stack (see its own docstring: a warning/critical
+        # pair fails the normal-vision distinguishability floor there). This
+        # reassigns the SAME validated 4-hue categorical set by meaning
+        # instead of stacking position — green reads as "live/healthy", gold
+        # as "empty", the warmest remaining hue as "dead" — without
+        # introducing any new, unvalidated colour.
+        coverage_colors = {
+            "live": "var(--series-3)", "unchecked": "var(--series-1)",
+            "empty": "var(--series-4)", "dead": "var(--series-2)",
+        }
         return _page(
             request, "coverage.html",
             rows=rows,
             coverage_svg=charts.stacked_bars(
                 rows, label_key="ats", segments=segments,
-                label="Board status by platform",
+                label="Board status by platform", colors=coverage_colors,
             ),
-            coverage_legend=charts.legend(segments),
+            coverage_legend=charts.legend(segments, colors=coverage_colors),
             totals={
                 key: sum(int(r.get(key) or 0) for r in rows)
                 for key in ("discovered", "live", "unchecked", "empty", "dead")
