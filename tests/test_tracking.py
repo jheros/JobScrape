@@ -284,3 +284,64 @@ def test_an_interrupted_fetch_also_closes_its_row(monkeypatch, _isolated_db) -> 
     ).fetchone()
     assert row["status"] == "failed"
     assert "KeyboardInterrupt" in (row["error"] or "")
+
+
+# --- connecting must not take locks a running sweep is holding ---------------
+
+
+def test_no_ddl_runs_when_the_schema_is_current(_isolated_db, monkeypatch):
+    """`db.connect()` used to run the whole schema DDL every single time.
+
+    `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` are no-ops
+    when the object exists, but they are not free of LOCKS — `CREATE INDEX`
+    takes a SHARE lock on the table just to discover it has nothing to do, and
+    SHARE conflicts with the ROW EXCLUSIVE a writer holds.
+
+    Observed for real: opening the dashboard during a fetch deadlocked the two
+    against each other, and Postgres resolved it by killing the fetch six ATSes
+    in —
+
+        Process A waits for RowExclusiveLock on relation `jobs`, blocked by B.
+        Process B waits for ShareLock on relation `companies`, blocked by A.
+
+    Any second process connecting mid-sweep could do it: a `jobscrape stats`, a
+    dashboard restart, the webhook receiver. That stops being rare once runs
+    are on cron, which is why the DDL is now conditional.
+    """
+    from jobscrape import db
+
+    ran: list[str] = []
+    monkeypatch.setattr(db, "_apply_indexes", lambda conn: ran.append("indexes"))
+    monkeypatch.setattr(db, "_migrate", lambda conn: ran.append("migrate"))
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+
+    assert db._schema_is_current(_isolated_db) is True
+    assert db.ensure_schema(_isolated_db, "test-url") is False
+    assert ran == [], "connect ran schema DDL against an already-current database"
+
+
+def test_the_schema_is_still_applied_when_something_is_missing(
+    _isolated_db, monkeypatch
+):
+    """The other half, and the one that matters for a fresh install or a
+    release that adds a column: the check must not be a blanket True."""
+    from jobscrape import db
+
+    ran: list[str] = []
+    monkeypatch.setattr(db, "_apply_indexes", lambda conn: ran.append("indexes"))
+    monkeypatch.setattr(db, "_migrate", lambda conn: ran.append("migrate"))
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+    # A column the live table does not have — the shape of a schema change.
+    monkeypatch.setattr(db, "JOB_COLUMNS", [*db.JOB_COLUMNS, "a_column_added_next_release"])
+
+    assert db._schema_is_current(_isolated_db) is False
+    assert db.ensure_schema(_isolated_db, "test-url") is True
+    assert ran == ["migrate", "indexes"]
+
+
+def test_the_expected_index_count_tracks_the_script() -> None:
+    """Hard-coding it would silently skip the DDL for everyone the day an index
+    is added, so it is counted from `INDEXES` itself."""
+    from jobscrape import db
+
+    assert db._EXPECTED_INDEX_COUNT == db.INDEXES.upper().count("CREATE INDEX")

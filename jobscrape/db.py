@@ -407,6 +407,57 @@ def _apply_indexes(conn: Connection) -> None:
     conn.commit()
 
 
+#: Has this process already brought the schema up to date? Keyed by URL so a
+#: test pointing at `jobscrape_test` still initialises it.
+_SCHEMA_READY: set[str] = set()
+
+
+def _schema_is_current(conn: Connection) -> bool:
+    """Cheap read-only check: does the schema already exist, in full?
+
+    Read-only is the entire point. `CREATE TABLE IF NOT EXISTS` and
+    `CREATE INDEX IF NOT EXISTS` are no-ops when the object exists, but they
+    are not free of LOCKS — `CREATE INDEX` takes a SHARE lock on the table even
+    to discover it has nothing to do, and SHARE conflicts with the ROW
+    EXCLUSIVE a writer holds.
+
+    That made every `connect()` a hazard to a running sweep. Observed: opening
+    the dashboard during a fetch deadlocked the two against each other —
+
+        Process A waits for RowExclusiveLock on relation `jobs`, blocked by B.
+        Process B waits for ShareLock on relation `companies`, blocked by A.
+
+    — and Postgres resolved it by killing the fetch, six ATSes in. Any second
+    process connecting mid-sweep could do it: a `jobscrape stats`, a dashboard
+    restart, the webhook receiver. With runs moving to cron that stops being a
+    rare annoyance.
+
+    So the DDL now runs only when something is actually missing. The check
+    itself takes nothing stronger than ACCESS SHARE, which conflicts with
+    nothing a sweep does.
+    """
+    row = conn.execute(
+        "SELECT to_regclass('jobs') AS jobs, to_regclass('companies') AS companies, "
+        "(SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()) AS n_idx"
+    ).fetchone()
+    if not row or not row["jobs"] or not row["companies"]:
+        return False
+    # Column drift matters as much as a missing table: a release that adds one
+    # must still run its DDL. Compare what `jobs` has against what SCHEMA says.
+    have = {r["column_name"] for r in conn.execute(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = 'jobs'"
+    )}
+    return set(JOB_COLUMNS).issubset(have) and int(row["n_idx"]) >= _EXPECTED_INDEX_COUNT
+
+
+#: How many indexes `INDEXES` creates. Recounted rather than hard-coded, so
+#: adding one to the script cannot silently skip the DDL for everyone.
+_EXPECTED_INDEX_COUNT = sum(
+    1 for s in _strip_sql_comments(INDEXES).split(";") if s.strip().upper().startswith("CREATE")
+)
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -422,14 +473,34 @@ def connect(database_url: str | Path | None = None) -> Connection:
     url = str(database_url) if database_url else None
     if url and "://" not in url:
         url = None
-    engine = _get_engine(url or config.DATABASE_URL)
+    target = url or config.DATABASE_URL
+    engine = _get_engine(target)
     sa_conn = engine.connect()
     conn = Connection(sa_conn)
-    conn.execute(SCHEMA)
-    conn.commit()
-    _migrate(conn)
-    _apply_indexes(conn)
+    ensure_schema(conn, target)
     return conn
+
+
+def ensure_schema(conn: Connection, target: str) -> bool:
+    """Bring the schema up, but only when it is not already up.
+
+    Returns whether DDL was executed. Separate from `connect()` so it can be
+    tested directly — the test suite monkeypatches `connect` itself.
+
+    Once per process per database: after the first check the answer cannot
+    change under us, since this app is the only thing that writes the schema.
+    """
+    if target in _SCHEMA_READY:
+        return False
+    ran = False
+    if not _schema_is_current(conn):
+        conn.execute(SCHEMA)
+        conn.commit()
+        _migrate(conn)
+        _apply_indexes(conn)
+        ran = True
+    _SCHEMA_READY.add(target)
+    return ran
 
 
 @contextmanager
