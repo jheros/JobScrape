@@ -19,6 +19,25 @@
     });
   }
 
+  // --- sidebar drawer (narrow screens only — CSS keeps it always-open above
+  // the 720px breakpoint, so these buttons have nothing to toggle there) ---
+  var sidebar = document.getElementById("sidebar");
+  var backdrop = document.getElementById("sidebar-backdrop");
+  var menuToggle = document.getElementById("menu-toggle");
+  var sidebarClose = document.getElementById("sidebar-close");
+  function closeSidebar() {
+    if (sidebar) sidebar.classList.remove("open");
+    if (backdrop) backdrop.classList.remove("open");
+  }
+  if (menuToggle) {
+    menuToggle.addEventListener("click", function () {
+      if (sidebar) sidebar.classList.add("open");
+      if (backdrop) backdrop.classList.add("open");
+    });
+  }
+  if (sidebarClose) sidebarClose.addEventListener("click", closeSidebar);
+  if (backdrop) backdrop.addEventListener("click", closeSidebar);
+
   // --- run control --------------------------------------------------------
   function post(url, body) {
     return fetch(url, {

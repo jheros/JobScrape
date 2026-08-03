@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Overview · jobscrape{% endblock %}
 {% block content %}
 
@@ -12,49 +13,56 @@
   </div>
   <div class="btn-row">
     {% if action.action == 'sweep' %}
-      <button class="btn" data-start-stage="discover" data-label="Run first sweep">Run first sweep</button>
+      <button class="btn ghost" data-start-stage="discover" data-label="Run first sweep">{{ icons.icon('play') }} Run first sweep</button>
     {% elif action.action == 'validate' %}
-      <button class="btn" data-start-stage="validate" data-label="Validate boards">Validate boards</button>
+      <button class="btn ghost" data-start-stage="validate" data-label="Validate boards">{{ icons.icon('play') }} Validate boards</button>
     {% elif action.action == 'jobs' %}
-      <a class="btn" href="/jobs">Review jobs</a>
+      <a class="btn ghost" href="/jobs">{{ icons.icon('briefcase') }} Review jobs</a>
     {% else %}
-      <button class="btn" data-start-stage="fetch" data-label="Refresh now">Refresh now</button>
+      <button class="btn ghost" data-start-stage="fetch" data-label="Refresh now">{{ icons.icon('play') }} Refresh now</button>
     {% endif %}
   </div>
 </div>
 
 <div class="grid tiles">
   <div class="tile accent">
+    <div class="icon-chip">{{ icons.icon('edit') }}</div>
     <div class="label">To review</div>
     <div class="value">{{ data.untriaged|comma }}</div>
     <div class="foot">open and not yet triaged</div>
   </div>
   <div class="tile">
+    <div class="icon-chip">{{ icons.icon('activity') }}</div>
     <div class="label">New today</div>
     <div class="value">{{ data.new_24h|comma }}</div>
     <div class="foot">{{ data.new_7d|comma }} in the last 7 days</div>
   </div>
   <div class="tile">
+    <div class="icon-chip">{{ icons.icon('briefcase') }}</div>
     <div class="label">Open jobs</div>
     <div class="value">{{ data.open_jobs|comma }}</div>
     <div class="foot">{{ data.closed_jobs|comma }} closed since first seen</div>
   </div>
   <div class="tile">
+    <div class="icon-chip">{{ icons.icon('shield') }}</div>
     <div class="label">Live boards</div>
     <div class="value">{{ data.live_boards|comma }}</div>
     <div class="foot">{{ data.unchecked_boards|comma }} still unchecked</div>
   </div>
   <div class="tile">
+    <div class="icon-chip">{{ icons.icon('layers') }}</div>
     <div class="label">Companies hiring</div>
     <div class="value">{{ data.companies_hiring|comma }}</div>
     <div class="foot">across {{ data.sources }} sources</div>
   </div>
   <div class="tile">
+    <div class="icon-chip">{{ icons.icon('dollar') }}</div>
     <div class="label">With salary</div>
     <div class="value">{{ salary.pct }}%</div>
     <div class="foot">avg floor ${{ salary.avg_min|comma }}</div>
   </div>
   <div class="tile">
+    <div class="icon-chip">{{ icons.icon('layers') }}</div>
     <div class="label">Duplicates collapsed</div>
     <div class="value">{{ data.duplicates_collapsed|comma }}</div>
     <div class="foot">reposts and cross-source copies hidden from your queue</div>
@@ -96,7 +104,7 @@
     {{ workplace_legend|safe }}
     <!-- The table is the relief for light-mode contrast: the numbers are
          readable without relying on the fill colours. -->
-    <table style="margin-top:14px">
+    <table class="mt-md">
       <thead><tr><th>Type</th><th class="num">Open jobs</th></tr></thead>
       <tbody>
         {% for row in workplace %}
@@ -110,14 +118,14 @@
 <div class="card">
   <h2>Pipeline</h2>
   <div class="btn-row">
-    <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">Discover (fast)</button>
-    <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">Discover (full)</button>
-    <button class="btn ghost" data-start-stage="validate" data-label="Validate">Validate boards</button>
-    <button class="btn" data-start-stage="fetch" data-label="Fetch">Fetch jobs</button>
-    <button class="btn ghost" data-start-stage="export" data-label="Export">Export CSV + Excel</button>
+    <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
+    <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
+    <button class="btn ghost" data-start-stage="validate" data-label="Validate">{{ icons.icon('play') }} Validate boards</button>
+    <button class="btn" data-start-stage="fetch" data-label="Fetch">{{ icons.icon('play') }} Fetch jobs</button>
+    <button class="btn ghost" data-start-stage="export" data-label="Export">{{ icons.icon('play') }} Export CSV + Excel</button>
   </div>
   {% if data.last_run %}
-    <p class="sub" style="margin:14px 0 0">
+    <p class="sub mt-md mb-0">
       Last run: <span class="pill {{ data.last_run.status }}">{{ data.last_run.status }}</span>
       <code>{{ data.last_run.command }}</code> — started {{ data.last_run.started_at|datefmt }}
     </p>

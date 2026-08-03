@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Coverage · jobscrape{% endblock %}
 {% block content %}
 
@@ -9,14 +10,14 @@
 </p>
 
 <div class="grid tiles">
-  <div class="tile"><div class="label">Discovered</div><div class="value">{{ totals.discovered|comma }}</div></div>
-  <div class="tile accent"><div class="label">Live</div><div class="value">{{ totals.live|comma }}</div>
+  <div class="tile"><div class="icon-chip">{{ icons.icon('layers') }}</div><div class="label">Discovered</div><div class="value">{{ totals.discovered|comma }}</div></div>
+  <div class="tile accent"><div class="icon-chip">{{ icons.icon('shield') }}</div><div class="label">Live</div><div class="value">{{ totals.live|comma }}</div>
     <div class="foot">boards that return jobs</div></div>
-  <div class="tile"><div class="label">Unchecked</div><div class="value">{{ totals.unchecked|comma }}</div>
+  <div class="tile"><div class="icon-chip">{{ icons.icon('clock') }}</div><div class="label">Unchecked</div><div class="value">{{ totals.unchecked|comma }}</div>
     <div class="foot">never probed yet</div></div>
-  <div class="tile"><div class="label">Empty</div><div class="value">{{ totals.empty|comma }}</div>
+  <div class="tile"><div class="icon-chip">{{ icons.icon('grid') }}</div><div class="label">Empty</div><div class="value">{{ totals.empty|comma }}</div>
     <div class="foot">real board, nothing posted</div></div>
-  <div class="tile"><div class="label">Dead</div><div class="value">{{ totals.dead|comma }}</div>
+  <div class="tile"><div class="icon-chip">{{ icons.icon('trash') }}</div><div class="label">Dead</div><div class="value">{{ totals.dead|comma }}</div>
     <div class="foot">no longer exists</div></div>
 </div>
 
@@ -29,7 +30,7 @@
       can be stopped and resumed at any point.
     </div>
   </div>
-  <button class="btn" data-start-stage="validate" data-label="Validate now">Validate now</button>
+  <button class="btn ghost" data-start-stage="validate" data-label="Validate now">{{ icons.icon('play') }} Validate now</button>
 </div>
 {% endif %}
 

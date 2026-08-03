@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Runs · jobscrape{% endblock %}
 {% block content %}
 
@@ -7,14 +8,14 @@
 
 {% if active_runs %}
   {% for run in active_runs %}
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:start; gap:16px">
+  <div class="card active-run">
+    <div class="run-card-head">
       <div>
-        <h2 style="margin-bottom:6px">
+        <h2 class="mb-6">
           <span class="pill running"><span class="dot"></span>{{ run.stage }}</span>
         </h2>
         <code>{{ run.command }}</code>
-        <div class="job-meta" style="margin-top:8px">
+        <div class="job-meta mt-8">
           <span>run #{{ run.run_id }}</span>
           <span>pid {{ run.pid }}</span>
           {% if run.progress.current %}<span>at: {{ run.progress.current }}</span>{% endif %}
@@ -24,9 +25,9 @@
           {% if run.progress.jobs_new %}<span>{{ run.progress.jobs_new }} new jobs</span>{% endif %}
         </div>
       </div>
-      <button class="btn danger" data-stop-stage="{{ run.stage }}">Stop</button>
+      <button class="btn danger" data-stop-stage="{{ run.stage }}">{{ icons.icon('stop') }} Stop</button>
     </div>
-    <div class="log" id="live-log-{{ run.run_id }}" data-run-id="{{ run.run_id }}" style="margin-top:14px"></div>
+    <div class="log mt-md" id="live-log-{{ run.run_id }}" data-run-id="{{ run.run_id }}"></div>
   </div>
   {% endfor %}
 {% endif %}
@@ -34,25 +35,25 @@
 <div class="card">
   <h2>Run now</h2>
   <div class="btn-row">
-    <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">Discover (fast)</button>
-    <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">Discover (full)</button>
-    <button class="btn ghost" data-start-stage="validate" data-label="Validate">Validate boards</button>
-    <button class="btn" data-start-stage="fetch" data-label="Fetch">Fetch jobs</button>
-    <button class="btn ghost" data-start-stage="export" data-label="Export">Export</button>
-    <button class="btn ghost" data-start-stage="apify-pull" data-label="Apify pull">Apify pull</button>
-    <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">Dedupe</button>
-    <button class="btn ghost" data-start-stage="liveness" data-label="Liveness">Liveness</button>
-    <button class="btn ghost" data-start-stage="stats" data-label="Stats">Stats</button>
-    <button class="btn ghost" data-start-stage="sources" data-label="Sources">Sources</button>
-    <button class="btn ghost" data-start-stage="daily-schedule" data-label="Run daily schedule">Run daily schedule</button>
-    <button class="btn ghost" data-start-stage="weekly-schedule" data-label="Run weekly schedule">Run weekly schedule</button>
+    <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
+    <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
+    <button class="btn ghost" data-start-stage="validate" data-label="Validate">{{ icons.icon('play') }} Validate boards</button>
+    <button class="btn" data-start-stage="fetch" data-label="Fetch">{{ icons.icon('play') }} Fetch jobs</button>
+    <button class="btn ghost" data-start-stage="export" data-label="Export">{{ icons.icon('play') }} Export</button>
+    <button class="btn ghost" data-start-stage="apify-pull" data-label="Apify pull">{{ icons.icon('play') }} Apify pull</button>
+    <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">{{ icons.icon('play') }} Dedupe</button>
+    <button class="btn ghost" data-start-stage="liveness" data-label="Liveness">{{ icons.icon('play') }} Liveness</button>
+    <button class="btn ghost" data-start-stage="stats" data-label="Stats">{{ icons.icon('play') }} Stats</button>
+    <button class="btn ghost" data-start-stage="sources" data-label="Sources">{{ icons.icon('play') }} Sources</button>
+    <button class="btn ghost" data-start-stage="daily-schedule" data-label="Run daily schedule">{{ icons.icon('clock') }} Run daily schedule</button>
+    <button class="btn ghost" data-start-stage="weekly-schedule" data-label="Run weekly schedule">{{ icons.icon('clock') }} Run weekly schedule</button>
     <button class="btn ghost" data-start-stage="purge" data-extra="--dry-run"
-            data-label="Purge (dry-run)">Purge (dry-run)</button>
+            data-label="Purge (dry-run)">{{ icons.icon('trash') }} Purge (dry-run)</button>
     <button class="btn danger" data-start-stage="purge"
             data-label="Purge (delete for real)"
-            data-confirm="Really delete every stored posting that no longer passes the role filter? This is not a dry run.">Purge (delete for real)</button>
+            data-confirm="Really delete every stored posting that no longer passes the role filter? This is not a dry run.">{{ icons.icon('trash') }} Purge (delete for real)</button>
   </div>
-  <p class="sub" style="margin:14px 0 0">
+  <p class="sub mt-md mb-0">
     Stages run as separate processes, so stopping one is immediate and whatever
     it already wrote is kept.
   </p>
@@ -95,7 +96,7 @@
       <tr>
         <td>{{ run.id }}</td>
         <td>{{ run.stage or "—" }}</td>
-        <td><code style="font-size:12px">{{ run.command or "—" }}</code></td>
+        <td><code class="text-sm">{{ run.command or "—" }}</code></td>
         <td>{{ run.started_at|datefmt }}</td>
         <td>{{ run.duration }}</td>
         <td class="num">
@@ -105,7 +106,7 @@
         <td><span class="pill {{ run.status }}">{{ run.status }}</span></td>
       </tr>
       {% else %}
-      <tr><td colspan="7" style="text-align:center; padding:30px; color:var(--text-muted)">
+      <tr class="empty-row"><td colspan="7">
         No runs recorded yet.
       </td></tr>
       {% endfor %}

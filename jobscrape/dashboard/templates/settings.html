@@ -1,11 +1,12 @@
 {% extends "base.html" %}
+{% import "_icons.html" as icons %}
 {% block title %}Settings · jobscrape{% endblock %}
 {% block content %}
 
 <h1>Settings</h1>
 <p class="sub">Edits write to <code>.env</code>. Secret-looking fields are masked — click the eye to reveal.</p>
 
-<div id="settings-banner" class="banner" style="display:none">
+<div id="settings-banner" class="banner hidden">
   <div>
     <strong>Saved.</strong>
     <div class="detail">
@@ -14,21 +15,21 @@
       HTTP tuning) need a restart to apply.
     </div>
   </div>
-  <button class="btn danger" id="settings-restart" type="button">Restart dashboard</button>
+  <button class="btn ghost" id="settings-restart" type="button">{{ icons.icon('refresh') }} Restart dashboard</button>
 </div>
 
 <form id="settings-form">
   {% for title, keys in sections %}
   <div class="card">
     <h2>{{ title }}</h2>
-    <div class="grid cols-2">
+    <div class="form-grid">
       {% for f in keys %}
-      <label style="display:flex; flex-direction:column; gap:4px">
-        <span style="font-size:11px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.04em">{{ f.key }}</span>
+      <label>
+        <span>{{ f.key }}</span>
         {% if f.secret %}
-        <span style="display:flex; gap:6px">
-          <input type="password" name="{{ f.key }}" value="{{ f.value }}" autocomplete="off" style="flex:1">
-          <button class="btn ghost reveal-toggle" type="button" aria-label="Reveal">👁</button>
+        <span class="flex">
+          <input type="password" name="{{ f.key }}" value="{{ f.value }}" autocomplete="off" class="flex-1">
+          <button class="btn ghost reveal-toggle" type="button" aria-label="Reveal">{{ icons.icon('eye', 16) }}</button>
         </span>
         {% else %}
         <input type="text" name="{{ f.key }}" value="{{ f.value }}" autocomplete="off">
@@ -38,7 +39,7 @@
     </div>
   </div>
   {% endfor %}
-  <button class="btn" type="submit">Save settings</button>
+  <button class="btn" type="submit">{{ icons.icon('play') }} Save settings</button>
 </form>
 
 {% endblock %}

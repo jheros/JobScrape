@@ -7,30 +7,48 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<header class="topbar">
-  <a class="brand" href="/">jobscrape</a>
-  <nav>
-    <a href="/" class="{% if request.url.path == '/' %}on{% endif %}">Overview</a>
-    <a href="/jobs" class="{% if request.url.path == '/jobs' %}on{% endif %}">Jobs</a>
-    <a href="/runs" class="{% if request.url.path == '/runs' %}on{% endif %}">Runs</a>
-    <a href="/coverage" class="{% if request.url.path == '/coverage' %}on{% endif %}">Coverage</a>
-    <a href="/sources" class="{% if request.url.path == '/sources' %}on{% endif %}">Sources</a>
-    <a href="/schedule" class="{% if request.url.path == '/schedule' %}on{% endif %}">Schedule</a>
-    <a href="/settings" class="{% if request.url.path == '/settings' %}on{% endif %}">Settings</a>
-  </nav>
-  <div class="topbar-right">
-    {% if active_runs %}
-      <span class="pill running" title="a pipeline stage is running">
-        <span class="dot"></span>{{ active_runs|length }} running
-      </span>
-    {% endif %}
-    <button class="theme-toggle" type="button" aria-label="Toggle colour theme">◐</button>
-  </div>
-</header>
+{% import "_icons.html" as icons %}
+<div class="shell">
+  <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+  <aside class="sidebar" id="sidebar">
+    <button class="sidebar-close" id="sidebar-close" aria-label="Close menu">&times;</button>
+    <a class="brand" href="/">jobscrape</a>
+    <nav>
+      <div class="nav-group">
+        <span class="nav-label">Monitor</span>
+        <a href="/" class="{% if request.url.path == '/' %}on{% endif %}">{{ icons.icon('grid') }} Overview</a>
+        <a href="/jobs" class="{% if request.url.path == '/jobs' %}on{% endif %}">{{ icons.icon('briefcase') }} Jobs</a>
+        <a href="/runs" class="{% if request.url.path == '/runs' %}on{% endif %}">{{ icons.icon('activity') }} Runs</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Data</span>
+        <a href="/coverage" class="{% if request.url.path == '/coverage' %}on{% endif %}">{{ icons.icon('shield') }} Coverage</a>
+        <a href="/sources" class="{% if request.url.path == '/sources' %}on{% endif %}">{{ icons.icon('layers') }} Sources</a>
+      </div>
+      <div class="nav-group">
+        <span class="nav-label">Admin</span>
+        <a href="/schedule" class="{% if request.url.path == '/schedule' %}on{% endif %}">{{ icons.icon('clock') }} Schedule</a>
+        <a href="/settings" class="{% if request.url.path == '/settings' %}on{% endif %}">{{ icons.icon('gear') }} Settings</a>
+      </div>
+    </nav>
+  </aside>
 
-<main>
-  {% block content %}{% endblock %}
-</main>
+  <div class="main-col">
+    <header class="topbar-mini">
+      <button class="menu-toggle" id="menu-toggle" aria-label="Open menu">{{ icons.icon('menu') }}</button>
+      {% if active_runs %}
+        <span class="pill running" title="a pipeline stage is running">
+          <span class="dot"></span>{{ active_runs|length }} running
+        </span>
+      {% endif %}
+      <button class="theme-toggle" type="button" aria-label="Toggle colour theme">◐</button>
+    </header>
+
+    <main>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

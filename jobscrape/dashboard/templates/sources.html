@@ -33,13 +33,13 @@
 <div class="card">
   <h2>Why postings were dropped</h2>
   {% if funnel %}
-    <p class="sub" style="margin-bottom:14px">
+    <p class="sub-tight">
       From the most recent fetch. A source with a large “outside window” share is
       working fine — its postings are simply older than the date range you asked for.
     </p>
     {{ funnel_svg|safe }}
     {{ funnel_legend|safe }}
-    <div class="scroll-x" style="margin-top:16px">
+    <div class="scroll-x mt-16">
     <table>
       <thead>
         <tr><th>Source</th><th class="num">Seen</th><th class="num">Not software</th>
