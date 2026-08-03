@@ -972,6 +972,7 @@ def test_each_flag_re_admits_only_its_own_category() -> None:
         "mainframe": "Mainframe Developer",
         "vendor_platform": "Palantir Data Engineer",
         "industrial": "SCADA Programmer",
+        "domain_data_science": "Marketing Data Scientist",
     }
     assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
     for category, title in sample.items():
@@ -1535,3 +1536,179 @@ def test_field_service_needs_its_role_noun() -> None:
     """"Field Service Software Engineer" writes software FOR a field-service
     operation, which is why the rule names the noun instead of the phrase."""
     assert is_software_role("Field Service Software Engineer") is True
+
+
+# --- what a full audit of the archive turned up -----------------------------
+#
+# Every one of these arrived through an accept term that is correct in general
+# and unqualified in particular — `research engineer`, `product engineer`,
+# `integration engineer`, `data scientist`. None was a filter bug; all were
+# missing qualifiers, and they are here so they stay closed.
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # Bench research in a hardware discipline. These survived only because
+        # the hardware rules named engineers and developers but never
+        # SCIENTISTS, whichever side of the noun the discipline sat.
+        "Optics Research Scientist",
+        "Research Scientist, Catalyst Simulation",
+        "Radar Research Engineer",
+        "Senior Research Engineer in FEA Modeling",
+        "Finite Element (FEA) Research Engineer",
+        # Semiconductor, through `product engineer` and `integration engineer`.
+        "Senior DRAM Product Engineer",
+        "Sr Process Integration Engineer, DRAM",
+        "Wafer Probe Integration Engineer",
+        # Manufacturing.
+        "Senior Injection Molding Tooling Engineer",
+        "Product Engineer (Chemicals)",
+        # Health-economics and outcomes research, through `research scientist`.
+        "Senior Research Scientist, Evidence Synthesis",
+        "Associate Research Scientist, Evidence Generation",
+        "Research Scientist, Health Economic Modeling",
+        # A thesis placement is not a job opening.
+        "GenAI Research Student Worker",
+        "Master's Thesis in the Field of Data Science / Machine Learning",
+    ],
+)
+def test_the_leaks_the_audit_found(title: str) -> None:
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # The `_names_software` exemption, still doing its job — both verified
+        # against the live archive before the discipline words went in.
+        "Radar Software Engineer",
+        "Senior Radar Software Engineer",
+        "Electron Optics Devices Software Engineer",
+        # Bare research roles are AI research until a discipline says otherwise.
+        "Research Scientist",
+        "Research Engineer",
+        "AI Research Engineer",
+        "Research Engineer - Post-Training",
+        "Machine Learning Research Engineer",
+        # Bare product engineering is software product engineering.
+        "Product Engineer",
+        "AI Product Engineer",
+        "Full Stack Product Engineer",
+        # `_UNAMBIGUOUS_SOFTWARE_RE` now carries the case that brackets used to
+        # be excluded for — see test_brackets_are_no_longer_load_bearing.
+        "Frontend Engineer (Civil Aviation)",
+        "Forward Deployed Engineer - Aerospace",
+        # False alarms from the audit's own keyword sweep, kept as a reminder
+        # that the domain in a title is usually not the discipline.
+        "AI Tooling Engineer",
+        "Staff Frontend Engineer, DC Infrastructure Tooling",
+        "Release Engineer, Warehouse Transformation",
+        "Staff Machine Learning Engineer, Driver Understanding and Evaluation",
+        "Senior Software Engineer, Backend - HR Product",
+    ],
+)
+def test_the_audit_did_not_overreach(title: str) -> None:
+    assert is_software_role(title) is True, title
+
+
+def test_brackets_are_no_longer_load_bearing() -> None:
+    """The reversed hardware rule excluded brackets from its separator class so
+    that "Frontend Engineer (Civil Aviation)" would survive.
+
+    That was punctuation standing in for meaning, and it cost "Product Engineer
+    (Chemicals)". `_UNAMBIGUOUS_SOFTWARE_RE` was added later and decides the
+    same case on the right grounds — does the title name a software role — so
+    brackets could join the class and both titles now come out correctly.
+    """
+    assert is_software_role("Frontend Engineer (Civil Aviation)") is True
+    assert is_software_role("Product Engineer (Chemicals)") is False
+
+
+DOMAIN_DATA_SCIENCE = [
+    "Marketing Data Scientist",
+    "Sr. Data Scientist, Performance Marketing",
+    "Chemical Data Scientist",
+    "Senior Clinical Data Scientist",
+    "Data Scientist, Supply Chain",
+    "Data Scientist Senior (Population Health)",
+    "Senior Data Scientist / Risk Modeling Analyst",
+    "Data Scientist, Finance",
+]
+
+
+@pytest.mark.parametrize("title", DOMAIN_DATA_SCIENCE)
+def test_domain_qualified_data_science_is_excluded(title: str) -> None:
+    """A deliberate choice that costs real software work, recorded as such.
+
+    "Staff Data Scientist, Marketing Inference" is ordinary ML whose qualifier
+    names the industry served, exactly as "Data Engineer, Payments" does. The
+    domain list is fixed and short so the blast radius stays the 59 measured.
+    """
+    from jobscrape.filters import is_excluded_role
+
+    assert is_excluded_role(title) == "domain_data_science", title
+    assert is_software_role(title) is False, title
+
+
+@pytest.mark.parametrize("title", DOMAIN_DATA_SCIENCE)
+def test_domain_data_science_round_trips(title: str) -> None:
+    assert is_software_role(title, allow_roles={"domain_data_science"}) is True, title
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Data Scientist", "Senior Data Scientist", "Staff Data Scientist",
+     "Data Scientist, Trust & Safety", "Data Engineer, Payments"],
+)
+def test_undomained_data_science_is_untouched(title: str) -> None:
+    assert is_software_role(title) is True, title
+
+
+# --- four ways a title dodged the discipline rules --------------------------
+#
+# The first purge left 13 rows behind, and re-running the audit against the
+# archive is what found them. Each was a mechanical gap in how the patterns
+# were written, not a missing discipline — which is why they are worth pinning.
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        # The gap counted only `\w+` tokens joined by whitespace, so an
+        # ampersand, slash or comma inside it broke the chain.
+        "Injection Molding & Tooling Engineer",
+        "Mechanical, Materials, Chemical & Robotics Engineer",
+        "Senior Tooling Engineer (Injecting Molds / Molding)",
+        # `\bengineer\b` never matched "EngineerING".
+        "Principal, Molding & Tooling Engineering",
+        "GhostEye Radar System Engineering Cross Product Lead",
+        # The discipline sat at one end and the role noun at the other, past
+        # any reasonable gap — which is why radar joined the any-distance set
+        # alongside ASIC.
+        "Space RADAR Payload I&T SME - Sr. Staff Engineer Systems",
+        "Space RADAR Data Processing - Principal/Sr Principal Engineer",
+        # No engineer/developer/scientist noun at all.
+        "Principal Radar Backend Electronics Lead",
+        # A CURLY apostrophe. The posting is titled "Master’s Thesis…" and the
+        # pattern spelled a straight one.
+        "Master’s Thesis in the Field of Data Science / Machine Learning",
+    ],
+)
+def test_the_edge_cases_the_first_purge_missed(title: str) -> None:
+    assert is_software_role(title) is False, title
+
+
+def test_widening_the_gap_stayed_out_of_the_other_categories() -> None:
+    """`_HW_GAP` exists rather than widening `_GAP` itself.
+
+    `_GAP` is shared with `_NETWORK_RE` and `_SYSTEMS_RE`. Widening it to allow
+    a slash made the `systems` category swallow "Radar Systems/Software
+    Engineer" — a software job, held by a rule this change was not trying to
+    touch. The hardware rules got their own gap instead.
+    """
+    assert is_software_role("Radar Systems/Software Engineer") is True
+    assert is_software_role("Injection Molding & Tooling Engineer") is False
+    # And the systems category still behaves as it did.
+    assert is_software_role("Distributed Systems Engineer") is True
+    assert is_software_role("Systems Engineer") is False

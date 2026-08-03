@@ -404,7 +404,20 @@ _ROLE_NOUN = (
 #: Two words, not unbounded: enough for the real shapes, while stopping a
 #: category word at one end of a long title from binding to a role noun at the
 #: other. "Senior Software Engineer - Distributed Systems" keeps its head noun.
-_GAP = r"(?:\s+\w+){0,2}\s+"
+#: Up to two words between a qualifier and the role noun. Tokens may carry
+#: brackets — "Finite Element (FEA) Research Engineer" puts a parenthesised
+#: acronym in the gap, and counting only `\w+` broke the chain there.
+_GAP = r"(?:\s+[\w()\[\]/-]+){0,2}\s+"
+
+#: The same idea for the HARDWARE rules alone, where the gap may contain an
+#: ampersand, slash or comma: "Injection Molding & Tooling Engineer",
+#: "Mechanical, Materials, Chemical & Robotics Engineer".
+#:
+#: Deliberately NOT `_GAP` itself. That one is shared with `_NETWORK_RE` and
+#: `_SYSTEMS_RE`, and widening it there made the `systems` category swallow
+#: "Radar Systems/Software Engineer" — a software job, caught by a rule this
+#: change was not trying to touch.
+_HW_GAP = r"(?:[\s,&/]+[\w()\[\]/-]+){0,2}[\s,&/]+"
 
 #: The same adjacency fix, applied to the *accept* side.
 #:
@@ -457,7 +470,7 @@ _QUALIFIED_SOFTWARE_RE = re.compile(
 #: Listed here are only the physical disciplines where no middle word can change
 #: the answer.
 _HARDWARE_DISCIPLINE = (
-    r"mechanical|civil|structural|electrical|chemical|aerospace|petroleum|"
+    r"mechanical|civil|structural|electrical|chemicals?|aerospace|petroleum|"
     r"mining|nuclear|biomedical|geotechnical|hardware|optical|photonic|"
     r"packaging|materials|thermal|acoustic|automotive|marine|agricultural|"
     r"metallurgical|metallurgy|foundry|boiler|elevator|refrigeration|pipeline|"
@@ -475,7 +488,21 @@ _HARDWARE_DISCIPLINE = (
     # Semiconductor metrology and lithography — "Electron Beam Product
     # Engineer" (KLA) reaches the accept list through the bare `product
     # engineer` term.
-    r"electron\s+beam|e-beam|ebeam"
+    r"electron\s+beam|e-beam|ebeam|"
+    # Added by the audit. Each was measured against the archive first, and the
+    # `_names_software` exemption keeps the software ones: LeoLabs' "Radar
+    # Software Engineer" and Applied Materials' "Electron Optics Devices
+    # Software Engineer" both survive.
+    #
+    # `optics` is the NOUN — only the adjective `optical` was here, which is
+    # why "Optics Research Scientist" walked through.
+    #
+    # `catalyst` carries a future hazard worth naming: it is also a Cisco
+    # product line. It matches one row today (a chemistry simulation role) and
+    # a "Catalyst Network Engineer" would already be excluded by the `network`
+    # category, so the exposure is small but real.
+    r"radar|optics|dram|wafer|lithograph\w*|molding|moulding|"
+    r"fea\b|finite\s+element|catalyst"
 )
 
 #: The subset safe to match AFTER the role noun — a curated list again, and for
@@ -490,11 +517,12 @@ _HARDWARE_DISCIPLINE = (
 #: Experience" and "Data / Cloud Native Engineer - Palantir Foundry Experience"
 #: are the two the archive caught.
 _HARDWARE_REVERSED = (
-    r"mechanical|civil|structural|electrical|chemical|aerospace|petroleum|"
+    r"mechanical|civil|structural|electrical|chemicals?|aerospace|petroleum|"
     r"mining|nuclear|geotechnical|hardware|photonic|metallurgical|metallurgy|"
     r"boiler|elevator|refrigeration|drilling|subsea|hydraulic|pneumatic|"
     r"corrosion|ceramics|circuit|sram|design\s+verification|physical\s+design|"
-    r"facilities|asic|fpga|rtl|vlsi|silicon|semiconductor"
+    r"facilities|asic|fpga|rtl|vlsi|silicon|semiconductor|radar|optics|dram|"
+    r"wafer|lithograph\w*|molding|moulding|catalyst|finite\s+element|fea\b"
 )
 
 #: Disciplines so unambiguous that no distance limit applies — see the reversed
@@ -506,10 +534,17 @@ _HARDWARE_REVERSED = (
 #: Hunting" is a Security Operations Centre, and blocking it cost a real
 #: posting. It stays in `_HARDWARE_DISCIPLINE` above, where adjacency to the
 #: role noun disambiguates it.
-_SILICON = r"asic|fpga|rtl|vlsi|silicon|semiconductor|sram|design\s+verification"
+_SILICON = (
+    r"asic|fpga|rtl|vlsi|silicon|semiconductor|sram|design\s+verification|"
+    r"radar|dram|wafer|molding|moulding|lithograph\w*"
+)
 
 _HARDWARE_NEAR_RE = re.compile(
-    rf"\b(?:{_HARDWARE_DISCIPLINE})\b{_GAP}(?:engineer|developer)\b"
+    # `scientist` is in the role-noun set because bench research in a hardware
+    # discipline is the same job as engineering in it: "Optics Research
+    # Scientist" survived only because this list named engineers and not
+    # scientists.
+    rf"\b(?:{_HARDWARE_DISCIPLINE})\b{_HW_GAP}(?:engineer(?:ing)?|developer|scientist)\b"
     # The three role nouns named as unwanted. Blocked wherever they appear
     # rather than merely left out of the accept list, because the accept side's
     # qualifier gap binds them to a software word two positions away: "Senior AI
@@ -537,7 +572,7 @@ _HARDWARE_NEAR_RE = re.compile(
     # "RTL Design Tech Lead (ASIC/SoC)". Safe here and nowhere else — a silicon
     # word has to be present, and the exemption still rescues "Lead Software
     # Engineer - C++, FPGA".
-    rf"|\b(?:{_SILICON})\b.*\b(?:engineer|developer|architect|lead|manager)\b",
+    rf"|\b(?:{_SILICON})\b.*\b(?:engineer(?:ing)?|developer|architect|lead|manager)\b",
     re.I,
 )
 
@@ -556,9 +591,15 @@ _HARDWARE_NEAR_RE = re.compile(
 #: Brackets stay out of the separator class here, unlike the accept side's
 #: mirror of it, for the same reason: a parenthesised clause is a domain.
 _HARDWARE_REVERSED_RE = re.compile(
-    rf"\b(?:engineer|developer|architect)\b[\s,:/–—-]+\s*(?:\w+[\s-]+){{0,2}}"
+    # Brackets ARE in the separator class. They were excluded when this arm was
+    # written, so that "Frontend Engineer (Civil Aviation)" would survive — but
+    # `_UNAMBIGUOUS_SOFTWARE_RE` was added afterwards and covers that case on
+    # the right grounds: the title names a software role, whatever punctuation
+    # follows. Excluding brackets was punctuation standing in for meaning, and
+    # it cost "Product Engineer (Chemicals)".
+    rf"\b(?:engineer(?:ing)?|developer|architect|scientist)\b[\s,:/()\[\]–—-]+\s*(?:\w+[\s-]+){{0,2}}"
     rf"(?:{_HARDWARE_REVERSED})\b"
-    rf"|\b(?:engineer|developer|architect|lead|manager)\b.*\b(?:{_SILICON})\b",
+    rf"|\b(?:engineer(?:ing)?|developer|architect|lead|manager)\b.*\b(?:{_SILICON})\b",
     re.I,
 )
 
@@ -585,6 +626,13 @@ _LIFE_SCIENCE_TERMS = [
     r"\bmolecular\s+biolog", r"\b(cell|gene)\s+therapy\b", r"\bcell\s+culture\b",
     r"\bhistolog", r"\bpatholog", r"\bpharmacokinetic", r"\bbiomarker\b",
     r"\bmicrobiolog", r"\bantibod",
+    # Health-economics and outcomes research. "Research Scientist, Evidence
+    # Synthesis", "Associate Research Scientist, Evidence Generation",
+    # "Research Scientist, Health Economic Modeling" — bench-adjacent medical
+    # research that reached the accept list through the bare `research
+    # scientist` term. 8 postings.
+    r"\bevidence\s+(synthesis|generation)\b", r"\bhealth\s+econom",
+    r"\bepidemiolog",
 ]
 _LIFE_SCIENCE_RE = re.compile("|".join(_LIFE_SCIENCE_TERMS), re.I)
 
@@ -603,6 +651,7 @@ _UNAMBIGUOUS_SOFTWARE_RE = re.compile(
     r"|\b(ai|ml|machine\s+learning|computer\s+vision)[\s-]+(scientist|researcher)\b"
     r"|\bforward[\s-]?deployed\s+engineer\b"
     r"|\bui\b(\s*/\s*ux)?\s+(engineer|developer)\b"
+    r"|\bdata\s+scien(tist|ce)\b"
     r"|\bsoftware\s+(engineer|developer|architect)\b",
     re.I,
 )
@@ -723,7 +772,11 @@ _EARLY_CAREER_RE = re.compile(
     # Plurals matter: "Software Engineer - 2027 New Grads" and "New College
     # Graduates Welcome" are how three postings escaped the first version.
     r"\bnew\s+grad(uate)?s?\b|\b(university|college)\s+grad(uate)?s?\b|"
-    r"\bearly\s+career\b|\bcampus\s+hire\b",
+    r"\bearly\s+career\b|\bcampus\s+hire\b|"
+    # A thesis placement or a working-student contract is not a job opening,
+    # which is the same reason interns are here. "GenAI Research Student
+    # Worker", "Master's Thesis in the Field of Data Science".
+    r"\bstudent\s+(worker|assistant)\b|\bwerkstudent|\bmaster['’]?s\s+thesis\b",
     re.I,
 )
 
@@ -802,6 +855,27 @@ _VENDOR_PLATFORM_RE = re.compile(
 #: and "CNC/PLC Production Engineer" is not one a title match can draw.
 _INDUSTRIAL_RE = re.compile(r"\b(scada|flexsort|sortation)\b", re.I)
 
+#: Data science named for the industry it serves rather than the work.
+#:
+#: "Marketing Data Scientist", "Chemical Data Scientist", "Senior Clinical Data
+#: Scientist", "Data Scientist, Supply Chain" — 59 postings. The role is data
+#: science and the qualifier is the domain, which is why this is a preference
+#: rather than a not-software judgement, and why it is reversible.
+#:
+#: **This one demonstrably costs genuine software work** and was chosen with
+#: that stated: "Staff Data Scientist, Marketing Inference" and "Senior Data
+#: Scientist / Risk Modeling" are ordinary ML jobs whose qualifier names the
+#: industry, exactly as "Data Engineer, Payments" does. The domain list is
+#: fixed and deliberately short rather than open-ended, so the blast radius
+#: stays the 59 that were measured.
+_DOMAIN_DATA_SCIENCE_RE = re.compile(
+    r"\bdata\s+scien(tist|ce)\b(?=.*\b(?:marketing|chemical|clinical|epidemiolog\w*|"
+    r"biolog\w*|pharma\w*|health|financ(?:e|ial)|risk|insurance|supply\s+chain|retail|sports)\b)"
+    r"|\b(?:marketing|chemical|clinical|epidemiolog\w*|biolog\w*|pharma\w*|health|"
+    r"financ(?:e|ial)|risk|insurance|supply\s+chain|retail|sports)\b.*\bdata\s+scien(tist|ce)\b",
+    re.I,
+)
+
 #: Category name -> matcher. A registry rather than one boolean parameter per
 #: category: with six of them, separate flags would mean six booleans threaded
 #: through five function signatures and the CLI, and wiring one to only half the
@@ -826,6 +900,7 @@ EXCLUDED_ROLES: dict[str, Any] = {
     "mainframe": lambda text: bool(_MAINFRAME_RE.search(text)),
     "vendor_platform": lambda text: bool(_VENDOR_PLATFORM_RE.search(text)),
     "industrial": lambda text: bool(_INDUSTRIAL_RE.search(text)),
+    "domain_data_science": lambda text: bool(_DOMAIN_DATA_SCIENCE_RE.search(text)),
 }
 
 #: Stable order for the CLI's `choices` and for anything that reports by
@@ -894,9 +969,19 @@ def is_software_role(
     if _NOT_SOFTWARE_RE.search(text):
         return False
     # A hardware discipline a word or two from the role noun, unless the title
-    # says "Software Engineer" outright — that exemption is what keeps "Optical
-    # Software Engineer" while dropping "Optical Design Engineer".
-    if _HARDWARE_NEAR_RE.search(text) and not _names_software(text):
+    # names a software role — that exemption is what keeps "Optical Software
+    # Engineer" while dropping "Optical Design Engineer".
+    #
+    # All three discipline rules (this, the reversed shape below, and life
+    # science) now share the WIDER exemption. They used to differ: this one
+    # asked only for the literal word "software", which was fine while its role
+    # nouns were engineer and developer. Adding `scientist` broke that — a
+    # "Chemical Data Scientist" is a data scientist, and holding it here meant
+    # `--include-roles domain_data_science` could not give it back, which makes
+    # the flag a promise the filter does not keep.
+    if _HARDWARE_NEAR_RE.search(text) and not (
+        _names_software(text) or _UNAMBIGUOUS_SOFTWARE_RE.search(text)
+    ):
         return False
     # Same rule for wet-lab work, but a WIDER exemption. See _LIFE_SCIENCE_RE:
     # the hardware exemption asks for the word "software", and that is too

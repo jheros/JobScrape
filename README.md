@@ -607,9 +607,16 @@ row is dropped rather than allowed to pollute the dataset.
   | `mainframe` | mainframe, COBOL, JCL, IMS | `--include-roles mainframe` |
   | `vendor_platform` | configuring somebody else's enterprise platform — Palantir/Foundry, SAP, ServiceNow, Workday, Oracle Fusion, PeopleSoft, Epic | `--include-roles vendor_platform` |
   | `industrial` | SCADA, sortation and materials-handling control | `--include-roles industrial` |
+  | `domain_data_science` | data science named for the industry it serves — Marketing, Clinical, Chemical, Supply Chain, Risk | `--include-roles domain_data_science` |
 
   `--include-roles` is repeatable. `--include-qa` and `--include-management` remain as
   shorthand for the first two.
+
+  `domain_data_science` is the one category that demonstrably costs genuine software work,
+  and it was chosen with that stated: "Staff Data Scientist, Marketing Inference" is
+  ordinary ML whose qualifier names the industry, exactly as "Data Engineer, Payments"
+  does. A bare "Data Scientist" is untouched — only a fixed, short list of industry
+  qualifiers triggers it.
 
   `vendor_platform` is about the **work**, not the employer: every Palantir posting
   measured was a consultancy deploying Foundry for a client — Deloitte, Booz Allen,
