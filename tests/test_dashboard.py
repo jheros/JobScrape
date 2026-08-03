@@ -210,7 +210,7 @@ def test_stage_allowlist_prevents_arbitrary_commands() -> None:
     assert set(STAGES) == {
         "discover", "discover-fast", "validate", "fetch", "export",
         "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
-        "daily-schedule", "weekly-schedule",
+        "daily-schedule", "weekly-schedule", "full-sweep",
     }
     known_subcommands = {
         "discover", "validate", "fetch", "export", "apify-pull", "dedupe",

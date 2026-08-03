@@ -32,13 +32,29 @@
   {% endfor %}
 {% endif %}
 
+<div class="card hero">
+  <div class="flex-between">
+    <div>
+      <strong>Run the full pipeline</strong>
+      <div class="detail">
+        One button, the whole process: discover every board, validate every
+        unchecked one, fetch every currently open posting from every source
+        (including Apify), then collapse reposts and cross-source duplicates.
+        No date window and no caps — this is the complete, deduplicated
+        archive in a single run, at the cost of being the slowest option here.
+      </div>
+    </div>
+    <button class="btn ghost" data-start-stage="full-sweep" data-label="Run full pipeline">{{ icons.icon('play') }} Run full pipeline</button>
+  </div>
+</div>
+
 <div class="card">
-  <h2>Run now</h2>
+  <h2>Run one stage</h2>
   <div class="btn-row">
     <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
     <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
     <button class="btn ghost" data-start-stage="validate" data-label="Validate">{{ icons.icon('play') }} Validate boards</button>
-    <button class="btn" data-start-stage="fetch" data-label="Fetch">{{ icons.icon('play') }} Fetch jobs</button>
+    <button class="btn ghost" data-start-stage="fetch" data-label="Fetch">{{ icons.icon('play') }} Fetch jobs</button>
     <button class="btn ghost" data-start-stage="export" data-label="Export">{{ icons.icon('play') }} Export</button>
     <button class="btn ghost" data-start-stage="apify-pull" data-label="Apify pull">{{ icons.icon('play') }} Apify pull</button>
     <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">{{ icons.icon('play') }} Dedupe</button>

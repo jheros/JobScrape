@@ -1016,13 +1016,26 @@ def _step_args(command: str, argv: list[str], db_url: str | None) -> argparse.Na
 
 
 async def cmd_schedule_run(args: argparse.Namespace) -> int:
-    """Discover -> validate -> fetch -> apify-pull (daily only) -> dedupe -> stats.
+    """Discover -> validate -> fetch -> apify-pull -> dedupe -> stats, in one
+    of three modes:
 
-    This is `scripts/schedule.sh` ported to Python so the dashboard's
-    in-process scheduler can run the identical sequence without shelling out —
-    it calls the same `cmd_discover`/`cmd_validate`/... functions the terminal
-    path calls; only the sequencing (and the per-mode since-date, discover
-    vectors and validate limit) is new.
+    - `daily`  — last 24 hours, cheap discover vectors, bounded validation.
+      What the Mon-Sat cron leg runs.
+    - `weekly` — last 60 days, every discover vector, a wider validation cap.
+      What the Sunday cron leg runs.
+    - `full`   — no date window, no validation cap, every discover vector:
+      the single "give me everything" button on the dashboard's Runs page.
+      Discover finds every reachable board, validate probes all of them
+      (not just a capped slice), and fetch collects every currently open
+      posting from every source — as complete as one run gets, at the cost
+      of being the slowest of the three.
+
+    `daily`/`weekly` are `scripts/schedule.sh` ported to Python so the
+    dashboard's in-process scheduler can run the identical sequence without
+    shelling out; `full` has no shell-script equivalent — it exists only for
+    the one-button case. All three call the same `cmd_discover`/
+    `cmd_validate`/... functions the terminal path calls; only the sequencing
+    (and each mode's discover vectors / validate limit / fetch window) is new.
     """
     mode = args.mode
     if mode == "daily":
@@ -1031,33 +1044,41 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
         # everything posted since midnight. Yesterday overlaps the previous
         # run instead of leaving a gap.
         since = (date.today() - timedelta(days=1)).isoformat()
-        vectors = ["--vector", "ct", "--vector", "github"]
-        validate_limit = "1500"
-    else:
+        discover_argv = ["--vector", "ct", "--vector", "github"]
+        validate_argv = ["--limit", "1500", "--concurrency", "6"]
+        fetch_argv = ["--since", since]
+    elif mode == "weekly":
         since = (date.today() - timedelta(days=60)).isoformat()
-        vectors = []
-        validate_limit = "6000"
+        discover_argv = []
+        validate_argv = ["--limit", "6000", "--concurrency", "6"]
+        fetch_argv = ["--since", since]
+    else:
+        # No --since/--until (every currently open posting) and no --limit on
+        # validate (every unchecked board, not a capped slice) — the two
+        # flags that make `daily`/`weekly` bounded, dropped on purpose.
+        since = None
+        discover_argv = []
+        validate_argv = ["--concurrency", "6"]
+        fetch_argv = []
 
-    log.info("=== schedule-run %s (since %s) ===", mode, since)
+    log.info("=== schedule-run %s (since %s) ===", mode, since or "no window")
 
-    rc = await cmd_discover(_step_args("discover", vectors, args.db))
+    rc = await cmd_discover(_step_args("discover", discover_argv, args.db))
     if rc:
         return rc
 
-    rc = await cmd_validate(_step_args(
-        "validate", ["--limit", validate_limit, "--concurrency", "6"], args.db,
-    ))
+    rc = await cmd_validate(_step_args("validate", validate_argv, args.db))
     if rc:
         return rc
 
-    rc = await cmd_fetch(_step_args("fetch", ["--since", since], args.db))
+    rc = await cmd_fetch(_step_args("fetch", fetch_argv, args.db))
     if rc:
         return rc
 
-    # Daily only, regardless of mode: Apify bills per actor run and its own
+    # Every mode except weekly: Apify bills per actor run and its own
     # scheduler decides how often postings appear, so pulling on the weekly
-    # leg too would just re-read the same runs.
-    if mode == "daily":
+    # leg too would just re-read the same runs `daily` already ingested.
+    if mode != "weekly":
         rc = await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
         if rc:
             return rc
@@ -1324,10 +1345,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sched_run = sub.add_parser(
         "schedule-run",
-        help="run the exact daily/weekly sequence the dashboard's scheduler fires "
-             "(discover + validate + fetch + [apify-pull] + dedupe + stats)",
+        help="run discover + validate + fetch + apify-pull + dedupe + stats as one "
+             "sequence — daily/weekly are what the dashboard's scheduler fires; "
+             "full is unbounded (every board, every currently open posting)",
     )
-    p_sched_run.add_argument("--mode", choices=["daily", "weekly"], required=True)
+    p_sched_run.add_argument("--mode", choices=["daily", "weekly", "full"], required=True)
 
     p_dedupe = sub.add_parser("dedupe", help="collapse reposts and cross-source duplicates")
     p_dedupe.add_argument("--backfill", action="store_true",

@@ -50,6 +50,10 @@ STAGES: dict[str, list[str]] = {
     # than launching five separately with no way to treat them as one unit.
     "daily-schedule": ["schedule-run", "--mode", "daily"],
     "weekly-schedule": ["schedule-run", "--mode", "weekly"],
+    # The one-button "give me everything" run: every board, every currently
+    # open posting, no date window and no validation cap — the Runs page's
+    # single primary action, as opposed to clicking each stage separately.
+    "full-sweep": ["schedule-run", "--mode", "full"],
 }
 
 #: `purge` deletes data for real unless `extra` carries `--dry-run` (already on
@@ -66,6 +70,7 @@ STAGES: dict[str, list[str]] = {
 STAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "daily-schedule": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
     "weekly-schedule": ("discover", "validate", "fetch", "dedupe", "stats"),
+    "full-sweep": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
 }
 
 
