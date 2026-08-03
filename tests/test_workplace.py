@@ -267,53 +267,85 @@ def test_usajobs_remote_indicator_parsing(value, expected) -> None:
 
 # --- the collection filter reads workplace_type -----------------------------
 #
-# It was purely descriptive until hybrid and onsite stopped being collected.
-# That makes a wrong answer from `classify_workplace` cost a posting rather
-# than just mislabel one, so both halves are asserted here rather than only
-# the drop.
+# It was purely descriptive until hybrid and onsite stopped being collected,
+# and then `unknown` became conditional too. A wrong answer from
+# `classify_workplace` now costs a posting rather than just mislabelling one.
 
 
-def _posting(workplace: str | None):
+def _posting(workplace: str | None, description: str | None = None):
     from jobscrape.models import Job
 
     return Job(
         source="greenhouse", source_job_id=str(workplace), title="Software Engineer",
         company="Acme", job_url="https://x/1", location_raw="Austin, TX",
-        workplace_type=workplace,
+        workplace_type=workplace, description_text=description,
     )
 
 
-@pytest.mark.parametrize("workplace", ["remote", "unknown", None])
-def test_remote_and_unknown_are_collected(workplace) -> None:
-    """`unknown` is kept, and it is the biggest bucket — 18,684 of 49,692 open
-    postings against 11,732 remote.
-
-    It does not mean the classifier was unsure. It means the posting never
-    states an arrangement anywhere in its text, which is the common case: of
-    11,110 unknowns measured, 10,808 had a full description and simply never
-    said. A remote job whose posting forgot to mention it is in that bucket,
-    and dropping it would be unrecoverable once the listing closes.
-
-    `None` is folded into unknown because the column is nullable.
-    """
+@pytest.mark.parametrize("length", [0, 273, 500, 5506])
+def test_remote_is_collected_whatever_the_description_length(length: int) -> None:
     from jobscrape.filters import apply_filters
 
-    assert len(apply_filters([_posting(workplace)])) == 1
+    assert len(apply_filters([_posting("remote", "x" * length)])) == 1
 
 
 @pytest.mark.parametrize("workplace", ["hybrid", "onsite"])
-def test_hybrid_and_onsite_are_not_collected(workplace) -> None:
-    """The 19,276 rows this rejects said so themselves."""
+@pytest.mark.parametrize("length", [0, 273, 5506])
+def test_hybrid_and_onsite_are_never_collected(workplace: str, length: int) -> None:
+    """These postings said so themselves, at any length."""
     from jobscrape.filters import apply_filters
 
-    assert apply_filters([_posting(workplace)]) == []
+    assert apply_filters([_posting(workplace, "x" * length)]) == []
+
+
+@pytest.mark.parametrize(
+    "length,label",
+    [(0, "no description at all"),
+     (273, "a Jooble snippet"),
+     (500, "an Adzuna snippet, truncated at exactly 500")],
+)
+def test_unknown_survives_when_there_was_nothing_to_go_on(length: int, label: str) -> None:
+    """The rule is that a posting is not punished for its source's snippet
+    length. Adzuna is the case it exists for: all 3,274 of its unknown rows are
+    exactly 500 characters, so a threshold below that would delete the source
+    entirely for a truncation the employer never chose."""
+    from jobscrape.filters import apply_filters
+
+    assert len(apply_filters([_posting("unknown", "x" * length)])) == 1, label
+
+
+def test_unknown_is_dropped_when_a_full_description_said_nothing() -> None:
+    """5,506 characters is Greenhouse's median. A posting that long which never
+    mentions an arrangement is not advertising remote work."""
+    from jobscrape.filters import apply_filters
+
+    assert apply_filters([_posting("unknown", "x" * 5506)]) == []
+
+
+def test_the_threshold_does_not_drift() -> None:
+    """Pinned on both sides, because an off-by-one here silently moves
+    thousands of rows and nothing else would notice."""
+    from jobscrape.filters import DESCRIPTION_EVIDENCE_CHARS, keeps_workplace
+
+    assert DESCRIPTION_EVIDENCE_CHARS == 800
+    assert keeps_workplace("unknown", 799) is True
+    assert keeps_workplace("unknown", 800) is False
 
 
 @pytest.mark.parametrize("workplace", ["remote", "unknown", "hybrid", "onsite", None])
 def test_all_workplaces_restores_every_arrangement(workplace) -> None:
     from jobscrape.filters import apply_filters
 
-    assert len(apply_filters([_posting(workplace)], remote_only=False)) == 1
+    job = _posting(workplace, "x" * 5506)
+    assert len(apply_filters([job], remote_only=False)) == 1
+
+
+def test_a_null_workplace_is_treated_as_unknown() -> None:
+    """The column is nullable and the classifier only fills a blank."""
+    from jobscrape.filters import keeps_workplace
+
+    assert keeps_workplace(None, 0) is True
+    assert keeps_workplace(None, 5506) is False
 
 
 def test_the_funnel_attributes_them_and_still_sums() -> None:
@@ -321,15 +353,15 @@ def test_the_funnel_attributes_them_and_still_sums() -> None:
     what makes the counts sum to `seen` and read as a funnel."""
     from jobscrape.filters import apply_filters_counted
 
-    jobs = [_posting(w) for w in ("remote", "unknown", "hybrid", "onsite")]
+    jobs = [_posting("remote", "x" * 5000), _posting("unknown", "x" * 273),
+            _posting("unknown", "x" * 5000), _posting("hybrid"), _posting("onsite")]
     kept, funnel = apply_filters_counted(jobs)
 
-    assert funnel.dropped_workplace == 2
+    assert funnel.dropped_workplace == 3
     assert funnel.kept == len(kept) == 2
     d = funnel.as_dict()
-    assert d["dropped_workplace"] == 2
-    assert (d["dropped_role"] + d["dropped_location"] + d["dropped_window"]
-            + d["dropped_workplace"] + d["kept"]) == d["seen"]
+    assert (d["dropped_company"] + d["dropped_role"] + d["dropped_location"]
+            + d["dropped_window"] + d["dropped_workplace"] + d["kept"]) == d["seen"]
 
 
 def test_workplace_is_checked_last() -> None:
@@ -337,8 +369,7 @@ def test_workplace_is_checked_last() -> None:
 
     Order is not cosmetic: the stages run in the order the evidence becomes
     available, and role is decidable from the listing while workplace needs the
-    description. Reporting the later one would misdescribe where the loss
-    happened.
+    description.
     """
     from jobscrape.filters import apply_filters_counted
     from jobscrape.models import Job

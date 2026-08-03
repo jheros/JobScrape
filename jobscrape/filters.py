@@ -1228,20 +1228,56 @@ def is_blocked_company(value: str | None) -> bool:
     return bool(key) and key in _blocked_keys()
 
 
-#: Work arrangements worth collecting.
+#: How much description a posting must carry before its silence means anything.
 #:
-#: `unknown` is in here and it is the biggest bucket by a wide margin — 18,684
-#: of 49,692 open postings when this was written, against 11,732 remote. It does
-#: NOT mean "the classifier was unsure": `classify_workplace` returns it only
-#: when the posting never states an arrangement anywhere in its text, which is
-#: most postings, because most employers do not think to say. Every genuinely
-#: remote job whose posting forgot to mention it lives in that bucket too, and a
-#: row dropped here cannot be recovered without refetching the posting — which
-#: for a closed listing is not possible at all.
+#: `classify_workplace` returns `unknown` when a posting never states an
+#: arrangement anywhere in its text — but "never states one" reads very
+#: differently depending on how much text there was. Measured across the
+#: `unknown` rows, description length is sharply BIMODAL:
 #:
-#: So the rule is "not known to be hybrid or onsite" rather than "known to be
-#: remote". The 19,276 rows it does reject said so themselves.
-WORKPLACE_KEEP = frozenset({"remote", "unknown"})
+#:     jooble        p25 269   median 273   p75 277     <- snippet
+#:     adzuna            500          500       500     <- truncated at exactly 500
+#:     cornerstone       331          382     1,472
+#:     ukg               452          612       717
+#:     greenhouse      3,980        5,506     6,895     <- real description
+#:     workday         4,911        6,014     7,248
+#:     ashby           3,042        4,158     5,234
+#:
+#: Snippet sources cluster at 270-700 characters and real descriptions start
+#: around 2,300, with nothing in between. 800 sits in that empty valley, and the
+#: choice is insensitive across it: moving the cut from 600 to 800 keeps 91 more
+#: rows, and 800 to 1,200 keeps 142 more.
+#:
+#: Set this to 400 and Adzuna disappears entirely — all 3,274 of its unknown
+#: rows are exactly 500 characters, and cutting below that punishes them for a
+#: truncation their source imposed rather than for anything the employer said.
+DESCRIPTION_EVIDENCE_CHARS = 800
+
+
+def keeps_workplace(workplace: str | None, description_len: int) -> bool:
+    """Whether a posting's work arrangement is one worth collecting.
+
+    Three-way, not a set membership, because `unknown` is conditional:
+
+    * ``remote`` — always kept.
+    * ``hybrid`` / ``onsite`` — never. These postings said so themselves.
+    * ``unknown`` — kept ONLY when the description was too thin to tell. A
+      posting carrying 5,000 characters that never mentions an arrangement is
+      not advertising remote work; one carrying a 273-character Jooble snippet
+      simply has not been asked.
+
+    The cost of the strict half is real and worth stating: a genuinely remote
+    job whose full posting forgot to say so is deleted here, and once the
+    listing closes it cannot be recovered by refetching. 353 such postings were
+    measured before this rule went in — 350 of them one employer whose text
+    reads "a 100% distributed setting - Speechify has no office", which names
+    no word the classifier knows.
+    """
+    if workplace == "remote":
+        return True
+    if workplace in ("hybrid", "onsite"):
+        return False
+    return description_len < DESCRIPTION_EVIDENCE_CHARS
 
 
 def apply_filters(
@@ -1357,7 +1393,9 @@ def apply_filters_counted(
         # stages above, this one cannot save the detail request that fetched it.
         # It keeps the archive to what you want to publish; it does not make a
         # sweep cheaper.
-        if remote_only and (job.workplace_type or "unknown") not in WORKPLACE_KEEP:
+        if remote_only and not keeps_workplace(
+            job.workplace_type or "unknown", len(job.description_text or "")
+        ):
             funnel.dropped_workplace += 1
             continue
         # Each field filled independently. Requiring BOTH to be blank meant an

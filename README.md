@@ -454,15 +454,29 @@ extend. The remaining skills gap is structural: Adzuna and Jooble serve ~500-cha
 snippets, and a snippet rarely names a stack.
 
 `workplace_type` is `remote` / `hybrid` / `onsite` / `unknown`, and **the collector
-filters on it**: `hybrid` and `onsite` are dropped, `remote` and `unknown` are kept.
-`--all-workplaces` turns that off, on `fetch`, `apify-pull` and `purge` alike.
+filters on it**. The rule is three-way, not a simple allowlist:
 
-Keeping `unknown` is deliberate and it is the largest bucket — 18,684 of 49,692 open
-postings against 11,732 remote. It does not mean the classifier was unsure; it means the
-posting never states an arrangement anywhere in its text, which is the common case (of
-11,110 unknowns measured, 10,808 had a full description and simply never said). A remote
-job whose posting forgot to mention it lives there too, and dropping it would be
-unrecoverable once the listing closes.
+| value | collected? |
+| --- | --- |
+| `remote` | always |
+| `hybrid`, `onsite` | never — the posting said so itself |
+| `unknown` | **only when the description was too thin to tell** (under 800 characters) |
+
+`--all-workplaces` turns the whole stage off, on `fetch`, `apify-pull` and `purge` alike.
+
+That threshold is not arbitrary. Among `unknown` postings, description length is sharply
+bimodal — Jooble's snippets sit at a median of 273 characters and Adzuna truncates at
+*exactly* 500, while real descriptions from Greenhouse, Workday and Ashby start around
+3,000. 800 falls in the empty valley between, and the choice is insensitive across it:
+moving the cut from 600 to 800 keeps 91 more rows, 800 to 1,200 keeps 142 more. Set it to
+400 and Adzuna vanishes entirely — punished for a truncation its API imposed rather than
+for anything an employer said.
+
+The strict half has a real cost, worth stating plainly: a genuinely remote job whose full
+posting never says so is deleted, and once the listing closes no refetch can bring it
+back. 353 such postings were measured before the rule went in — 350 of them one employer
+whose text reads *"a 100% distributed setting – Speechify has no office"*, which contains
+no word the classifier knows.
 
 ```bash
 # only the ones positively identified as remote

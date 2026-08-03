@@ -466,14 +466,19 @@ companies whose boards this archive does not have, not slug mismatches.
   missing locations and anything unrecognised are **accepted**; only a named non-US place
   or a region-locked remote scope (`Remote - EMEA`, `EU residents only`) is rejected.
 - **Date window** — `--since` / `--until` against the normalised `posted_at`.
-- **Workplace** — `hybrid` and `onsite` are dropped; `remote` and `unknown` are kept.
+- **Workplace** — `remote` is kept, `hybrid` and `onsite` are dropped, and `unknown` is
+  kept only when the description was under `DESCRIPTION_EVIDENCE_CHARS` (800). "Never
+  states an arrangement" means something quite different in a 273-character Jooble snippet
+  than in a 5,500-character Greenhouse description: the first was not asked, the second
+  answered by omission. Length is bimodal across the archive — snippets at 270-700,
+  real descriptions from 2,300 up — and 800 sits in the gap.
   `--all-workplaces` turns it off. Checked **last**, because it is the only stage whose
   input comes from the description rather than the listing: three of `classify_workplace`'s
   five tiers read the posting body, so unlike the three above it, this stage cannot save
   the detail request that produced the value it reads. It shapes the archive; it does not
-  make a sweep cheaper. Keeping `unknown` is deliberate — it is the largest bucket (18,684
-  of 49,692 open postings) and means the posting never states an arrangement, which is
-  where a remote job that forgot to say so would be.
+  make a sweep cheaper. The conditional half of the `unknown` rule is what keeps the
+  aggregators alive: Adzuna and Jooble survive it intact, while Greenhouse and Workday
+  lose the postings that had room to mention remote work and did not.
 
 Counts for each rejection reason are recorded per source. That is what lets the dashboard
 answer "why did this source yield nothing?" with a chart instead of a debugging session.
