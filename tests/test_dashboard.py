@@ -6,13 +6,14 @@ the run controller. Both are tested without starting a server.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from jobscrape import config, db
 from jobscrape.dashboard import analytics, charts
-from jobscrape.dashboard.runner import STAGES, RunManager
+from jobscrape.dashboard.runner import STAGE_GROUPS, STAGES, RunManager
 from jobscrape.models import Job
 
 
@@ -206,15 +207,94 @@ def test_chart_escapes_untrusted_labels() -> None:
 
 def test_stage_allowlist_prevents_arbitrary_commands() -> None:
     """The web layer must never be able to assemble its own command line."""
-    assert set(STAGES) == {"discover", "discover-fast", "validate", "fetch", "export"}
+    assert set(STAGES) == {
+        "discover", "discover-fast", "validate", "fetch", "export",
+        "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
+        "daily-schedule", "weekly-schedule",
+    }
+    known_subcommands = {
+        "discover", "validate", "fetch", "export", "apify-pull", "dedupe",
+        "purge", "liveness", "stats", "sources", "schedule-run",
+    }
     for argv in STAGES.values():
-        assert argv[0] in {"discover", "validate", "fetch", "export"}
+        assert argv[0] in known_subcommands
 
 
 async def test_unknown_stage_is_rejected(tmp_path) -> None:
     manager = RunManager(str(tmp_path / "r.db"))
     with pytest.raises(ValueError):
         await manager.start("rm -rf /")
+
+
+def test_stage_groups_only_reference_real_stages() -> None:
+    """A composite's group must be plain, launchable stages, and never
+    reference the composite itself or another composite."""
+    for composite, members in STAGE_GROUPS.items():
+        assert composite in STAGES
+        for member in members:
+            assert member in STAGES
+            assert member not in STAGE_GROUPS, "a composite's group must be flat"
+
+
+async def test_composite_blocks_its_own_members(tmp_path, monkeypatch) -> None:
+    """Starting a composite must reserve every plain stage in its group, so a
+    manual click on one of them mid-run is refused rather than racing it."""
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeProcess:
+        pid = 4242
+        stdout = None
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("daily-schedule")
+    assert manager.is_running("discover")
+    assert manager.is_running("fetch")
+    with pytest.raises(RuntimeError):
+        await manager.start("discover")
+    # The composite itself must still show as one run, not six.
+    assert len(manager.active()) == 1
+
+
+async def test_stopping_a_composite_frees_its_whole_group(tmp_path, monkeypatch) -> None:
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeStdout:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeProcess:
+        pid = 4243
+        stdout = _FakeStdout()
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    # `start()` spawns its own consumer task; replaced with a no-op so it
+    # cannot race the explicit, deterministic `_consume` call below.
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("weekly-schedule")
+    run = manager._active["weekly-schedule"]
+    # Bypass the instance-level monkeypatch to run the REAL cleanup logic once.
+    await RunManager._consume(manager, run)
+    assert not manager.is_running("discover")
+    assert not manager.is_running("weekly-schedule")
+    assert manager.active() == []
 
 
 def test_progress_parsing() -> None:

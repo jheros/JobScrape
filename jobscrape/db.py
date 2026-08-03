@@ -154,6 +154,26 @@ CREATE TABLE IF NOT EXISTS run_events (
     counters JSONB
 );
 
+-- Dashboard-managed schedules. This is the single source of truth for WHEN a
+-- stage runs; the in-process scheduler (dashboard/scheduler.py) reads every
+-- enabled row on startup and whenever one is edited, and calls RunManager
+-- itself — this table holds no PID/process state, only configuration.
+CREATE TABLE IF NOT EXISTS schedules (
+    id               SERIAL PRIMARY KEY,
+    name             TEXT NOT NULL,
+    stage            TEXT NOT NULL,
+    extra            TEXT,
+    cron_minute      TEXT NOT NULL DEFAULT '0',
+    cron_hour        TEXT NOT NULL DEFAULT '7',
+    cron_day_of_week TEXT NOT NULL DEFAULT '*',
+    timezone         TEXT NOT NULL DEFAULT 'Asia/Bangkok',
+    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_run_id      BIGINT,
+    last_fired_at    TIMESTAMPTZ
+);
+
 -- Postings whose detail we already downloaded and then *rejected* (wrong role,
 -- wrong region, outside the date window) or turned away before spending a
 -- detail request (the cheap prefilter). Without this they are re-downloaded
@@ -438,9 +458,10 @@ def _schema_is_current(conn: Connection) -> bool:
     """
     row = conn.execute(
         "SELECT to_regclass('jobs') AS jobs, to_regclass('companies') AS companies, "
+        "to_regclass('schedules') AS schedules, "
         "(SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()) AS n_idx"
     ).fetchone()
-    if not row or not row["jobs"] or not row["companies"]:
+    if not row or not row["jobs"] or not row["companies"] or not row["schedules"]:
         return False
     # Column drift matters as much as a missing table: a release that adds one
     # must still run its DDL. Compare what `jobs` has against what SCHEMA says.
@@ -1070,6 +1091,77 @@ def mark_stale_runs(conn: Connection) -> int:
     )
     conn.commit()
     return result.rowcount
+
+
+# --- schedules --------------------------------------------------------------
+
+def create_schedule(
+    conn: Connection,
+    name: str,
+    stage: str,
+    extra: str = "",
+    cron_minute: str = "0",
+    cron_hour: str = "7",
+    cron_day_of_week: str = "*",
+    timezone: str = "Asia/Bangkok",
+    enabled: bool = True,
+) -> int:
+    result = conn.execute(
+        "INSERT INTO schedules "
+        "(name, stage, extra, cron_minute, cron_hour, cron_day_of_week, "
+        " timezone, enabled, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        (name, stage, extra, cron_minute, cron_hour, cron_day_of_week,
+         timezone, enabled, now_iso(), now_iso()),
+    )
+    conn.commit()
+    return int(result.fetchone()["id"])
+
+
+def list_schedules(conn: Connection) -> list[dict[str, Any]]:
+    return conn.execute(
+        "SELECT s.*, r.status AS last_run_status, r.ended_at AS last_run_ended_at "
+        "FROM schedules s LEFT JOIN runs r ON r.id = s.last_run_id "
+        "ORDER BY s.id"
+    ).fetchall()
+
+
+def get_schedule(conn: Connection, schedule_id: int) -> dict[str, Any] | None:
+    return conn.execute(
+        "SELECT * FROM schedules WHERE id = ?", (schedule_id,)
+    ).fetchone()
+
+
+def update_schedule(conn: Connection, schedule_id: int, **fields: Any) -> None:
+    """Patch any subset of a schedule's editable columns."""
+    if not fields:
+        return
+    columns = (
+        "name", "stage", "extra", "cron_minute", "cron_hour",
+        "cron_day_of_week", "timezone", "enabled",
+    )
+    updates = {k: v for k, v in fields.items() if k in columns}
+    if not updates:
+        return
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    conn.execute(
+        f"UPDATE schedules SET {set_clause}, updated_at = ? WHERE id = ?",
+        (*updates.values(), now_iso(), schedule_id),
+    )
+    conn.commit()
+
+
+def delete_schedule(conn: Connection, schedule_id: int) -> None:
+    conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+    conn.commit()
+
+
+def record_schedule_fired(conn: Connection, schedule_id: int, run_id: int) -> None:
+    conn.execute(
+        "UPDATE schedules SET last_run_id = ?, last_fired_at = ? WHERE id = ?",
+        (run_id, now_iso(), schedule_id),
+    )
+    conn.commit()
 
 
 # --- closure detection ------------------------------------------------------

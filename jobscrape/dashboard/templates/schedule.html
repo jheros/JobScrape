@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Schedule · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Schedule</h1>
+<p class="sub">
+  Runs entirely inside this dashboard process — no crontab involved. A schedule
+  only fires while the dashboard is running; see <code>docs/DEPLOYMENT.md</code>
+  for running it as a persistent service if you want "set it and forget it".
+</p>
+
+<div class="card">
+  <h2 id="schedule-form-title">Add a schedule</h2>
+  <form id="schedule-form" class="filters">
+    <input type="hidden" name="edit_id" value="">
+    <label>Name
+      <input type="text" name="name" placeholder="Daily 07:00" required>
+    </label>
+    <label>Stage
+      <select name="stage" required>
+        {% for s in stages %}
+          <option value="{{ s }}">{{ s }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Extra flags
+      <input type="text" name="extra" placeholder="--recheck (space-separated)">
+    </label>
+    <label>Hour (0-23)
+      <input type="number" name="cron_hour" min="0" max="23" value="7" required>
+    </label>
+    <label>Minute (0-59)
+      <input type="number" name="cron_minute" min="0" max="59" value="0" required>
+    </label>
+    <label>Days
+      <select name="cron_day_of_week">
+        <option value="*">Every day</option>
+        <option value="mon-sat">Monday–Saturday</option>
+        <option value="sun">Sunday only</option>
+        <option value="mon-fri">Weekdays</option>
+        <option value="sat,sun">Weekends</option>
+      </select>
+    </label>
+    <label>Timezone
+      <input type="text" name="timezone" value="Asia/Bangkok" required>
+    </label>
+    <button class="btn" type="submit" id="schedule-form-submit">Add schedule</button>
+    <a class="btn ghost" id="schedule-form-cancel" style="display:none">Cancel edit</a>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Schedules</h2>
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Stage</th><th>Extra</th><th>Fires</th>
+        <th>Timezone</th><th>Last run</th><th>Enabled</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in schedules %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td><code>{{ s.stage }}</code></td>
+        <td><code style="font-size:12px">{{ s.extra or "—" }}</code></td>
+        <td>{{ "%02d:%02d"|format(s.cron_hour|int, s.cron_minute|int) }} · {{ s.cron_day_of_week }}</td>
+        <td>{{ s.timezone }}</td>
+        <td>
+          {% if s.last_fired_at %}
+            {{ s.last_fired_at|datefmt }}
+            {% if s.last_run_status %}<span class="pill {{ s.last_run_status }}">{{ s.last_run_status }}</span>{% endif %}
+          {% else %}never{% endif %}
+        </td>
+        <td>
+          <button class="btn ghost" data-schedule-toggle="{{ s.id }}" style="padding:4px 10px">
+            {{ "on" if s.enabled else "off" }}
+          </button>
+        </td>
+        <td style="white-space:nowrap">
+          <button class="btn ghost" data-schedule-run="{{ s.id }}" style="padding:4px 10px">Run now</button>
+          <button class="btn ghost" data-schedule-edit="{{ s.id }}"
+                  data-name="{{ s.name }}" data-stage="{{ s.stage }}" data-extra="{{ s.extra or '' }}"
+                  data-hour="{{ s.cron_hour }}" data-minute="{{ s.cron_minute }}"
+                  data-days="{{ s.cron_day_of_week }}" data-timezone="{{ s.timezone }}"
+                  style="padding:4px 10px">Edit</button>
+          <button class="btn danger" data-schedule-delete="{{ s.id }}" style="padding:4px 10px">Delete</button>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" style="text-align:center; padding:30px; color:var(--text-muted)">
+        No schedules yet — add one above.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% endblock %}

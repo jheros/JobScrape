@@ -142,7 +142,8 @@ def test_pagination_links_keep_the_filters(client) -> None:
 
 
 @pytest.mark.parametrize(
-    "path", ["/", "/jobs", "/runs", "/coverage", "/sources", "/health"],
+    "path", ["/", "/jobs", "/runs", "/coverage", "/sources", "/health",
+             "/schedule", "/settings"],
 )
 def test_pages_render(client, path: str) -> None:
     assert client.get(path).status_code == 200
@@ -152,3 +153,74 @@ def test_health_reports_real_dependency_state(client) -> None:
     payload = client.get("/health").json()
     assert "healthy" in payload
     assert "database" in payload["checks"]
+
+
+# --- schedule -----------------------------------------------------------
+
+
+def test_create_update_toggle_delete_schedule(client) -> None:
+    create = client.post("/api/schedule", data={
+        "name": "Nightly", "stage": "fetch", "extra": "",
+        "cron_minute": "0", "cron_hour": "7", "cron_day_of_week": "mon-sat",
+        "timezone": "Asia/Bangkok",
+    })
+    assert create.status_code == 200, create.text
+    schedule_id = create.json()["id"]
+    assert "Nightly" in client.get("/schedule").text
+
+    update = client.post(f"/api/schedule/{schedule_id}", data={
+        "name": "Nightly (renamed)", "stage": "fetch", "extra": "",
+        "cron_minute": "30", "cron_hour": "8", "cron_day_of_week": "*",
+        "timezone": "Asia/Bangkok",
+    })
+    assert update.status_code == 200, update.text
+    assert "Nightly (renamed)" in client.get("/schedule").text
+
+    toggle = client.post(f"/api/schedule/{schedule_id}/toggle")
+    assert toggle.status_code == 200
+
+    delete = client.post(f"/api/schedule/{schedule_id}/delete")
+    assert delete.status_code == 200
+    assert "Nightly (renamed)" not in client.get("/schedule").text
+
+
+def test_create_schedule_rejects_an_unknown_stage(client) -> None:
+    response = client.post("/api/schedule", data={
+        "name": "Bad", "stage": "rm -rf /", "cron_minute": "0", "cron_hour": "7",
+        "cron_day_of_week": "*", "timezone": "Asia/Bangkok",
+    })
+    assert response.status_code == 400
+
+
+def test_run_now_for_a_missing_schedule_is_404(client) -> None:
+    assert client.post("/api/schedule/999999/run-now").status_code == 404
+
+
+# --- settings -------------------------------------------------------------
+
+
+def test_settings_save_writes_env_and_updates_process_environ(client, tmp_path, monkeypatch) -> None:
+    import os
+
+    from jobscrape.dashboard import envfile
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("RAPIDAPI_KEY=old\n")
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    response = client.post("/api/settings", data={"RAPIDAPI_KEY": "new-value"})
+    assert response.status_code == 200
+    assert response.json()["changed"] == ["RAPIDAPI_KEY"]
+    assert "RAPIDAPI_KEY=new-value" in env_path.read_text()
+    assert os.environ["RAPIDAPI_KEY"] == "new-value"
+
+
+def test_settings_save_ignores_unknown_keys(client, tmp_path, monkeypatch) -> None:
+    from jobscrape.dashboard import envfile
+
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    response = client.post("/api/settings", data={"NOT_A_REAL_SETTING": "x"})
+    assert response.status_code == 200
+    assert response.json()["changed"] == []

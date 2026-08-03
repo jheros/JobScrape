@@ -26,25 +26,37 @@
       </div>
       <button class="btn danger" data-stop-stage="{{ run.stage }}">Stop</button>
     </div>
-    <div class="log" id="live-log" data-run-id="{{ run.run_id }}" style="margin-top:14px"></div>
+    <div class="log" id="live-log-{{ run.run_id }}" data-run-id="{{ run.run_id }}" style="margin-top:14px"></div>
   </div>
   {% endfor %}
-{% else %}
-  <div class="card">
-    <h2>Start a stage</h2>
-    <div class="btn-row">
-      <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">Discover (fast)</button>
-      <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">Discover (full)</button>
-      <button class="btn ghost" data-start-stage="validate" data-label="Validate">Validate boards</button>
-      <button class="btn" data-start-stage="fetch" data-label="Fetch">Fetch jobs</button>
-      <button class="btn ghost" data-start-stage="export" data-label="Export">Export</button>
-    </div>
-    <p class="sub" style="margin:14px 0 0">
-      Stages run as separate processes, so stopping one is immediate and whatever
-      it already wrote is kept.
-    </p>
-  </div>
 {% endif %}
+
+<div class="card">
+  <h2>Run now</h2>
+  <div class="btn-row">
+    <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">Discover (fast)</button>
+    <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">Discover (full)</button>
+    <button class="btn ghost" data-start-stage="validate" data-label="Validate">Validate boards</button>
+    <button class="btn" data-start-stage="fetch" data-label="Fetch">Fetch jobs</button>
+    <button class="btn ghost" data-start-stage="export" data-label="Export">Export</button>
+    <button class="btn ghost" data-start-stage="apify-pull" data-label="Apify pull">Apify pull</button>
+    <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">Dedupe</button>
+    <button class="btn ghost" data-start-stage="liveness" data-label="Liveness">Liveness</button>
+    <button class="btn ghost" data-start-stage="stats" data-label="Stats">Stats</button>
+    <button class="btn ghost" data-start-stage="sources" data-label="Sources">Sources</button>
+    <button class="btn ghost" data-start-stage="daily-schedule" data-label="Run daily schedule">Run daily schedule</button>
+    <button class="btn ghost" data-start-stage="weekly-schedule" data-label="Run weekly schedule">Run weekly schedule</button>
+    <button class="btn ghost" data-start-stage="purge" data-extra="--dry-run"
+            data-label="Purge (dry-run)">Purge (dry-run)</button>
+    <button class="btn danger" data-start-stage="purge"
+            data-label="Purge (delete for real)"
+            data-confirm="Really delete every stored posting that no longer passes the role filter? This is not a dry run.">Purge (delete for real)</button>
+  </div>
+  <p class="sub" style="margin:14px 0 0">
+    Stages run as separate processes, so stopping one is immediate and whatever
+    it already wrote is kept.
+  </p>
+</div>
 
 {% if trend_svg %}
 <div class="card">

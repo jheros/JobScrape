@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Settings · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Settings</h1>
+<p class="sub">Edits write to <code>.env</code>. Secret-looking fields are masked — click the eye to reveal.</p>
+
+<div id="settings-banner" class="banner" style="display:none">
+  <div>
+    <strong>Saved.</strong>
+    <div class="detail">
+      Values used by newly started stages and schedules apply immediately.
+      Settings the dashboard itself reads at startup (database connection,
+      HTTP tuning) need a restart to apply.
+    </div>
+  </div>
+  <button class="btn danger" id="settings-restart" type="button">Restart dashboard</button>
+</div>
+
+<form id="settings-form">
+  {% for title, keys in sections %}
+  <div class="card">
+    <h2>{{ title }}</h2>
+    <div class="grid cols-2">
+      {% for f in keys %}
+      <label style="display:flex; flex-direction:column; gap:4px">
+        <span style="font-size:11px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:.04em">{{ f.key }}</span>
+        {% if f.secret %}
+        <span style="display:flex; gap:6px">
+          <input type="password" name="{{ f.key }}" value="{{ f.value }}" autocomplete="off" style="flex:1">
+          <button class="btn ghost reveal-toggle" type="button" aria-label="Reveal">👁</button>
+        </span>
+        {% else %}
+        <input type="text" name="{{ f.key }}" value="{{ f.value }}" autocomplete="off">
+        {% endif %}
+      </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+  <button class="btn" type="submit">Save settings</button>
+</form>
+
+{% endblock %}

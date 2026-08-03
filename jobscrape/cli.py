@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import sys
-from datetime import date
+from datetime import date, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -997,6 +997,81 @@ async def cmd_run(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------
+# schedule-run: the exact sequence scripts/schedule.sh runs, portable into the
+# dashboard's in-process scheduler.
+# --------------------------------------------------------------------------
+
+def _step_args(command: str, argv: list[str], db_url: str | None) -> argparse.Namespace:
+    """Parse `argv` under the real subcommand parser.
+
+    Building a fresh, fully-defaulted `Namespace` this way — rather than hand
+    assembling one — means every default and `choices=` validation a terminal
+    invocation would get is identical here. Only `--db` is threaded through by
+    hand afterward, since `schedule-run` already resolved its own from
+    `--db`/`$DATABASE_URL` before any of these steps run.
+    """
+    ns = build_parser().parse_args([command, *argv])
+    ns.db = db_url
+    return ns
+
+
+async def cmd_schedule_run(args: argparse.Namespace) -> int:
+    """Discover -> validate -> fetch -> apify-pull (daily only) -> dedupe -> stats.
+
+    This is `scripts/schedule.sh` ported to Python so the dashboard's
+    in-process scheduler can run the identical sequence without shelling out —
+    it calls the same `cmd_discover`/`cmd_validate`/... functions the terminal
+    path calls; only the sequencing (and the per-mode since-date, discover
+    vectors and validate limit) is new.
+    """
+    mode = args.mode
+    if mode == "daily":
+        # "Last 24 hours" as a calendar date: --since takes YYYY-MM-DD with no
+        # time of day, so today's date at the moment this fires would miss
+        # everything posted since midnight. Yesterday overlaps the previous
+        # run instead of leaving a gap.
+        since = (date.today() - timedelta(days=1)).isoformat()
+        vectors = ["--vector", "ct", "--vector", "github"]
+        validate_limit = "1500"
+    else:
+        since = (date.today() - timedelta(days=60)).isoformat()
+        vectors = []
+        validate_limit = "6000"
+
+    log.info("=== schedule-run %s (since %s) ===", mode, since)
+
+    rc = await cmd_discover(_step_args("discover", vectors, args.db))
+    if rc:
+        return rc
+
+    rc = await cmd_validate(_step_args(
+        "validate", ["--limit", validate_limit, "--concurrency", "6"], args.db,
+    ))
+    if rc:
+        return rc
+
+    rc = await cmd_fetch(_step_args("fetch", ["--since", since], args.db))
+    if rc:
+        return rc
+
+    # Daily only, regardless of mode: Apify bills per actor run and its own
+    # scheduler decides how often postings appear, so pulling on the weekly
+    # leg too would just re-read the same runs.
+    if mode == "daily":
+        rc = await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
+        if rc:
+            return rc
+
+    # After apify-pull so Apify's rows are cross-source-deduplicated against
+    # the ATS boards in the same run.
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+
+    return cmd_stats(_step_args("stats", [], args.db))
+
+
+# --------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -1247,6 +1322,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_purge.add_argument("--include-management", action="store_true",
                          help="alias for --include-roles management")
 
+    p_sched_run = sub.add_parser(
+        "schedule-run",
+        help="run the exact daily/weekly sequence the dashboard's scheduler fires "
+             "(discover + validate + fetch + [apify-pull] + dedupe + stats)",
+    )
+    p_sched_run.add_argument("--mode", choices=["daily", "weekly"], required=True)
+
     p_dedupe = sub.add_parser("dedupe", help="collapse reposts and cross-source duplicates")
     p_dedupe.add_argument("--backfill", action="store_true",
                           help="recompute clusters across the whole archive (the only mode; "
@@ -1294,6 +1376,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_webhook(args)
         if args.command == "apify-pull":
             return asyncio.run(cmd_apify_pull(args))
+        if args.command == "schedule-run":
+            return asyncio.run(cmd_schedule_run(args))
         if args.command == "migrate-from-sqlite":
             return cmd_migrate_from_sqlite(args)
         if args.command == "dedupe":

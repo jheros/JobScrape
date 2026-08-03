@@ -30,8 +30,11 @@
 
   document.querySelectorAll("[data-start-stage]").forEach(function (btn) {
     btn.addEventListener("click", function () {
+      var confirmMsg = btn.getAttribute("data-confirm");
+      if (confirmMsg && !confirm(confirmMsg)) return;
       var stage = btn.getAttribute("data-start-stage");
       var extra = btn.getAttribute("data-extra") || "";
+      var label = btn.textContent;
       btn.disabled = true;
       btn.textContent = "Starting…";
       post("/api/runs/" + stage + "/start", "extra=" + encodeURIComponent(extra))
@@ -39,7 +42,7 @@
           if (!res.ok) {
             alert(res.data.error || "Could not start");
             btn.disabled = false;
-            btn.textContent = btn.getAttribute("data-label") || "Start";
+            btn.textContent = btn.getAttribute("data-label") || label;
             return;
           }
           window.location.href = "/runs";
@@ -59,8 +62,12 @@
   });
 
   // --- live log via SSE ---------------------------------------------------
-  var logEl = document.getElementById("live-log");
-  if (logEl) {
+  // One element per run (`id="live-log-<run_id>"`), not a single shared id:
+  // a composite schedule run and a manually-started, non-conflicting stage
+  // can be active at the same time, and `getElementById` only ever returns
+  // the first match — this used to mean only one of several concurrent logs
+  // actually streamed.
+  document.querySelectorAll("[id^='live-log-']").forEach(function (logEl) {
     var runId = logEl.getAttribute("data-run-id");
     var source = new EventSource("/api/runs/" + runId + "/events");
     source.onmessage = function (event) {
@@ -83,7 +90,7 @@
       if (atBottom) logEl.scrollTop = logEl.scrollHeight;
     };
     source.onerror = function () { source.close(); };
-  }
+  });
 
   // --- per-job triage -----------------------------------------------------
   document.querySelectorAll(".status-select").forEach(function (select) {
@@ -149,5 +156,110 @@
         .then(function (data) { if (!data.runs.length) window.location.reload(); })
         .catch(function () {});
     }, 5000);
+  }
+
+  // --- settings: reveal-on-click secrets, save, restart --------------------
+  document.querySelectorAll(".reveal-toggle").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var input = btn.previousElementSibling;
+      input.type = input.type === "password" ? "text" : "password";
+    });
+  });
+
+  var settingsForm = document.getElementById("settings-form");
+  if (settingsForm) {
+    settingsForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var body = new URLSearchParams(new FormData(settingsForm)).toString();
+      post("/api/settings", body).then(function (res) {
+        if (!res.ok) { alert(res.data.error || "Could not save"); return; }
+        document.getElementById("settings-banner").style.display = "flex";
+        window.scrollTo(0, 0);
+      });
+    });
+  }
+  var restartBtn = document.getElementById("settings-restart");
+  if (restartBtn) {
+    restartBtn.addEventListener("click", function () {
+      if (!confirm("Restart the dashboard now? It only comes back automatically "
+        + "if it's running under a supervisor (see docs/DEPLOYMENT.md).")) return;
+      post("/api/settings/restart").then(function () {
+        restartBtn.textContent = "Restarting…";
+        restartBtn.disabled = true;
+      });
+    });
+  }
+
+  // --- schedule page --------------------------------------------------------
+  var scheduleForm = document.getElementById("schedule-form");
+  if (scheduleForm) {
+    var submitBtn = document.getElementById("schedule-form-submit");
+    var cancelBtn = document.getElementById("schedule-form-cancel");
+    var title = document.getElementById("schedule-form-title");
+    var editIdField = scheduleForm.elements["edit_id"];
+
+    function resetForm() {
+      scheduleForm.reset();
+      editIdField.value = "";
+      submitBtn.textContent = "Add schedule";
+      title.textContent = "Add a schedule";
+      cancelBtn.style.display = "none";
+    }
+
+    cancelBtn.addEventListener("click", resetForm);
+
+    document.querySelectorAll("[data-schedule-edit]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        editIdField.value = btn.getAttribute("data-schedule-edit");
+        scheduleForm.elements["name"].value = btn.getAttribute("data-name");
+        scheduleForm.elements["stage"].value = btn.getAttribute("data-stage");
+        scheduleForm.elements["extra"].value = btn.getAttribute("data-extra");
+        scheduleForm.elements["cron_hour"].value = btn.getAttribute("data-hour");
+        scheduleForm.elements["cron_minute"].value = btn.getAttribute("data-minute");
+        scheduleForm.elements["cron_day_of_week"].value = btn.getAttribute("data-days");
+        scheduleForm.elements["timezone"].value = btn.getAttribute("data-timezone");
+        submitBtn.textContent = "Save changes";
+        title.textContent = "Edit schedule";
+        cancelBtn.style.display = "inline-flex";
+        window.scrollTo(0, 0);
+      });
+    });
+
+    scheduleForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var editId = editIdField.value;
+      var body = new URLSearchParams(new FormData(scheduleForm)).toString();
+      var url = editId ? "/api/schedule/" + editId : "/api/schedule";
+      post(url, body).then(function (res) {
+        if (!res.ok) { alert(res.data.error || "Could not save"); return; }
+        window.location.reload();
+      });
+    });
+
+    document.querySelectorAll("[data-schedule-run]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-schedule-run");
+        btn.disabled = true;
+        post("/api/schedule/" + id + "/run-now").then(function (res) {
+          if (!res.ok) { alert(res.data.error || "Could not start"); btn.disabled = false; return; }
+          window.location.href = "/runs";
+        });
+      });
+    });
+
+    document.querySelectorAll("[data-schedule-toggle]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-schedule-toggle");
+        post("/api/schedule/" + id + "/toggle").then(function () { window.location.reload(); });
+      });
+    });
+
+    document.querySelectorAll("[data-schedule-delete]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (!confirm("Delete this schedule?")) return;
+        var id = btn.getAttribute("data-schedule-delete");
+        post("/api/schedule/" + id + "/delete").then(function () { window.location.reload(); });
+      });
+    });
   }
 })();

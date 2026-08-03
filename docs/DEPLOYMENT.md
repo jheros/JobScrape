@@ -1,8 +1,18 @@
 # Deploying the scheduled collector
 
-For running `scripts/schedule.sh` on a server — the website's host, or anything else with
-a cron daemon and network access. The dashboard is not part of this: it binds to localhost
-and has no authentication on any of its mutating routes, so it stays a local tool.
+Scheduling now lives **inside the dashboard process** (`jobscrape/dashboard/scheduler.py`):
+add, edit, enable/disable and force-cancel schedules from the dashboard's `/schedule` page,
+and edit `.env` values (API keys, `APIFY_TOKEN`, tuning) from `/settings` — no terminal
+needed for either. The dashboard still binds to localhost and has no authentication on any
+of its mutating routes, so it stays a local tool even though it can now edit secrets.
+
+The catch: a schedule only fires while the dashboard process is running. `scripts/schedule.sh`
++ crontab (below) survives an unattended reboot for free; the in-process scheduler does not,
+unless the dashboard itself runs as a persistent service — see **Run the dashboard as a
+service** below, which is the recommended path if you want "set it and forget it" scheduling.
+`scripts/schedule.sh` and the crontab lines are kept working as a fallback for anyone who'd
+rather not run the dashboard continuously, but don't run both at once: two schedulers with no
+shared lock reintroduces the exact double-run race `flock` exists to prevent.
 
 ## Install
 
@@ -43,7 +53,36 @@ Then bring the schema up to date:
 alembic upgrade head
 ```
 
-## Schedule
+## Run the dashboard as a service (recommended, for in-dashboard scheduling)
+
+`Type=simple`, not `oneshot`: this process stays running, and its own scheduler fires
+on the times configured at `/schedule`.
+
+```ini
+# /etc/systemd/system/jobscrape-dashboard.service
+[Unit]
+Description=jobscrape dashboard
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/jobscrape
+Environment=PYTHON=/srv/jobscrape/.venv/bin/python
+ExecStart=/srv/jobscrape/.venv/bin/python -m jobscrape dashboard
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable with `systemctl enable --now jobscrape-dashboard.service`. `Restart=on-failure` is
+also what makes the Settings page's "Restart dashboard" button (after an env edit that needs
+one) actually come back on its own — without a supervisor, that button just stops the
+process and you start it again by hand.
+
+## Schedule (fallback: pure cron, no dashboard required)
+
+Only needed if you're not running the dashboard as a service above — otherwise configure
+schedules at `/schedule` instead, and skip this section.
 
 ```cron
 CRON_TZ=Asia/Bangkok

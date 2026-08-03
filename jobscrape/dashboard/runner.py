@@ -39,7 +39,40 @@ STAGES: dict[str, list[str]] = {
     "validate": ["validate", "--concurrency", "6"],
     "fetch": ["fetch"],
     "export": ["export", "--format", "csv", "--format", "xlsx"],
+    "apify-pull": ["apify-pull", "--last", "3"],
+    "dedupe": ["dedupe", "--backfill"],
+    "purge": ["purge"],
+    "liveness": ["liveness"],
+    "stats": ["stats"],
+    "sources": ["sources"],
+    # Composite: the exact sequence `scripts/schedule.sh` runs, ported to
+    # `jobscrape schedule-run` so the dashboard calls one subprocess rather
+    # than launching five separately with no way to treat them as one unit.
+    "daily-schedule": ["schedule-run", "--mode", "daily"],
+    "weekly-schedule": ["schedule-run", "--mode", "weekly"],
 }
+
+#: `purge` deletes data for real unless `extra` carries `--dry-run` (already on
+#: `SAFE_EXTRA_FLAGS`). This module only allowlists what CAN be run — the
+#: dashboard's "Run now" control for `purge` is what must default `extra` to
+#: `--dry-run` and require an explicit confirm step before ever omitting it.
+
+#: Stages that are really steps of a composite ("daily-schedule",
+#: "weekly-schedule"), all running inside that ONE subprocess. Without this, a
+#: manual click on plain "discover" while "daily-schedule" is mid-run would
+#: race the same `companies`/`board_health` rows the composite's own discover
+#: step is touching — precisely what `flock` in `scripts/schedule.sh` exists
+#: to prevent, just between a different pair of callers.
+STAGE_GROUPS: dict[str, tuple[str, ...]] = {
+    "daily-schedule": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
+    "weekly-schedule": ("discover", "validate", "fetch", "dedupe", "stats"),
+}
+
+
+def _reserved_keys(stage: str) -> tuple[str, ...]:
+    """Every `_active` key a run of `stage` occupies: itself, plus every plain
+    stage in its group if it is a composite."""
+    return (stage, *STAGE_GROUPS.get(stage, ()))
 
 #: The only extra CLI flags a dashboard caller may add to a stage.
 #:
@@ -121,13 +154,20 @@ class RunManager:
 
     # -- state -------------------------------------------------------------
     def active(self) -> list[dict[str, Any]]:
-        return [
-            {
+        # A composite occupies several keys in `_active` (itself plus every
+        # plain stage in its group — see `_reserved_keys`), all pointing at
+        # the same `ActiveRun`. Dedupe by run_id so it appears once.
+        seen: set[int] = set()
+        out = []
+        for r in self._active.values():
+            if r.run_id in seen:
+                continue
+            seen.add(r.run_id)
+            out.append({
                 "run_id": r.run_id, "stage": r.stage, "command": r.command,
                 "pid": r.pid, "started_at": r.started_at, "progress": r.progress,
-            }
-            for r in self._active.values()
-        ]
+            })
+        return out
 
     def is_running(self, stage: str) -> bool:
         return stage in self._active
@@ -140,8 +180,14 @@ class RunManager:
         if stage not in STAGES:
             raise ValueError(f"unknown stage {stage!r}")
         async with self._lock:
-            if stage in self._active:
-                raise RuntimeError(f"{stage} is already running")
+            keys = _reserved_keys(stage)
+            busy = next((k for k in keys if k in self._active), None)
+            if busy is not None:
+                blocker = self._active[busy].stage
+                raise RuntimeError(
+                    f"{stage} is already running" if blocker == stage
+                    else f"{stage} conflicts with the running {blocker}"
+                )
 
             argv = [sys.executable, "-m", "jobscrape", *STAGES[stage],
                     *safe_extra(extra)]
@@ -167,7 +213,11 @@ class RunManager:
                 run_id=run_id, stage=stage, command=command, process=process,
                 started_at=datetime.now(timezone.utc).isoformat(),
             )
-            self._active[stage] = run
+            # Reserve every key this run occupies (itself, plus its group's
+            # plain stages if it is a composite) so a concurrent call to any
+            # of them is refused above rather than racing this run.
+            for key in keys:
+                self._active[key] = run
 
             with db.session(self.db_path) as conn:
                 conn.execute("UPDATE runs SET pid = ? WHERE id = ?", (process.pid, run_id))
@@ -232,7 +282,8 @@ class RunManager:
                 )
                 conn.commit()
 
-        self._active.pop(run.stage, None)
+        for key in _reserved_keys(run.stage):
+            self._active.pop(key, None)
         log.info("run %s (%s) finished: %s", run.run_id, run.stage, status)
 
     def _flush(self, run: ActiveRun, buffer: list[tuple[str, dict[str, Any] | None]]) -> None:

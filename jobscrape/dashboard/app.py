@@ -9,6 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import signal
+from contextlib import asynccontextmanager
 from datetime import datetime as datetime_cls
 from pathlib import Path
 from typing import Annotated, Any
@@ -21,7 +24,8 @@ from pydantic import BeforeValidator
 
 from .. import config, db, scam
 from ..observability import health as health_check
-from . import analytics, charts
+from . import analytics, charts, envfile
+from . import scheduler as scheduler_module
 from .runner import STAGES, manager
 
 log = logging.getLogger("jobscrape.dashboard")
@@ -70,11 +74,30 @@ templates.env.filters["comma"] = lambda v: f"{int(v):,}" if v is not None else "
 templates.env.filters["datefmt"] = _datefmt
 templates.env.filters["scamreasons"] = _scam_reasons
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # A dashboard restart must not leave phantom "running" rows from a previous
+    # process, or every stage would look permanently busy.
+    with db.session() as conn:
+        closed = db.mark_stale_runs(conn)
+        if closed:
+            log.info("closed out %d stale run(s) from a previous session", closed)
+    # Scheduling lives inside this process now — see scheduler.py. Started
+    # here (not at import time) so it shares uvicorn's own event loop, and
+    # shut down symmetrically on the way out.
+    scheduler_module.start()
+    try:
+        yield
+    finally:
+        scheduler_module.shutdown()
+
+
 # `openapi_url=None` too: disabling `docs_url`/`redoc_url` removes Swagger and
 # ReDoc but FastAPI still serves the schema at /openapi.json, which enumerates
 # every route including the unauthenticated mutating ones.
 app = FastAPI(
     title="jobscrape dashboard", docs_url=None, redoc_url=None, openapi_url=None,
+    lifespan=_lifespan,
 )
 app.mount("/static", StaticFiles(directory=str(HERE / "static")), name="static")
 
@@ -89,16 +112,6 @@ async def health() -> JSONResponse:
     run's age, disk headroom — not just "the process is scheduled"."""
     result = health_check()
     return JSONResponse(result, status_code=200 if result["healthy"] else 503)
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    # A dashboard restart must not leave phantom "running" rows from a previous
-    # process, or every stage would look permanently busy.
-    with db.session() as conn:
-        closed = db.mark_stale_runs(conn)
-        if closed:
-            log.info("closed out %d stale run(s) from a previous session", closed)
 
 
 def _page(request: Request, template: str, **context: Any) -> HTMLResponse:
@@ -268,6 +281,28 @@ async def sources(request: Request) -> HTMLResponse:
         conn.close()
 
 
+@app.get("/schedule", response_class=HTMLResponse)
+async def schedule_page(request: Request) -> HTMLResponse:
+    conn = _conn()
+    try:
+        return _page(request, "schedule.html", schedules=db.list_schedules(conn))
+    finally:
+        conn.close()
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request) -> HTMLResponse:
+    current = envfile.read_env_file()
+    sections = [
+        (title, [
+            {"key": key, "value": current.get(key, ""), "secret": key in envfile.SECRET_KEYS}
+            for key in keys
+        ])
+        for title, keys in envfile.SECTIONS
+    ]
+    return _page(request, "settings.html", sections=sections)
+
+
 # --- actions --------------------------------------------------------------
 
 @app.post("/api/runs/{stage}/start")
@@ -288,6 +323,103 @@ async def stop_stage(stage: str) -> JSONResponse:
 @app.get("/api/runs/active")
 async def active_runs() -> JSONResponse:
     return JSONResponse({"runs": manager.active()})
+
+
+# --- schedule ---------------------------------------------------------------
+
+@app.post("/api/schedule")
+async def create_schedule(
+    name: str = Form(...),
+    stage: str = Form(...),
+    extra: str = Form(""),
+    cron_minute: str = Form("0"),
+    cron_hour: str = Form("7"),
+    cron_day_of_week: str = Form("*"),
+    timezone: str = Form("Asia/Bangkok"),
+) -> JSONResponse:
+    if stage not in STAGES:
+        return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
+    conn = _conn()
+    try:
+        schedule_id = db.create_schedule(
+            conn, name, stage, extra, cron_minute, cron_hour, cron_day_of_week, timezone,
+        )
+    finally:
+        conn.close()
+    scheduler_module.reload()
+    return JSONResponse({"ok": True, "id": schedule_id})
+
+
+@app.post("/api/schedule/{schedule_id}")
+async def update_schedule(
+    schedule_id: int,
+    name: str = Form(...),
+    stage: str = Form(...),
+    extra: str = Form(""),
+    cron_minute: str = Form("0"),
+    cron_hour: str = Form("7"),
+    cron_day_of_week: str = Form("*"),
+    timezone: str = Form("Asia/Bangkok"),
+) -> JSONResponse:
+    if stage not in STAGES:
+        return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
+    conn = _conn()
+    try:
+        db.update_schedule(
+            conn, schedule_id, name=name, stage=stage, extra=extra,
+            cron_minute=cron_minute, cron_hour=cron_hour,
+            cron_day_of_week=cron_day_of_week, timezone=timezone,
+        )
+    finally:
+        conn.close()
+    scheduler_module.reload()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/schedule/{schedule_id}/toggle")
+async def toggle_schedule(schedule_id: int) -> JSONResponse:
+    conn = _conn()
+    try:
+        row = db.get_schedule(conn, schedule_id)
+        if not row:
+            return JSONResponse({"error": "no such schedule"}, status_code=404)
+        db.update_schedule(conn, schedule_id, enabled=not row["enabled"])
+    finally:
+        conn.close()
+    scheduler_module.reload()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/schedule/{schedule_id}/delete")
+async def delete_schedule(schedule_id: int) -> JSONResponse:
+    conn = _conn()
+    try:
+        db.delete_schedule(conn, schedule_id)
+    finally:
+        conn.close()
+    scheduler_module.reload()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/schedule/{schedule_id}/run-now")
+async def run_schedule_now(schedule_id: int) -> JSONResponse:
+    conn = _conn()
+    try:
+        row = db.get_schedule(conn, schedule_id)
+    finally:
+        conn.close()
+    if not row:
+        return JSONResponse({"error": "no such schedule"}, status_code=404)
+    try:
+        info = await manager.start(row["stage"], row["extra"].split() if row["extra"] else None)
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
+    conn = _conn()
+    try:
+        db.record_schedule_fired(conn, schedule_id, info["run_id"])
+    finally:
+        conn.close()
+    return JSONResponse(info)
 
 
 @app.get("/api/runs/{run_id}/events")
@@ -367,6 +499,40 @@ async def api_stats() -> JSONResponse:
         return JSONResponse(analytics.overview(conn))
     finally:
         conn.close()
+
+
+# --- settings ---------------------------------------------------------------
+
+@app.post("/api/settings")
+async def save_settings(request: Request) -> JSONResponse:
+    form = await request.form()
+    updates = {
+        key: str(value) for key, value in form.items()
+        if key in envfile.ALL_KEYS
+    }
+    changed = envfile.write_env_file(updates)
+    # Immediate, for free: every subsequent RunManager.start() subprocess
+    # inherits os.environ at spawn time, so a newly-started stage or schedule
+    # sees this right away. Values THIS process already baked into config.py's
+    # own module constants at import time do not change until a restart —
+    # that's the two-tier story the Settings page's banner explains.
+    for key in changed:
+        os.environ[key] = updates[key]
+    return JSONResponse({"ok": True, "changed": changed})
+
+
+@app.post("/api/settings/restart")
+async def restart_dashboard() -> JSONResponse:
+    """SIGTERM this process after the response flushes. Only brings the
+    dashboard back if it's supervised (e.g. the systemd service in
+    docs/DEPLOYMENT.md with Restart=on-failure) — otherwise this just stops
+    it, which the Settings page's banner says plainly."""
+    async def _delayed_kill() -> None:
+        await asyncio.sleep(0.3)
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    asyncio.create_task(_delayed_kill())
+    return JSONResponse({"restarting": True})
 
 
 def serve(host: str = "127.0.0.1", port: int = 8000, reload: bool = False) -> None:
