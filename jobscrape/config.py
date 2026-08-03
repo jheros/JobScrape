@@ -103,11 +103,14 @@ LOG_LEVEL = _env_str("JOBSCRAPE_LOG_LEVEL", "INFO")
 # --- Contact / politeness -------------------------------------------------
 # A descriptive UA with a contact address is the courteous default when
 # hitting public endpoints; several providers ask for one explicitly.
-CONTACT_EMAIL = os.environ.get("JOBSCRAPE_CONTACT", "jobscrape@example.com")
-USER_AGENT = os.environ.get(
-    "JOBSCRAPE_UA",
-    f"jobscrape/1.0 (+{CONTACT_EMAIL})",
-)
+#
+# `_env_str`, not a bare `os.environ.get(name, default)`: the dashboard's
+# Settings form submits every field it renders, including ones the user never
+# touched, so a value that was merely blank in `.env` (rather than absent)
+# must still fall back to the default here — `os.environ.get` only does that
+# when the key is missing entirely, not when it's present-but-empty.
+CONTACT_EMAIL = _env_str("JOBSCRAPE_CONTACT", "jobscrape@example.com")
+USER_AGENT = _env_str("JOBSCRAPE_UA", f"jobscrape/1.0 (+{CONTACT_EMAIL})")
 
 # --- HTTP tunables --------------------------------------------------------
 GLOBAL_CONCURRENCY = _env_int("JOBSCRAPE_CONCURRENCY", 16)
@@ -143,7 +146,7 @@ CACHE_ENABLED = os.environ.get("JOBSCRAPE_CACHE", "1") not in ("0", "false", "no
 
 # --- Optional API keys ----------------------------------------------------
 USAJOBS_API_KEY = os.environ.get("USAJOBS_API_KEY", "")
-USAJOBS_EMAIL = os.environ.get("USAJOBS_EMAIL", CONTACT_EMAIL)
+USAJOBS_EMAIL = _env_str("USAJOBS_EMAIL", CONTACT_EMAIL)
 ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID", "")
 ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
 JOOBLE_API_KEY = os.environ.get("JOOBLE_API_KEY", "")
@@ -154,8 +157,8 @@ RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
 JSEARCH_MAX_REQUESTS = _env_int("JSEARCH_MAX_REQUESTS", 6)
 # Which RapidAPI job API to call. Overridable because these come and go — the
 # default host currently has no registered endpoints on RapidAPI's side.
-RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "jsearch.p.rapidapi.com")
-RAPIDAPI_PATH = os.environ.get("RAPIDAPI_PATH", "/search")
+RAPIDAPI_HOST = _env_str("RAPIDAPI_HOST", "jsearch.p.rapidapi.com")
+RAPIDAPI_PATH = _env_str("RAPIDAPI_PATH", "/search")
 
 # --- Apify ----------------------------------------------------------------
 #
@@ -175,13 +178,9 @@ APIFY_TOKEN = os.environ.get("APIFY_TOKEN", "")
 APIFY_WEBHOOK_SECRET = os.environ.get("APIFY_WEBHOOK_SECRET", "")
 #: Overridable so a fork, a pinned version, or a different actor entirely needs
 #: no code change. Apify accepts either `user~actor-name` or the actor id.
-APIFY_INDEED_ACTOR = os.environ.get(
-    "APIFY_INDEED_ACTOR", "cheap_scraper~indeed-job-scraper"
-)
-APIFY_LINKEDIN_ACTOR = os.environ.get(
-    "APIFY_LINKEDIN_ACTOR", "cheap_scraper~linkedin-job-scraper"
-)
-APIFY_API = os.environ.get("APIFY_API", "https://api.apify.com/v2")
+APIFY_INDEED_ACTOR = _env_str("APIFY_INDEED_ACTOR", "cheap_scraper~indeed-job-scraper")
+APIFY_LINKEDIN_ACTOR = _env_str("APIFY_LINKEDIN_ACTOR", "cheap_scraper~linkedin-job-scraper")
+APIFY_API = _env_str("APIFY_API", "https://api.apify.com/v2")
 #: Dataset page size. Apify enforces no maximum, but a bounded page keeps one
 #: enormous run from being held in memory whole.
 APIFY_PAGE_SIZE = _env_int("APIFY_PAGE_SIZE", 500)

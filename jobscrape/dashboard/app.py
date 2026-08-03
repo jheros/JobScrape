@@ -535,9 +535,19 @@ async def api_stats() -> JSONResponse:
 @app.post("/api/settings")
 async def save_settings(request: Request) -> JSONResponse:
     form = await request.form()
+    # A browser submits EVERY field on the page, not just the one the user
+    # actually edited — including ones that were blank because they were
+    # never in `.env` in the first place (only shown blank because the
+    # Settings page reads the file, not config.py's own Python-side
+    # defaults). Writing those through unconditionally would silently pin an
+    # empty override into `.env` for any field whose code default isn't ""
+    # (e.g. APIFY_INDEED_ACTOR's built-in actor name) — comparing against
+    # what's already on disk and only writing real changes is what avoids
+    # that.
+    current = envfile.read_env_file()
     updates = {
         key: str(value) for key, value in form.items()
-        if key in envfile.ALL_KEYS
+        if key in envfile.ALL_KEYS and str(value) != current.get(key, "")
     }
     changed = envfile.write_env_file(updates)
     # Immediate, for free: every subsequent RunManager.start() subprocess

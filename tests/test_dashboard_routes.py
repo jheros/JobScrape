@@ -265,3 +265,26 @@ def test_settings_save_ignores_unknown_keys(client, tmp_path, monkeypatch) -> No
     response = client.post("/api/settings", data={"NOT_A_REAL_SETTING": "x"})
     assert response.status_code == 200
     assert response.json()["changed"] == []
+
+
+def test_settings_save_does_not_write_fields_the_user_never_touched(
+    client, tmp_path, monkeypatch,
+) -> None:
+    """The actual bug: a browser submits EVERY field on the Settings page,
+    including ones left blank because they were never in `.env` at all
+    (`APIFY_INDEED_ACTOR` has a non-empty built-in default, so a blank
+    submission for it must not get written — that's what silently broke
+    apify-pull in practice, since a written blank overrides that default)."""
+    from jobscrape.dashboard import envfile
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("RAPIDAPI_KEY=old\n")
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    response = client.post("/api/settings", data={
+        "RAPIDAPI_KEY": "new-value",
+        "APIFY_INDEED_ACTOR": "",  # untouched — blank only because it was never set
+    })
+    assert response.status_code == 200
+    assert response.json()["changed"] == ["RAPIDAPI_KEY"]
+    assert "APIFY_INDEED_ACTOR" not in env_path.read_text()
