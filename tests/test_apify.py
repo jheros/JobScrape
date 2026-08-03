@@ -748,3 +748,116 @@ def test_ingest_and_record_writes_a_run_row(monkeypatch, _isolated_db) -> None:
     assert run["command"] == "apify-pull"
     assert run["stage"] == "apify"
     assert run["status"] == "ok"
+
+
+# --- `cmd_apify_pull` as a schedule step: it must never abort the schedule --
+#
+# This is the one command in the daily cron leg that talks to an external API
+# rather than a board it already knows the shape of. `scripts/schedule.sh` runs
+# under `set -euo pipefail`, so any non-zero exit here — for a state as mundane
+# as "no token yet" or "the actors haven't run yet" — would abort the whole
+# night's schedule before dedupe and stats ever ran. Both used to return 1.
+
+
+def _pull_args(**overrides: Any) -> Any:
+    import argparse
+
+    defaults = dict(
+        run=None, actor=None, last=3, max_results=None, db=None,
+        all_roles=False, worldwide=False, all_workplaces=False,
+        include_roles=None, include_qa=False, include_management=False,
+    )
+    return argparse.Namespace(**{**defaults, **overrides})
+
+
+def test_a_missing_token_skips_rather_than_fails(monkeypatch, _isolated_db) -> None:
+    from jobscrape import cli, config
+
+    monkeypatch.setattr(config, "APIFY_TOKEN", "")
+    assert asyncio.run(cli.cmd_apify_pull(_pull_args())) == 0
+    assert _isolated_db.execute("SELECT count(*) AS n FROM runs").fetchone()["n"] == 0
+
+
+def test_no_runs_yet_skips_rather_than_fails(monkeypatch, _isolated_db) -> None:
+    """The state this project is in today: a token, but the actors have never
+    completed a run. Only the auto-discover path (no `--run`) may skip —
+    see the next test for why an explicit `--run` must still fail."""
+    from jobscrape import cli, config
+    from jobscrape.sources.apify import client
+
+    monkeypatch.setattr(config, "APIFY_TOKEN", "fake-token-for-this-test")
+
+    async def no_runs(_fetcher, _actor, limit=5):
+        return []
+
+    monkeypatch.setattr(client, "last_runs", no_runs)
+    assert asyncio.run(cli.cmd_apify_pull(_pull_args())) == 0
+    assert _isolated_db.execute("SELECT count(*) AS n FROM runs").fetchone()["n"] == 0
+
+
+def test_an_explicit_unresolved_run_id_still_fails(monkeypatch, _isolated_db) -> None:
+    """A `--run <id>` that resolves to nothing is a real error — a typo, or a
+    run that was cleaned up — and must not be swallowed the way auto-discovery
+    finding nothing is."""
+    from jobscrape import cli, config
+
+    monkeypatch.setattr(config, "APIFY_TOKEN", "fake-token-for-this-test")
+    _stub_client(monkeypatch, None, [])  # run_info returns None -> "not found"
+
+    result = asyncio.run(cli.cmd_apify_pull(_pull_args(run=["RUN-DOES-NOT-EXIST"])))
+    assert result == 1
+
+
+def test_blank_actor_config_contributes_no_request(monkeypatch, _isolated_db) -> None:
+    """`APIFY_INDEED_ACTOR=` (cleared in .env) must not become a request to
+    `/v2/acts//runs` — empty strings are filtered before the actor list is
+    built, not passed through to the HTTP layer."""
+    from jobscrape import cli, config
+    from jobscrape.sources.apify import client
+
+    monkeypatch.setattr(config, "APIFY_TOKEN", "fake-token-for-this-test")
+    monkeypatch.setattr(config, "APIFY_INDEED_ACTOR", "")
+    monkeypatch.setattr(config, "APIFY_LINKEDIN_ACTOR", "cheap_scraper~linkedin-job-scraper")
+
+    seen: list[str] = []
+
+    async def record_actor(_fetcher, actor, limit=5):
+        seen.append(actor)
+        return []
+
+    monkeypatch.setattr(client, "last_runs", record_actor)
+    asyncio.run(cli.cmd_apify_pull(_pull_args()))
+    assert seen == ["cheap_scraper~linkedin-job-scraper"]
+
+
+def test_apify_pull_forwards_the_role_and_workplace_flags(monkeypatch, _isolated_db) -> None:
+    """Apify postings must obey the same rules as every other source — a
+    `--all-roles`/`--worldwide`/`--all-workplaces` on the CLI has to reach
+    `apply_filters_counted` through `ingest_run`, not be silently dropped
+    between `cmd_apify_pull` and the filter."""
+    from jobscrape import cli
+
+    captured: dict[str, Any] = {}
+
+    async def fake_ingest_and_record(conn, run_id, *, command, **kw):
+        captured.update(kw)
+
+        class _Result:
+            error = None
+            funnel = None
+
+        return _Result()
+
+    monkeypatch.setattr(
+        "jobscrape.sources.apify.ingest.ingest_and_record", fake_ingest_and_record
+    )
+    from jobscrape import config as cfg
+    monkeypatch.setattr(cfg, "APIFY_TOKEN", "fake-token-for-this-test")
+
+    asyncio.run(cli.cmd_apify_pull(_pull_args(
+        run=["RUN1"], all_roles=True, worldwide=True, all_workplaces=True,
+    )))
+
+    assert captured["software_only"] is False
+    assert captured["us_only"] is False
+    assert captured["remote_only"] is False

@@ -30,7 +30,8 @@ required:
 | `JOOBLE_API_KEY` | Jooble — the highest keep-rate source in the archive, 83% |
 | `ADZUNA_APP_ID`, `ADZUNA_APP_KEY` | Adzuna |
 | `USAJOBS_API_KEY`, `USAJOBS_EMAIL` | federal postings |
-| `APIFY_TOKEN`, `APIFY_WEBHOOK_SECRET` | only if this host also receives the Apify webhook |
+| `APIFY_TOKEN` | Indeed and LinkedIn postings via `apify-pull` (below). Get one at apify.com → Settings → Integrations. This is the only key `apify-pull` needs — no endpoint, no public route, nothing else to deploy |
+| `APIFY_WEBHOOK_SECRET` | only if this host ALSO runs `jobscrape webhook` — a separate, opt-in push route. Not needed for `apify-pull` |
 
 A missing key is a **skip with a message, never an error** — the run continues without
 that source. So a first deployment with only `DATABASE_URL` works, and each key you add
@@ -53,6 +54,13 @@ PYTHON=/srv/jobscrape/.venv/bin/python
 
 See the README's **Scheduling** section for why the daily is Monday–Saturday rather than
 every day, and for the UTC equivalents if your cron ignores `CRON_TZ`.
+
+The daily leg also runs `apify-pull --last 3` — the last three succeeded runs of your
+configured Indeed and LinkedIn actors, upserted into this same database. It is a no-op
+without `APIFY_TOKEN`: the step logs a line and exits 0 rather than failing the schedule,
+so it is safe to leave in place before the key exists and before the actors have ever run.
+Once both are true, postings start arriving the next time this fires — no separate command
+needed, and nothing to add anywhere else.
 
 `data/cron.log` grows without bound; give it a logrotate rule:
 

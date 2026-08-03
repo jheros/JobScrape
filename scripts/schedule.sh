@@ -5,7 +5,9 @@
 #   schedule.sh weekly   last 2 months    Sunday
 #
 # Both run the whole pipeline — discover, validate, fetch, dedupe — straight
-# into Postgres. There is no export: the database IS the deliverable.
+# into Postgres. The daily leg also pulls Indeed/LinkedIn via Apify
+# (apify-pull --last 3), a no-op until APIFY_TOKEN is set. There is no export:
+# the database IS the deliverable.
 #
 # Crontab, 07:00 GMT+7:
 #
@@ -103,9 +105,26 @@ $PYTHON -m jobscrape validate --limit "$VALIDATE_LIMIT" --concurrency 6
 echo "--- fetch (since $SINCE) ---"
 $PYTHON -m jobscrape fetch --since "$SINCE"
 
+# Indeed and LinkedIn, via Apify. Daily only, regardless of MODE — Apify bills
+# per actor run and its own scheduler decides how often postings appear, so
+# pulling on the weekly leg too would just re-read the same runs. `--last 3`
+# rather than 1 so a missed or failed day self-heals: re-ingesting a run
+# already stored costs one API call and changes nothing, since `upsert_jobs` is
+# keyed on (source, source_job_id).
+#
+# Safe with no APIFY_TOKEN configured yet, and safe before the actors have ever
+# run — both cases log a line and exit 0 rather than aborting this script,
+# which runs under `set -euo pipefail`.
+if [ "$MODE" = "daily" ]; then
+  echo "--- apify-pull (last 3 runs per actor) ---"
+  $PYTHON -m jobscrape apify-pull --last 3
+fi
+
 # Aggregator rows are only collapsed against an ATS row when something
 # re-clusters them; a fetch does that per-company, so cross-source pairs found
-# by two different boards need this pass.
+# by two different boards need this pass. Placed after apify-pull so Apify's
+# rows are cross-source-deduplicated against the ATS boards in the same run —
+# the whole point of ats_link.py recovering a board slug from the apply URL.
 echo "--- dedupe ---"
 $PYTHON -m jobscrape dedupe --backfill
 

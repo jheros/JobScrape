@@ -877,12 +877,22 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
 
     ok, reason = client.available()
     if not ok:
-        log.error("%s", reason)
-        return 1
+        # A missing key is a skip with an explanatory message, never an error —
+        # the same contract every other keyed source honours (Jooble, Adzuna,
+        # USAJobs, JSearch all skip via `Source.available()`). This step sits
+        # inside `scripts/schedule.sh`, which runs under `set -euo pipefail`, so
+        # returning 1 here would abort the nightly schedule — skipping dedupe
+        # and stats — every single night until a token is configured.
+        log.info("apify-pull: %s — skipping", reason)
+        return 0
 
     run_ids: list[str] = list(args.run or [])
     if not run_ids:
-        actors = args.actor or [config.APIFY_INDEED_ACTOR, config.APIFY_LINKEDIN_ACTOR]
+        # Filter blanks: a cleared config value (`APIFY_INDEED_ACTOR=`) must not
+        # become a request to `/v2/acts//runs`.
+        actors = args.actor or [
+            a for a in (config.APIFY_INDEED_ACTOR, config.APIFY_LINKEDIN_ACTOR) if a
+        ]
         async with Fetcher() as fetcher:
             for actor in actors:
                 runs = await client.last_runs(fetcher, actor, limit=args.last)
@@ -892,6 +902,16 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
                     if run.get("id"):
                         run_ids.append(str(run["id"]))
     if not run_ids:
+        # Same reasoning as the missing-token skip above, and it covers exactly
+        # the state this project is in today: a token but no run has completed
+        # yet. Only when the caller is auto-discovering — no `--run` given —
+        # since an explicit `--run <id>` that resolves to nothing IS a real
+        # error worth failing on (a typo'd or already-cleaned-up run id).
+        if not args.run:
+            log.info("apify-pull: no succeeded runs yet for %s — skipping",
+                     ", ".join(args.actor or [config.APIFY_INDEED_ACTOR,
+                                               config.APIFY_LINKEDIN_ACTOR]))
+            return 0
         log.error("Nothing to ingest — no runs matched.")
         return 1
 

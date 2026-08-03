@@ -275,6 +275,13 @@ path shared by the webhook and the manual `apify-pull` command.
 Re-delivery needs no guard: `upsert_jobs` is keyed on `(source, source_job_id)` with
 `ON CONFLICT DO UPDATE`, so a run processed twice converges.
 
+`scripts/schedule.sh`'s daily leg calls `apify-pull --last 3` unconditionally, ahead of
+`dedupe`. It is not gated behind the webhook being set up — a missing `APIFY_TOKEN`, or a
+token with no succeeded run yet, both log a line and return 0 (`cmd_apify_pull`,
+`jobscrape/cli.py`) rather than the 1 they returned before this was added, which would have
+aborted the schedule under `set -euo pipefail`. Running both the webhook and the scheduled
+pull is harmless — whichever ingests a run first, the other's upsert is a no-op.
+
 **The mappers are checked against the actors' published schemas, not against fixtures
 written here.** Both blocking defects this feature shipped with came from the same root
 cause — the mappers were built from a prose summary of the actor's marketing page, so the

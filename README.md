@@ -177,8 +177,27 @@ that does the collection and sells the result — rather than through a scraper 
 is currently the only route to them that works at all: the restricted adapters below are
 blocked, and JSearch returns nothing.
 
-Ingestion is **push, not pull**, which is the one place this differs from every other
-source. Apify's own scheduler runs the actors and calls a webhook on success:
+There are two ways to get their output into this database, and **both write here** —
+neither forwards anything to a website or any other service. Which one you want depends on
+how quickly you need postings after a run finishes.
+
+**Pull** — the simpler route, and what `scripts/schedule.sh daily` does automatically:
+
+```bash
+export APIFY_TOKEN=...
+python -m jobscrape apify-pull --last 3          # recent runs of both actors
+python -m jobscrape apify-pull --run <runId>     # one specific run
+```
+
+Reads your actors' recent succeeded runs from the Apify API and upserts them, same as every
+other source. No public endpoint, no secret, nothing to deploy — `APIFY_TOKEN` is the only
+requirement, and a missing one is a skip, not an error. Re-ingesting is safe: upserts are
+keyed on `(source, source_job_id)`, so a run processed twice converges rather than
+duplicating. The gap between an actor finishing and the next scheduled pull is the only
+cost — up to a day, on the default schedule.
+
+**Push** — lower latency, at the cost of a public route. Apify's own scheduler calls a
+webhook the moment a run succeeds:
 
 ```bash
 export APIFY_TOKEN=...  APIFY_WEBHOOK_SECRET=...
@@ -186,30 +205,20 @@ python -m jobscrape webhook --port 8001     # POST /apify  (public)
 ```
 
 Then in Apify: **Integrations → HTTP webhook**, event `Run succeeded`, URL
-`https://your.site/apify/<secret>` (or send the secret as an `X-Apify-Secret` header).
+`https://your.host/apify/<secret>` (or send the secret as an `X-Apify-Secret` header).
 
 Two things worth knowing before wiring it up:
 
-- **The webhook carries no jobs.** Apify's payload is run metadata — an `actorRunId` and a
-  dataset id. The postings are fetched from the API afterwards, which is why `APIFY_TOKEN`
-  is required regardless of how ingestion is triggered.
-- **It is the only publicly reachable route in this project.** It is a separate one-route
-  app, not part of the dashboard, because the dashboard has no authentication on anything
-  — `/api/runs/{stage}/start` will launch a pipeline stage for whoever asks. The receiver
+- **The webhook carries no jobs**, same as pull — its payload is run metadata, an
+  `actorRunId` and a dataset id, and the postings are fetched from the API afterwards.
+- **It is the only publicly reachable route in this project.** A separate one-route app,
+  not part of the dashboard, because the dashboard has no authentication on anything —
+  `/api/runs/{stage}/start` will launch a pipeline stage for whoever asks. The receiver
   refuses to start without a secret, and its `/health` deliberately reports nothing about
   the archive.
 
 A delivery lost while the receiver was down is gone — Apify gives up after 11 retries over
-~32 hours — so there is a manual path for recovery, backfilling, or testing the mapping
-without waiting for a scheduled run:
-
-```bash
-python -m jobscrape apify-pull --last 3          # recent runs of both actors
-python -m jobscrape apify-pull --run <runId>     # one specific run
-```
-
-Re-ingesting is safe: upserts are keyed on `(source, source_job_id)`, so a run processed
-twice converges rather than duplicating.
+~32 hours — and `apify-pull` is the recovery for that, run by hand for the missed window.
 
 ### Restricted sources — opt-in, and read this
 
@@ -764,8 +773,15 @@ as no window, because `skippable_ids` skips any previously-rejected posting whos
 falls outside it. The 2-month weekly is the expensive one — it re-downloads every posting
 rejected on a date basis in the last 60 days.
 
-See `docs/DEPLOYMENT.md` for installing this on a server. The Apify actors are scheduled
-separately, by Apify itself, and push to `jobscrape webhook`; nothing here affects them.
+**The daily leg also pulls Apify** — `apify-pull --last 3`, the last three succeeded runs
+of the configured Indeed and LinkedIn actors (see "Apify" below), upserted into the same
+database through the same filters as every other source. It costs nothing to leave in
+place before `APIFY_TOKEN` is set or before the actors have run: a missing key or an empty
+run list is a skip, exactly like every other keyed source, not a failure that would abort
+the schedule. Apify's own scheduler decides how often the actors themselves run; this only
+decides how often their output is read.
+
+See `docs/DEPLOYMENT.md` for installing this on a server.
 
 ## Politeness and rate limiting
 
