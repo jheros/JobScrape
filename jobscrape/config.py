@@ -185,6 +185,17 @@ APIFY_API = _env_str("APIFY_API", "https://api.apify.com/v2")
 #: enormous run from being held in memory whole.
 APIFY_PAGE_SIZE = _env_int("APIFY_PAGE_SIZE", 500)
 
+# --- JobRight ---------------------------------------------------------------
+#
+# `jobright-fetch` logs into JobRight.ai with a real (or headless) Chrome via
+# Selenium, then reads JobRight's own internal JSON API directly with the
+# session cookies that login established — see `sources/jobright/scraper.py`.
+# Manual/local only: this needs the `jobright` extra (`pip install
+# '.[jobright]'`) and a real Chrome install, so it's never part of the
+# Docker image or the automated schedule.
+JOBRIGHT_EMAIL = _env_str("JOBRIGHT_EMAIL", "")
+JOBRIGHT_PASSWORD = _env_str("JOBRIGHT_PASSWORD", "")
+
 # --- Common Crawl ---------------------------------------------------------
 CC_COLLECTIONS = _env_int("JOBSCRAPE_CC_COLLECTIONS", 3)
 CC_INDEX_ROOT = "https://index.commoncrawl.org"

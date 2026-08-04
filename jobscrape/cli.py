@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import date, timedelta
 from functools import partial
 from pathlib import Path
@@ -39,6 +40,7 @@ from .sources import (
     restricted_sources,
 )
 from .sources.base import is_complete
+from .sources.jobright.scraper import CORE_SOFTWARE as _JOBRIGHT_CORE_SOFTWARE
 
 log = logging.getLogger("jobscrape")
 
@@ -1011,12 +1013,12 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
 
 
 def cmd_jobright_ingest(args: argparse.Namespace) -> int:
-    """Ingest a batch of already-scraped JobRight postings.
+    """Ingest an already-scraped batch of JobRight postings by hand.
 
-    JobScoutPro (a separate project) logs into JobRight.ai itself and pipes
-    its results here — this is the receiving end, not a fetch: the records
-    already exist in memory on the caller's side, read either from `--file`
-    or, by default, stdin, and never written to disk by this project.
+    The lower-level primitive `jobright-fetch` is built on: takes a JSON
+    array of flattened records — from `--file`, or stdin by default — and
+    stores them. Also doubles as a one-off backfill route for records
+    collected some other way (e.g. an old export sitting on disk).
     """
     from .sources.jobright import ingest as ingest_module
 
@@ -1041,6 +1043,149 @@ def cmd_jobright_ingest(args: argparse.Namespace) -> int:
     with db.session(args.db) as conn:
         result = ingest_module.ingest_and_record(
             conn, records,
+            max_items=args.max_results,
+            allow_roles=_allowed_roles(args),
+            software_only=not args.all_roles,
+            us_only=not args.worldwide,
+            remote_only=not args.all_workplaces,
+        )
+    if result.funnel:
+        log.info("   funnel: %s", result.funnel)
+    return 1 if result.error else 0
+
+
+def cmd_jobright_fetch(args: argparse.Namespace) -> int:
+    """Log into JobRight.ai and pull postings straight into the database.
+
+    Manual/local only: drives a real Chrome via Selenium
+    (`sources/jobright/scraper.py`), so it needs the `jobright` extra
+    (`pip install '.[jobright]'`) and a real Chrome install — never part of
+    the Docker image or the automated schedule. Scraped records go straight
+    into `ingest.ingest_and_record` in this same process; nothing is written
+    to disk.
+    """
+    from .sources.jobright import scraper
+
+    if args.list_taxonomy:
+        print("Known category groups (prefix -> meaning):\n")
+        for prefix, label in sorted(scraper.TAXONOMY_GROUPS.items()):
+            mark = "  <- kept by --software-only" if prefix in scraper.CORE_SOFTWARE else ""
+            print(f"  {prefix}  {label}{mark}")
+        print("\nThese were observed in live responses, not from a published "
+              "list, so other groups may exist.")
+        return 0
+
+    try:
+        import selenium  # noqa: F401
+        import undetected_chromedriver  # noqa: F401
+    except ImportError:
+        log.error("jobright-fetch needs the 'jobright' extra: "
+                  "pip install '.[jobright]'")
+        return 1
+
+    if not (config.JOBRIGHT_EMAIL and config.JOBRIGHT_PASSWORD):
+        log.error("jobright-fetch: set JOBRIGHT_EMAIL and JOBRIGHT_PASSWORD "
+                  "(in .env or the environment)")
+        return 1
+
+    from .sources.jobright import ingest as ingest_module
+
+    include_tax = scraper.CORE_SOFTWARE if args.software_only else ()
+    if args.include_taxonomy:
+        include_tax = tuple(
+            p.strip() for p in args.include_taxonomy.split(",") if p.strip())
+    exclude_tax = tuple(
+        p.strip() for p in (args.exclude_taxonomy or "").split(",") if p.strip())
+
+    work_model = []
+    if args.work_model:
+        for name in (w.strip().lower() for w in args.work_model.split(",")):
+            if not name:
+                continue
+            if name not in scraper.WORK_MODELS:
+                log.error("Unknown --work-model %r. Valid: %s",
+                         name, ", ".join(scraper.WORK_MODELS))
+                return 1
+            work_model.append(scraper.WORK_MODELS[name])
+
+    session = scraper.JobRightSession(
+        headless=args.headless, chrome_version=args.chrome_version)
+    records: list[dict] = []
+    seen: set[str] = set()
+
+    def absorb(entries: list[dict]) -> int:
+        """Flatten, category-filter, and dedupe into `records`."""
+        new = 0
+        for entry in entries:
+            record = scraper.flatten(entry)
+            key = record["jobId"] or record["url"]
+            if not record["url"] or key in seen:
+                continue
+            if not scraper.taxonomy_allowed(record, include_tax, exclude_tax):
+                seen.add(key)
+                continue
+            seen.add(key)
+            records.append(record)
+            new += 1
+        return new
+
+    try:
+        if not session.setup_driver():
+            return 1
+        if not session.login(config.JOBRIGHT_EMAIL, config.JOBRIGHT_PASSWORD):
+            log.error("jobright-fetch: login failed")
+            return 1
+
+        session.driver.set_script_timeout(60)
+        time.sleep(3)
+
+        if args.roles:
+            roles = [r.strip() for r in args.roles.split(",") if r.strip()]
+            sorts = [int(s) for s in args.sorts.split(",") if s.strip()]
+            flags = {}
+            if work_model:
+                flags["workModel"] = work_model
+            print(f"Sweeping {len(roles)} role(s) x {len(sorts)} sort(s)\n")
+
+            for role in roles:
+                print(f"[{role}]")
+                before = len(records)
+                for sort in sorts:
+                    entries, _ = scraper.collect(
+                        lambda pos, cnt, r=role, s=sort: scraper.search_page(
+                            session.driver, r, pos, cnt, s, args.country, flags
+                        ),
+                        args.per_query, args.page_size, f"sort={sort}", args.delay,
+                    )
+                    absorb(entries)
+                print(f"  -> +{len(records) - before} new this role "
+                      f"(running total {len(records)})\n")
+        else:
+            position = 0
+            while len(records) < args.count:
+                want = min(args.page_size, args.count - len(records))
+                print(f"Fetching jobs {position}-{position + want - 1}...")
+                batch = scraper.fetch_page(session.driver, position, want, args.sort)
+                if not batch:
+                    print("API returned no more jobs.")
+                    break
+                new = absorb(batch)
+                print(f"  got {len(batch)}, {new} new (total {len(records)})")
+                position += len(batch)
+                if new == 0:
+                    print("No new jobs in that page; stopping.")
+                    break
+                time.sleep(1)
+    finally:
+        session.quit()
+
+    print(f"\nScraped {len(records)} jobs")
+    if not records:
+        return 0
+
+    with db.session(args.db) as conn:
+        result = ingest_module.ingest_and_record(
+            conn, records, command="jobright-fetch",
             max_items=args.max_results,
             allow_roles=_allowed_roles(args),
             software_only=not args.all_roles,
@@ -1411,8 +1556,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_jobright = sub.add_parser(
         "jobright-ingest",
-        help="ingest JobRight postings pushed in by an external scraper "
-             "(JSON array on stdin, or --file)",
+        help="ingest a JSON array of already-scraped JobRight postings "
+             "(stdin, or --file) — the low-level primitive jobright-fetch "
+             "uses; also handy for a one-off backfill",
     )
     p_jobright.add_argument("--file", default=None,
                             help="read records from this JSON file instead of stdin")
@@ -1427,6 +1573,64 @@ def build_parser() -> argparse.ArgumentParser:
     p_jobright.add_argument("--include-roles", action="append", metavar="CATEGORY",
                             choices=EXCLUDED_ROLE_NAMES, default=None,
                             help="re-admit an excluded role category (repeatable)")
+
+    p_jr_fetch = sub.add_parser(
+        "jobright-fetch",
+        help="log into JobRight.ai (needs the 'jobright' extra) and pull "
+             "postings straight into the database — manual/local only",
+    )
+    p_jr_fetch.add_argument("--count", type=int, default=50,
+                            help="how many jobs to collect (default: 50)")
+    p_jr_fetch.add_argument("--page-size", type=int, default=20,
+                            help="jobs per API request (default: 20)")
+    p_jr_fetch.add_argument("--sort", type=int, default=0,
+                            help="sortCondition value the API takes (default: 0)")
+    p_jr_fetch.add_argument("--headless", action="store_true",
+                            help="run without a visible browser window")
+    p_jr_fetch.add_argument("--chrome-version", type=int, default=None,
+                            help="Chrome major version, e.g. 151; omit to auto-detect")
+    p_jr_fetch.add_argument("--max-results", type=int, default=None,
+                            help="cap records kept after scraping")
+    p_jr_fetch.add_argument("--all-roles", action="store_true",
+                            help="keep non-software roles too")
+    p_jr_fetch.add_argument("--worldwide", action="store_true",
+                            help="keep non-US locations too")
+    p_jr_fetch.add_argument("--all-workplaces", action="store_true",
+                            help="keep hybrid and onsite roles too")
+    p_jr_fetch.add_argument("--include-roles", action="append", metavar="CATEGORY",
+                            choices=EXCLUDED_ROLE_NAMES, default=None,
+                            help="re-admit an excluded role category (repeatable)")
+
+    jr_sweep = p_jr_fetch.add_argument_group(
+        "sweep mode",
+        "Pages the search endpoint per role/sort instead of the recommend "
+        "feed, which caps out around 400 results. Your saved JobRight "
+        "filter is never read or modified.",
+    )
+    jr_sweep.add_argument("--roles", default=None,
+                          help="comma-separated job titles to sweep, e.g. "
+                               "'backend engineer,frontend engineer'")
+    jr_sweep.add_argument("--sorts", default="0,1",
+                          help="comma-separated sortCondition values per role "
+                               "(0=relevance, 1=newest); default: 0,1")
+    jr_sweep.add_argument("--per-query", type=int, default=400,
+                          help="max jobs per role+sort combination (default: 400)")
+    jr_sweep.add_argument("--country", default="US", help="country code (default: US)")
+    jr_sweep.add_argument("--work-model", default=None,
+                          help="comma-separated: onsite, remote, hybrid; "
+                               "omit for all three")
+    jr_sweep.add_argument("--delay", type=float, default=1.0,
+                          help="seconds between page requests (default: 1.0)")
+    jr_sweep.add_argument("--software-only", action="store_true",
+                          help="keep only core software engineering categories "
+                               f"({', '.join(_JOBRIGHT_CORE_SOFTWARE)})")
+    jr_sweep.add_argument("--include-taxonomy", default=None,
+                          help="comma-separated JobRight category prefixes to "
+                               "keep, e.g. '01-01,01-02'; see --list-taxonomy")
+    jr_sweep.add_argument("--exclude-taxonomy", default=None,
+                          help="comma-separated JobRight category prefixes to drop")
+    jr_sweep.add_argument("--list-taxonomy", action="store_true",
+                          help="print the known JobRight category groups and exit")
 
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")
@@ -1541,6 +1745,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(cmd_apify_pull(args))
         if args.command == "jobright-ingest":
             return cmd_jobright_ingest(args)
+        if args.command == "jobright-fetch":
+            return cmd_jobright_fetch(args)
         if args.command == "schedule-run":
             return asyncio.run(cmd_schedule_run(args))
         if args.command == "migrate-from-sqlite":
