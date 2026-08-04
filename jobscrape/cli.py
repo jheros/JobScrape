@@ -1010,6 +1010,48 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
     return 1 if failures and failures == len(run_ids) else 0
 
 
+def cmd_jobright_ingest(args: argparse.Namespace) -> int:
+    """Ingest a batch of already-scraped JobRight postings.
+
+    JobScoutPro (a separate project) logs into JobRight.ai itself and pipes
+    its results here — this is the receiving end, not a fetch: the records
+    already exist in memory on the caller's side, read either from `--file`
+    or, by default, stdin, and never written to disk by this project.
+    """
+    from .sources.jobright import ingest as ingest_module
+
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    else:
+        text = sys.stdin.read()
+
+    try:
+        records = json.loads(text)
+    except ValueError as exc:
+        log.error("jobright-ingest: payload is not valid JSON (%s)", exc)
+        return 1
+    if not isinstance(records, list):
+        log.error("jobright-ingest: expected a JSON array of records, got %s",
+                  type(records).__name__)
+        return 1
+    if not records:
+        log.info("jobright-ingest: no records in payload — nothing to do")
+        return 0
+
+    with db.session(args.db) as conn:
+        result = ingest_module.ingest_and_record(
+            conn, records,
+            max_items=args.max_results,
+            allow_roles=_allowed_roles(args),
+            software_only=not args.all_roles,
+            us_only=not args.worldwide,
+            remote_only=not args.all_workplaces,
+        )
+    if result.funnel:
+        log.info("   funnel: %s", result.funnel)
+    return 1 if result.error else 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     with db.session(args.db) as conn:
         print(json.dumps(db.stats(conn), indent=2))
@@ -1367,6 +1409,25 @@ def build_parser() -> argparse.ArgumentParser:
                          choices=EXCLUDED_ROLE_NAMES, default=None,
                          help="re-admit an excluded role category (repeatable)")
 
+    p_jobright = sub.add_parser(
+        "jobright-ingest",
+        help="ingest JobRight postings pushed in by an external scraper "
+             "(JSON array on stdin, or --file)",
+    )
+    p_jobright.add_argument("--file", default=None,
+                            help="read records from this JSON file instead of stdin")
+    p_jobright.add_argument("--max-results", type=int, default=None,
+                            help="cap records read from the payload")
+    p_jobright.add_argument("--all-roles", action="store_true",
+                            help="keep non-software roles too")
+    p_jobright.add_argument("--worldwide", action="store_true",
+                            help="keep non-US locations too")
+    p_jobright.add_argument("--all-workplaces", action="store_true",
+                            help="keep hybrid and onsite roles too")
+    p_jobright.add_argument("--include-roles", action="append", metavar="CATEGORY",
+                            choices=EXCLUDED_ROLE_NAMES, default=None,
+                            help="re-admit an excluded role category (repeatable)")
+
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")
 
@@ -1478,6 +1539,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_webhook(args)
         if args.command == "apify-pull":
             return asyncio.run(cmd_apify_pull(args))
+        if args.command == "jobright-ingest":
+            return cmd_jobright_ingest(args)
         if args.command == "schedule-run":
             return asyncio.run(cmd_schedule_run(args))
         if args.command == "migrate-from-sqlite":
