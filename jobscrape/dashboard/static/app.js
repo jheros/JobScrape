@@ -118,6 +118,43 @@
     });
   }
 
+  // --- jobright-fetch in a date range --------------------------------------
+  // A separate block rather than reusing the one above: that one hardcodes
+  // #fetch-since/#fetch-until by id, so wiring this card into it would make
+  // its presets silently fill the *other* card's date fields.
+  var jobrightRangeForm = document.getElementById("jobright-range-form");
+  if (jobrightRangeForm) {
+    jobrightRangeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var submitBtn = jobrightRangeForm.querySelector("button[type=submit]");
+      var label = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Starting…";
+      var body = new URLSearchParams(new FormData(jobrightRangeForm)).toString();
+      post("/api/runs/jobright-fetch/start", body).then(function (res) {
+        if (!res.ok) {
+          alert(res.data.error || "Could not start");
+          submitBtn.disabled = false;
+          submitBtn.textContent = label;
+          return;
+        }
+        window.location.href = "/runs";
+      });
+    });
+
+    document.querySelectorAll("[data-jr-preset-hours]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var hours = parseInt(btn.getAttribute("data-jr-preset-hours"), 10);
+        var since = new Date(Date.now() - hours * 3600 * 1000);
+        var iso = since.getFullYear() + "-"
+          + String(since.getMonth() + 1).padStart(2, "0") + "-"
+          + String(since.getDate()).padStart(2, "0");
+        document.getElementById("jobright-since").value = iso;
+        document.getElementById("jobright-until").value = "";
+      });
+    });
+  }
+
   // --- live log via SSE ---------------------------------------------------
   // One element per run (`id="live-log-<run_id>"`), not a single shared id:
   // a composite schedule run and a manually-started, non-conflicting stage

@@ -11,7 +11,9 @@ and `db.upsert_jobs` writes it, exactly as every other source.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from ... import db
@@ -58,6 +60,8 @@ def ingest_records(
     software_only: bool = True,
     us_only: bool = True,
     remote_only: bool = True,
+    since: date | None = None,
+    until: date | None = None,
 ) -> IngestResult:
     """Map, filter and store one batch of JobScoutPro records."""
     result = IngestResult(items=len(records))
@@ -75,6 +79,7 @@ def ingest_records(
     kept, funnel = apply_filters_counted(
         jobs, software_only=software_only, us_only=us_only,
         remote_only=remote_only, allow_roles=allow_roles,
+        since=since, until=until,
     )
     result.kept = len(kept)
     result.funnel = funnel.as_dict()
@@ -95,7 +100,14 @@ def ingest_and_record(
     Recorded in `runs`/`run_events` so a jobright-ingest run appears on the
     dashboard's Runs page beside every other stage.
     """
-    db_run = db.start_run(conn, command=command, stage="jobright")
+    # The dashboard opens the run row before spawning this process and passes
+    # its id through the environment (see `cmd_fetch`'s identical check) —
+    # without this, every dashboard-launched jobright-fetch would appear
+    # twice in history: once as the dashboard's own row, stuck at "running"
+    # forever, and once here.
+    inherited = os.environ.get("JOBSCRAPE_RUN_ID")
+    db_run = int(inherited) if inherited else db.start_run(
+        conn, command=command, stage="jobright")
     try:
         result = ingest_records(conn, records, **kwargs)
     except Exception as exc:                      # noqa: BLE001 - reported, not raised

@@ -52,6 +52,21 @@ STAGES: dict[str, list[str]] = {
     "liveness": ["liveness"],
     "stats": ["stats"],
     "sources": ["sources"],
+    # Roles and work-model are fixed here rather than caller-supplied, unlike
+    # the `window` below — a static preset, the same shape as "apify-pull"'s
+    # hardcoded `--last 3`, not a new value-taking input the web layer could
+    # ever be tricked into repointing (see `SAFE_EXTRA_FLAGS`'s docstring for
+    # why that distinction matters). `--chrome-version` is appended in
+    # `start()` from config instead of baked in here, since it describes this
+    # machine's installed Chrome, not a property of the stage itself.
+    "jobright-fetch": [
+        "jobright-fetch", "--work-model", "remote", "--roles",
+        "Backend Engineer,Full Stack Engineer,Python Engineer,Java Engineer,"
+        "C/C++ Engineer,.Net Engineer,Golang Engineer,Data Engineer,"
+        "Machine Learning Engineer,AI Engineer,LLM Engineer,"
+        "Frontend Software Engineer,React Developer,Android Developer,"
+        "iOS/Swift Developer,Flutter Developer,DevOps,Site Reliability Engineer",
+    ],
     # Composite: the exact sequence `scripts/schedule.sh` runs, ported to
     # `jobscrape schedule-run` so the dashboard calls one subprocess rather
     # than launching five separately with no way to treat them as one unit.
@@ -226,8 +241,16 @@ class RunManager:
                 if until:
                     window_argv += ["--until", until.isoformat()]
 
+            # Which Chrome is installed is a property of this machine, not of
+            # the stage, so it's appended here from config rather than baked
+            # into STAGES — the same reasoning as `window_argv` above, just
+            # sourced from config instead of a call argument.
+            chrome_argv: list[str] = []
+            if stage == "jobright-fetch" and config.JOBRIGHT_CHROME_VERSION:
+                chrome_argv = ["--chrome-version", str(config.JOBRIGHT_CHROME_VERSION)]
+
             argv = [sys.executable, "-m", "jobscrape", *STAGES[stage],
-                    *safe_extra(extra), *window_argv]
+                    *safe_extra(extra), *window_argv, *chrome_argv]
             command = " ".join(argv[2:])
 
             with db.session(self.db_path) as conn:

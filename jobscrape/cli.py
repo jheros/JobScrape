@@ -1088,6 +1088,12 @@ def cmd_jobright_fetch(args: argparse.Namespace) -> int:
                   "(in .env or the environment)")
         return 1
 
+    since = parse_date(args.since)
+    until = parse_date(args.until)
+    if since and until and since > until:
+        log.error("--since (%s) is after --until (%s)", since, until)
+        return 2
+
     from .sources.jobright import ingest as ingest_module
 
     include_tax = scraper.CORE_SOFTWARE if args.software_only else ()
@@ -1191,6 +1197,7 @@ def cmd_jobright_fetch(args: argparse.Namespace) -> int:
             software_only=not args.all_roles,
             us_only=not args.worldwide,
             remote_only=not args.all_workplaces,
+            since=since, until=until,
         )
     if result.funnel:
         log.info("   funnel: %s", result.funnel)
@@ -1579,6 +1586,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="log into JobRight.ai (needs the 'jobright' extra) and pull "
              "postings straight into the database — manual/local only",
     )
+    add_window(p_jr_fetch)
     p_jr_fetch.add_argument("--count", type=int, default=50,
                             help="how many jobs to collect (default: 50)")
     p_jr_fetch.add_argument("--page-size", type=int, default=20,

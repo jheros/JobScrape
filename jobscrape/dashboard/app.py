@@ -320,7 +320,8 @@ async def settings_page(request: Request) -> HTMLResponse:
 #: Stages whose underlying subcommand actually declares `add_window()`
 #: (`--since`/`--until`) — the only ones a date range may be posted against.
 _WINDOW_STAGES = frozenset(
-    stage for stage, argv in STAGES.items() if argv[0] in ("fetch", "export")
+    stage for stage, argv in STAGES.items()
+    if argv[0] in ("fetch", "export", "jobright-fetch")
 )
 
 

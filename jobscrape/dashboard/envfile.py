@@ -26,7 +26,7 @@ ENV_PATH = config.PROJECT_ROOT / ".env"
 #: Keys whose values should render masked (reveal-on-click) in the Settings UI.
 SECRET_KEYS = frozenset({
     "APIFY_TOKEN", "APIFY_WEBHOOK_SECRET", "RAPIDAPI_KEY", "ADZUNA_APP_KEY",
-    "JOOBLE_API_KEY", "USAJOBS_API_KEY",
+    "JOOBLE_API_KEY", "USAJOBS_API_KEY", "JOBRIGHT_PASSWORD",
 })
 
 #: The Settings page's grouping, mirroring `.env.example`'s section headers so
@@ -57,6 +57,9 @@ SECTIONS: list[tuple[str, list[str]]] = [
     ("Apify: Indeed and LinkedIn postings", [
         "APIFY_TOKEN", "APIFY_WEBHOOK_SECRET",
         "APIFY_INDEED_ACTOR", "APIFY_LINKEDIN_ACTOR", "APIFY_PAGE_SIZE",
+    ]),
+    ("JobRight (manual/local only — needs the jobright extra)", [
+        "JOBRIGHT_EMAIL", "JOBRIGHT_PASSWORD", "JOBRIGHT_CHROME_VERSION",
     ]),
 ]
 

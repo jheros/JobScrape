@@ -195,6 +195,11 @@ APIFY_PAGE_SIZE = _env_int("APIFY_PAGE_SIZE", 500)
 # Docker image or the automated schedule.
 JOBRIGHT_EMAIL = _env_str("JOBRIGHT_EMAIL", "")
 JOBRIGHT_PASSWORD = _env_str("JOBRIGHT_PASSWORD", "")
+#: This machine's installed Chrome major version, so undetected-chromedriver
+#: patches a matching driver instead of the latest one. Blank auto-detects,
+#: which is what broke the first time this ran here — the patched driver
+#: supported Chrome 151 while the browser installed was 150.
+JOBRIGHT_CHROME_VERSION = _env_int("JOBRIGHT_CHROME_VERSION", 0)
 
 # --- Common Crawl ---------------------------------------------------------
 CC_COLLECTIONS = _env_int("JOBSCRAPE_CC_COLLECTIONS", 3)

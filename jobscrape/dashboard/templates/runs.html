@@ -77,6 +77,37 @@
 </div>
 
 <div class="card">
+  <h2>Fetch JobRight jobs in a date range</h2>
+  <p class="sub-tight">
+    Sweeps a fixed set of 18 software roles (Backend, Full Stack, Python,
+    Java, C/C++, .Net, Golang, Data, ML, AI, LLM, Frontend, React, Android,
+    iOS, Flutter, DevOps, SRE) on JobRight.ai, remote postings only. Only
+    postings dated within this range are kept — leave both blank to keep
+    everything scraped. Manual/local only: needs the <code>jobright</code>
+    extra, a real Chrome install, and <code>JOBRIGHT_EMAIL</code>/
+    <code>JOBRIGHT_PASSWORD</code> set in Settings. Opens a real, visible
+    Chrome window and logs into your JobRight account — this can take
+    20–45+ minutes.
+  </p>
+  <form id="jobright-range-form" class="form-grid">
+    <label>From date
+      <input type="date" name="since" id="jobright-since">
+    </label>
+    <label>To date
+      <input type="date" name="until" id="jobright-until">
+    </label>
+    <div class="form-actions">
+      <button class="btn" type="submit">{{ icons.icon('play') }} Fetch JobRight jobs</button>
+    </div>
+  </form>
+  <div class="btn-row mt-md">
+    <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="24">Last 1d</button>
+    <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="168">Last 1w</button>
+    <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="720">Last 1 month</button>
+  </div>
+</div>
+
+<div class="card">
   <h2>Run one stage</h2>
   <div class="btn-row">
     <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>

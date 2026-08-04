@@ -15,6 +15,7 @@ skill extraction as a Greenhouse posting.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -168,7 +169,16 @@ async def ingest_and_record(
     dashboard's Runs page beside every other stage — otherwise this would be
     the one way postings enter the archive with no trace of how they got there.
     """
-    db_run = db.start_run(conn, command=command, stage="apify")
+    # `apify-pull` is dashboard-launchable (`runner.STAGES`), which opens the
+    # run row before spawning this process and passes its id through the
+    # environment (see `cmd_fetch`'s identical check) — without this, every
+    # dashboard-launched apify-pull would appear twice in history: once as
+    # the dashboard's own row, stuck at "running" forever, and once here.
+    # The webhook receiver runs in-process with no such id, so this is None
+    # there and behaves exactly as before.
+    inherited = os.environ.get("JOBSCRAPE_RUN_ID")
+    db_run = int(inherited) if inherited else db.start_run(
+        conn, command=command, stage="apify")
     try:
         async with Fetcher() as fetcher:
             result = await ingest_run(fetcher, conn, run_id, **kwargs)
