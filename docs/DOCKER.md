@@ -51,6 +51,13 @@ sudo -u postgres psql -c "CREATE DATABASE jobscrape OWNER jobscrape;"
 Generate a real password for this — don't reuse anything you've typed
 elsewhere (e.g. the server's own SSH password).
 
+`jobright-fetch` also needs `JOBRIGHT_EMAIL`/`JOBRIGHT_PASSWORD`. Leave
+`JOBRIGHT_CHROME_VERSION` **unset** here even if your own machine's `.env`
+has one — it names a locally-installed Chrome's major version, and the
+image installs its own Chromium via `apt`, whose version drifts over time
+and won't generally match. Blank lets `undetected-chromedriver` auto-detect
+whatever's actually in the container.
+
 ## Build and start
 
 ```bash

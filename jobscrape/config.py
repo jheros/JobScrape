@@ -190,9 +190,10 @@ APIFY_PAGE_SIZE = _env_int("APIFY_PAGE_SIZE", 500)
 # `jobright-fetch` logs into JobRight.ai with a real (or headless) Chrome via
 # Selenium, then reads JobRight's own internal JSON API directly with the
 # session cookies that login established — see `sources/jobright/scraper.py`.
-# Manual/local only: this needs the `jobright` extra (`pip install
-# '.[jobright]'`) and a real Chrome install, so it's never part of the
-# Docker image or the automated schedule.
+# Needs the `jobright` extra (`pip install '.[jobright]'`) and a real Chrome
+# install; the Docker image has both (plus Xvfb, for a headful session with
+# no real display). Triggered manually or from the dashboard's Runs page,
+# not the automated schedule.
 JOBRIGHT_EMAIL = _env_str("JOBRIGHT_EMAIL", "")
 JOBRIGHT_PASSWORD = _env_str("JOBRIGHT_PASSWORD", "")
 #: This machine's installed Chrome major version, so undetected-chromedriver

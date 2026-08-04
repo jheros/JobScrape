@@ -24,8 +24,10 @@ dependencies = [
 # Excel export. openpyxl only — pandas/numpy are deliberately not required.
 excel = ["openpyxl>=3.1"]
 # `jobright-fetch` — logs into JobRight.ai with a real Chrome via Selenium.
-# Manual/local only; never installed in the Docker image.
-jobright = ["selenium>=4.27", "undetected-chromedriver>=3.5.5", "setuptools>=75"]
+# `pyvirtualdisplay` wraps Xvfb so this can run headful (not the easily
+# fingerprinted `--headless=new`) inside a Docker container with no real
+# display — see `sources/jobright/scraper.py`.
+jobright = ["selenium>=4.27", "undetected-chromedriver>=3.5.5", "setuptools>=75", "pyvirtualdisplay>=3.0"]
 dev = ["pytest>=7.4", "pytest-asyncio>=0.23"]
 
 [project.scripts]

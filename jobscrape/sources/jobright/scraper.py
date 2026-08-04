@@ -17,13 +17,18 @@ Two fetch modes, both real and worth keeping:
   sort instead is how to collect far more than that.
 
 This needs the `jobright` extra (`pip install '.[jobright]'`) and a real
-Chrome install — never part of the Docker image, never part of the
-automated schedule. See `jobscrape/cli.py`'s `jobright-fetch` stage.
+Chrome install. Not part of the automated schedule — triggered manually or
+from the dashboard's Runs page — but it does run inside the Docker image:
+`setup_driver()` below auto-starts a virtual display (Xvfb, via
+`pyvirtualdisplay`) when no real `DISPLAY` is present, so Chrome still runs
+headful rather than falling back to the more easily fingerprinted
+`--headless=new`. See `jobscrape/cli.py`'s `jobright-fetch` stage.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 import time
@@ -86,7 +91,6 @@ def _uc_cache_dir():
         return Path(uc.Patcher().data_path)
     except Exception:
         if sys.platform == "win32":
-            import os
             return Path(os.environ.get("APPDATA", "")) / "undetected_chromedriver"
         return Path.home() / ".local" / "share" / "undetected_chromedriver"
 
@@ -99,6 +103,7 @@ class JobRightSession:
         self.chrome_version = chrome_version
         self.driver: Any = None
         self.main_window: str | None = None
+        self._display: Any = None
 
     def setup_driver(self) -> bool:
         import undetected_chromedriver as uc
@@ -110,6 +115,24 @@ class JobRightSession:
         # to hide the window — you can watch it work.
         if self.headless:
             options.add_argument("--headless=new")
+        elif sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
+            # No real display (the Docker image, any headless Linux box) —
+            # start a virtual one (Xvfb) rather than falling back to
+            # `--headless=new`, so Chrome still looks and behaves headful to
+            # the site. Kept alive for the process lifetime; there's no
+            # multi-session reuse here to justify tearing it down early.
+            from pyvirtualdisplay import Display
+
+            self._display = Display(visible=False, size=(1920, 1080))
+            self._display.start()
+
+        # Chrome refuses to run as root without this — true for any
+        # container that doesn't set up a dedicated non-root user, which is
+        # the case here. Only added when actually running as root, so the
+        # local (non-root) desktop flow keeps the sandbox.
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
 
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -259,6 +282,11 @@ class JobRightSession:
         if self.driver:
             try:
                 self.driver.quit()
+            except Exception:
+                pass
+        if self._display:
+            try:
+                self._display.stop()
             except Exception:
                 pass
 

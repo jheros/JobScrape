@@ -1081,12 +1081,13 @@ def cmd_jobright_ingest(args: argparse.Namespace) -> int:
 def cmd_jobright_fetch(args: argparse.Namespace) -> int:
     """Log into JobRight.ai and pull postings straight into the database.
 
-    Manual/local only: drives a real Chrome via Selenium
-    (`sources/jobright/scraper.py`), so it needs the `jobright` extra
-    (`pip install '.[jobright]'`) and a real Chrome install — never part of
-    the Docker image or the automated schedule. Scraped records go straight
-    into `ingest.ingest_and_record` in this same process; nothing is written
-    to disk.
+    Drives a real Chrome via Selenium (`sources/jobright/scraper.py`), so it
+    needs the `jobright` extra (`pip install '.[jobright]'`) and a real
+    Chrome install — both present in the Docker image, which also runs it
+    headful under a virtual display (Xvfb) rather than `--headless=new`.
+    Triggered manually or from the dashboard's Runs page, not the automated
+    schedule. Scraped records go straight into `ingest.ingest_and_record` in
+    this same process; nothing is written to disk.
     """
     from .sources.jobright import scraper
 
