@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 from datetime import date, datetime, timezone
 from html import unescape
 from typing import Any
@@ -821,6 +821,18 @@ class Job:
     raw: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        # psycopg2 raises before the query ever reaches the server if a plain
+        # string parameter contains one: "A string literal cannot contain NUL
+        # (0x00) characters." JobRight's own API has been observed to emit
+        # one buried in free text, and it killed a 13,329-row sweep outright
+        # — the same "one bad posting loses the whole batch" failure mode
+        # `encode_raw_json`'s size cap exists to prevent for oversized
+        # payloads. Stripped here, at construction, so no adapter has to
+        # know to check for this itself.
+        for f in fields(self):
+            value = getattr(self, f.name)
+            if isinstance(value, str) and "\x00" in value:
+                setattr(self, f.name, value.replace("\x00", ""))
         self.title = (self.title or "").strip()
         self.company = (self.company or "").strip()
         self.source_job_id = str(self.source_job_id)
