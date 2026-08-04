@@ -17,12 +17,13 @@ thread, which is not where those primitives are safe to touch.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from .. import db
+from .. import config, db
 from .runner import manager
 
 log = logging.getLogger("jobscrape.dashboard.scheduler")
@@ -55,6 +56,27 @@ async def _fire(schedule_id: int) -> None:
     with db.session() as conn:
         db.record_schedule_fired(conn, schedule_id, info["run_id"])
     log.info("schedule %s fired %s as run %s", schedule_id, row["stage"], info["run_id"])
+    if row["stage"] != "render-sync" and config.RENDER_DATABASE_URL:
+        # Fire-and-forget: don't hold up the scheduler's own event waiting on
+        # this. Whatever the stage just wrote should reach Render without
+        # you clicking anything.
+        asyncio.create_task(_sync_after(row["stage"]))
+
+
+async def _sync_after(stage: str) -> None:
+    """Wait for `stage` to stop running, then push what it wrote to Render.
+
+    Polls `manager.is_running` rather than watching the run row directly —
+    that's the same state `RunManager` already tracks, so no new bookkeeping
+    is needed to know when a run is done.
+    """
+    while manager.is_running(stage):
+        await asyncio.sleep(15)
+    try:
+        await manager.start("render-sync")
+    except (ValueError, RuntimeError) as exc:
+        # Benign — e.g. a manually-started render-sync already running.
+        log.info("render-sync after %s skipped: %s", stage, exc)
 
 
 def reload() -> None:

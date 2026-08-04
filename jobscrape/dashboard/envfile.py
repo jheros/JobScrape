@@ -27,6 +27,7 @@ ENV_PATH = config.PROJECT_ROOT / ".env"
 SECRET_KEYS = frozenset({
     "APIFY_TOKEN", "APIFY_WEBHOOK_SECRET", "RAPIDAPI_KEY", "ADZUNA_APP_KEY",
     "JOOBLE_API_KEY", "USAJOBS_API_KEY", "JOBRIGHT_PASSWORD",
+    "RENDER_DATABASE_URL",
 })
 
 #: The Settings page's grouping, mirroring `.env.example`'s section headers so
@@ -61,6 +62,7 @@ SECTIONS: list[tuple[str, list[str]]] = [
     ("JobRight (manual/local only — needs the jobright extra)", [
         "JOBRIGHT_EMAIL", "JOBRIGHT_PASSWORD", "JOBRIGHT_CHROME_VERSION",
     ]),
+    ("Render sync", ["RENDER_DATABASE_URL"]),
 ]
 
 #: Every key the Settings form is allowed to write — anything else in a

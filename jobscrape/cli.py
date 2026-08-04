@@ -1204,6 +1204,58 @@ def cmd_jobright_fetch(args: argparse.Namespace) -> int:
     return 1 if result.error else 0
 
 
+def cmd_render_sync(args: argparse.Namespace) -> int:
+    """Push new/updated/closed postings to the Render-hosted website database.
+
+    Skip-not-error when unconfigured, the same contract every optional
+    source follows. A dashboard/scheduler-launched run reuses the run row
+    the caller already opened (via `JOBSCRAPE_RUN_ID`) rather than opening a
+    second one — the same fix `jobright`'s and `apify`'s `ingest_and_record`
+    needed for the identical reason.
+    """
+    from . import render_sync
+
+    ok, reason = render_sync.available()
+    if not ok:
+        log.info("render-sync: %s — skipping", reason)
+        return 0
+
+    inherited = os.environ.get("JOBSCRAPE_RUN_ID")
+    with db.session(args.db) as conn:
+        run_id = int(inherited) if inherited else db.start_run(
+            conn, _command_line(), "render-sync", pid=os.getpid()
+        )
+        try:
+            render_conn = render_sync.connect_render()
+        except Exception as exc:                      # noqa: BLE001 - reported, not raised
+            log.exception("render-sync: could not connect to Render")
+            db.log_event(conn, run_id, f"connect failed: {exc}",
+                         stage="render-sync", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+
+        try:
+            result = render_sync.sync(conn, render_conn, dry_run=args.dry_run)
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            log.exception("render-sync: sync failed")
+            conn.rollback()
+            db.log_event(conn, run_id, f"sync failed: {exc}",
+                         stage="render-sync", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+        finally:
+            render_conn.close()
+
+        message = (
+            f"render-sync: {result['seen']} seen, {result['upserted']} upserted, "
+            f"{result['deleted']} deleted" + (" (dry run)" if result["dry_run"] else "")
+        )
+        log.info(message)
+        db.log_event(conn, run_id, message, stage="render-sync", counters=result)
+        db.finish_run(conn, run_id, status="ok", stats_payload=result)
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     with db.session(args.db) as conn:
         print(json.dumps(db.stats(conn), indent=2))
@@ -1640,6 +1692,14 @@ def build_parser() -> argparse.ArgumentParser:
     jr_sweep.add_argument("--list-taxonomy", action="store_true",
                           help="print the known JobRight category groups and exit")
 
+    p_render = sub.add_parser(
+        "render-sync",
+        help="push new/updated/closed postings to the Render-hosted "
+             "website database (needs RENDER_DATABASE_URL)",
+    )
+    p_render.add_argument("--dry-run", action="store_true",
+                          help="report what would sync without writing to Render")
+
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")
 
@@ -1755,6 +1815,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_jobright_ingest(args)
         if args.command == "jobright-fetch":
             return cmd_jobright_fetch(args)
+        if args.command == "render-sync":
+            return cmd_render_sync(args)
         if args.command == "schedule-run":
             return asyncio.run(cmd_schedule_run(args))
         if args.command == "migrate-from-sqlite":

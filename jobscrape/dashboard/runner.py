@@ -67,6 +67,12 @@ STAGES: dict[str, list[str]] = {
         "Frontend Software Engineer,React Developer,Android Developer,"
         "iOS/Swift Developer,Flutter Developer,DevOps,Site Reliability Engineer",
     ],
+    # Pushes to a separate Render-hosted database — see
+    # `jobscrape/render_sync.py`. Fired automatically by `scheduler._fire()`
+    # after any Schedule-tab run finishes, not meant to be clicked directly,
+    # but still a plain STAGES entry so it shows up in Runs history like
+    # everything else and `--dry-run` rides the existing extra allowlist.
+    "render-sync": ["render-sync"],
     # Composite: the exact sequence `scripts/schedule.sh` runs, ported to
     # `jobscrape schedule-run` so the dashboard calls one subprocess rather
     # than launching five separately with no way to treat them as one unit.

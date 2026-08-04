@@ -201,6 +201,15 @@ JOBRIGHT_PASSWORD = _env_str("JOBRIGHT_PASSWORD", "")
 #: supported Chrome 151 while the browser installed was 150.
 JOBRIGHT_CHROME_VERSION = _env_int("JOBRIGHT_CHROME_VERSION", 0)
 
+# --- Render sync -------------------------------------------------------------
+#
+# `render-sync` pushes new/updated/closed postings into a separate Postgres
+# database (Render) that a website reads from directly — see
+# `jobscrape/render_sync.py`. That database has its own, unrelated schema;
+# this is the *external* connection string (with `sslmode=require`), never
+# treated as a place jobscrape's own schema belongs.
+RENDER_DATABASE_URL = _env_str("RENDER_DATABASE_URL", "")
+
 # --- Common Crawl ---------------------------------------------------------
 CC_COLLECTIONS = _env_int("JOBSCRAPE_CC_COLLECTIONS", 3)
 CC_INDEX_ROOT = "https://index.commoncrawl.org"
