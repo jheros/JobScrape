@@ -64,10 +64,20 @@ async def _fire(schedule_id: int) -> None:
     with db.session() as conn:
         db.record_schedule_fired(conn, schedule_id, info["run_id"])
     log.info("schedule %s fired %s as run %s", schedule_id, stage, info["run_id"])
+    maybe_sync_after(stage)
+
+
+def maybe_sync_after(stage: str) -> None:
+    """Fire-and-forget: push what `stage` just wrote to Render once it
+    finishes, if this database is configured to sync at all.
+
+    Shared by the cron fire path above and every manual trigger in `app.py`
+    (a Runs-page button, Schedule tab's "Run now") — a manual click should
+    reach Render exactly the same as a schedule firing, not require its own
+    separate button.
+    """
     if stage != "render-sync" and config.RENDER_DATABASE_URL:
-        # Fire-and-forget: don't hold up the scheduler's own event waiting on
-        # this. Whatever the stage just wrote should reach Render without
-        # you clicking anything.
+        # Fire-and-forget: don't hold up the caller waiting on this.
         asyncio.create_task(_sync_after(stage))
 
 

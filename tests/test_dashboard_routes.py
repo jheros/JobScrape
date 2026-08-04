@@ -269,6 +269,52 @@ def test_run_now_resolves_a_relative_window_preset(client, monkeypatch) -> None:
     assert until is None
 
 
+def test_manual_stage_start_triggers_a_render_sync_check(client, monkeypatch) -> None:
+    """render-sync used to fire only from the scheduler's own cron trigger
+    (`scheduler._fire()`) — clicking a stage directly from the Runs page (or
+    "Run now" on the Schedule tab) went through `app.py` instead, which never
+    called it. Both manual paths must call `maybe_sync_after` too, exactly
+    like a schedule firing does, or a manual apify-pull never reaches
+    Render until something else happens to sync it."""
+    from jobscrape.dashboard import app as app_module
+    from jobscrape.dashboard.runner import manager
+
+    async def fake_start(stage, extra=None, window=None):
+        return {"run_id": 1, "stage": stage, "pid": 1}
+
+    seen = []
+    monkeypatch.setattr(manager, "start", fake_start)
+    monkeypatch.setattr(app_module.scheduler_module, "maybe_sync_after", seen.append)
+
+    response = client.post("/api/runs/apify-pull/start")
+    assert response.status_code == 200, response.text
+    assert seen == ["apify-pull"]
+
+
+def test_run_now_also_triggers_a_render_sync_check(client, monkeypatch) -> None:
+    from jobscrape.dashboard import app as app_module
+    from jobscrape.dashboard.runner import manager
+
+    create = client.post("/api/schedule", data={
+        "name": "Nightly apify", "stage": "apify-pull", "extra": "",
+        "cron_minute": "0", "cron_hour": "7", "cron_day_of_week": "*",
+        "timezone": "Asia/Bangkok",
+    })
+    assert create.status_code == 200, create.text
+    schedule_id = create.json()["id"]
+
+    async def fake_start(stage, extra=None, window=None):
+        return {"run_id": 1, "stage": stage, "pid": 1}
+
+    seen = []
+    monkeypatch.setattr(manager, "start", fake_start)
+    monkeypatch.setattr(app_module.scheduler_module, "maybe_sync_after", seen.append)
+
+    response = client.post(f"/api/schedule/{schedule_id}/run-now")
+    assert response.status_code == 200, response.text
+    assert seen == ["apify-pull"]
+
+
 # --- settings -------------------------------------------------------------
 
 

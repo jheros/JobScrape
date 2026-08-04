@@ -375,6 +375,7 @@ async def start_stage(
         )
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
+    scheduler_module.maybe_sync_after(stage)
     return JSONResponse(info)
 
 
@@ -489,6 +490,7 @@ async def run_schedule_now(schedule_id: int) -> JSONResponse:
         db.record_schedule_fired(conn, schedule_id, info["run_id"])
     finally:
         conn.close()
+    scheduler_module.maybe_sync_after(stage)
     return JSONResponse(info)
 
 

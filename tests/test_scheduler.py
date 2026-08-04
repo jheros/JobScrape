@@ -149,3 +149,21 @@ async def test_fire_passes_no_window_for_a_plain_stage(_isolated_db, monkeypatch
     await scheduler._fire(schedule_id)
 
     assert seen == {"stage": "full-sweep", "window": None}
+
+
+async def test_fire_checks_render_sync_after_the_stage(_isolated_db, monkeypatch) -> None:
+    """A cron fire must reach the same `maybe_sync_after` check a manual
+    Runs-page click or "Run now" goes through (see test_dashboard_routes.py)
+    — same helper, so all three trigger paths behave identically."""
+    conn = _isolated_db
+    schedule_id = db.create_schedule(conn, "Daily", "apify-pull", extra="")
+
+    async def fake_start(stage, extra=None, window=None):
+        return {"run_id": 1, "stage": stage, "pid": 1}
+
+    seen = []
+    monkeypatch.setattr(manager, "start", fake_start)
+    monkeypatch.setattr(scheduler, "maybe_sync_after", seen.append)
+    await scheduler._fire(schedule_id)
+
+    assert seen == ["apify-pull"]
