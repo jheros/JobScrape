@@ -51,9 +51,10 @@
 <div class="card">
   <h2>Fetch jobs in a date range</h2>
   <p class="sub-tight">
+    ATS boards and public job APIs — not Apify (see the Apify card below).
     Only postings dated within this range are collected. Leave both blank to
-    fetch everything. Also pulls the last 3 successful Apify runs (Indeed/
-    LinkedIn) and cross-source dedupes afterward, in the same run.
+    fetch everything. Cross-source dedupes and refreshes stats afterward, in
+    the same run.
   </p>
   <form id="fetch-range-form" class="form-grid">
     <label>From date
@@ -73,6 +74,35 @@
     <button class="btn ghost btn-sm" type="button" data-preset-hours="336">Last 2w</button>
     <button class="btn ghost btn-sm" type="button" data-preset-hours="720">Last 1 month</button>
     <button class="btn ghost btn-sm" type="button" data-preset-hours="1440">Last 2 months</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Fetch Apify jobs in a date range</h2>
+  <p class="sub-tight">
+    Indeed/LinkedIn postings via Apify. Only postings dated within this range
+    are kept — leave both blank to keep everything from the last 3 successful
+    actor runs. Cross-source dedupes and refreshes stats afterward, in the
+    same run.
+  </p>
+  <form id="apify-range-form" class="form-grid">
+    <label>From date
+      <input type="date" name="since" id="apify-since">
+    </label>
+    <label>To date
+      <input type="date" name="until" id="apify-until">
+    </label>
+    <div class="form-actions">
+      <button class="btn" type="submit">{{ icons.icon('play') }} Fetch Apify jobs</button>
+    </div>
+  </form>
+  <div class="btn-row mt-md">
+    <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="12">Last 12h</button>
+    <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="24">Last 1d</button>
+    <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="168">Last 1w</button>
+    <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="336">Last 2w</button>
+    <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="720">Last 1 month</button>
+    <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="1440">Last 2 months</button>
   </div>
 </div>
 
@@ -101,26 +131,26 @@
     </div>
   </form>
   <div class="btn-row mt-md">
+    <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="12">Last 12h</button>
     <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="24">Last 1d</button>
     <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="168">Last 1w</button>
+    <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="336">Last 2w</button>
     <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="720">Last 1 month</button>
+    <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="1440">Last 2 months</button>
   </div>
 </div>
 
-<div class="card">
-  <h2>Run one stage</h2>
-  <div class="btn-row">
+<details class="card">
+  <summary class="h2-like">Advanced</summary>
+  <div class="btn-row mt-md">
     <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
     <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
     <button class="btn ghost" data-start-stage="validate" data-label="Validate">{{ icons.icon('play') }} Validate boards</button>
     <button class="btn ghost" data-start-stage="export" data-label="Export">{{ icons.icon('play') }} Export</button>
-    <button class="btn ghost" data-start-stage="apify-pull" data-label="Apify pull">{{ icons.icon('play') }} Apify pull</button>
     <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">{{ icons.icon('play') }} Dedupe</button>
     <button class="btn ghost" data-start-stage="liveness" data-label="Liveness">{{ icons.icon('play') }} Liveness</button>
     <button class="btn ghost" data-start-stage="stats" data-label="Stats">{{ icons.icon('play') }} Stats</button>
     <button class="btn ghost" data-start-stage="sources" data-label="Sources">{{ icons.icon('play') }} Sources</button>
-    <button class="btn ghost" data-start-stage="daily-schedule" data-label="Run daily schedule">{{ icons.icon('clock') }} Run daily schedule</button>
-    <button class="btn ghost" data-start-stage="weekly-schedule" data-label="Run weekly schedule">{{ icons.icon('clock') }} Run weekly schedule</button>
     <button class="btn ghost" data-start-stage="purge" data-extra="--dry-run"
             data-label="Purge (dry-run)">{{ icons.icon('trash') }} Purge (dry-run)</button>
     <button class="btn danger" data-start-stage="purge"
@@ -129,11 +159,11 @@
   </div>
   <p class="sub mt-md mb-0">
     Stages run as separate processes, so stopping one is immediate and whatever
-    it already wrote is kept. Purge also runs automatically at the end of every
-    fetch now, so these two buttons are only for a one-off cleanup or a preview
-    without running a whole fetch.
+    it already wrote is kept. Every fetch card above already dedupes and
+    refreshes stats on its own, so these two Purge buttons are only for a
+    one-off cleanup or a preview without running a whole fetch.
   </p>
-</div>
+</details>
 
 {% if trend_svg %}
 <div class="card">

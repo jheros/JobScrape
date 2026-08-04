@@ -689,6 +689,29 @@ def test_a_run_is_fetched_mapped_filtered_and_stored(monkeypatch, _isolated_db) 
     assert stored["city"] == "Austin"
 
 
+def test_since_until_filters_by_posted_date(monkeypatch, _isolated_db) -> None:
+    """`ingest_run` accepts the same `since`/`until` date window every other
+    source's fetch does — INDEED_ITEM's `datePublished` is 2026-07-30."""
+    from datetime import date
+
+    from jobscrape.sources.apify import ingest
+
+    _stub_client(monkeypatch, SUCCEEDED_RUN, [INDEED_ITEM])
+    outside = asyncio.run(ingest.ingest_run(
+        None, _isolated_db, "RUN1",
+        since=date(2026, 8, 1), until=date(2026, 8, 31),
+    ))
+    assert outside.kept == 0
+    assert outside.funnel["dropped_window"] == 1
+
+    _stub_client(monkeypatch, SUCCEEDED_RUN, [INDEED_ITEM])
+    inside = asyncio.run(ingest.ingest_run(
+        None, _isolated_db, "RUN1",
+        since=date(2026, 7, 1), until=date(2026, 7, 31),
+    ))
+    assert inside.kept == 1
+
+
 @pytest.mark.parametrize(
     "run,expected",
     [
@@ -766,6 +789,7 @@ def _pull_args(**overrides: Any) -> Any:
         run=None, actor=None, last=3, max_results=None, db=None,
         all_roles=False, worldwide=False, all_workplaces=False,
         include_roles=None, include_qa=False, include_management=False,
+        since=None, until=None,
     )
     return argparse.Namespace(**{**defaults, **overrides})
 

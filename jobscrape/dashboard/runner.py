@@ -20,7 +20,7 @@ import re
 import signal
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from .. import config, db
@@ -37,14 +37,12 @@ STAGES: dict[str, list[str]] = {
     "discover": ["discover"],
     "discover-fast": ["discover", "--vector", "ct", "--vector", "github"],
     "validate": ["validate", "--concurrency", "6"],
+    # `fetch`, `apify-pull` and `jobright-fetch` each chain their own
+    # dedupe+stats internally now (see `cli.py`'s `cmd_fetch`/
+    # `cmd_apify_pull`/`cmd_jobright_fetch`) — every fetch-type command gets
+    # the same safety net, not just a composite. That's also why each is
+    # listed in `STAGE_GROUPS` below reserving `dedupe`/`stats` too.
     "fetch": ["fetch"],
-    # What the dashboard's "Fetch jobs" date-range card actually targets: a
-    # plain fetch plus an Apify pull and cross-source dedupe, as one
-    # subprocess — see `cmd_fetch`'s own `--with-apify` handling. Plain
-    # "fetch" (above) stays available for anything that wants just the board/
-    # global sources (e.g. `daily-schedule`'s own internal fetch step, which
-    # already runs apify-pull as its own separate composite member).
-    "fetch-with-apify": ["fetch", "--with-apify"],
     "export": ["export", "--format", "csv", "--format", "xlsx"],
     "apify-pull": ["apify-pull", "--last", "3"],
     "dedupe": ["dedupe", "--backfill"],
@@ -99,12 +97,52 @@ STAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "daily-schedule": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
     "weekly-schedule": ("discover", "validate", "fetch", "dedupe", "stats"),
     "full-sweep": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
-    # "fetch" itself is deliberately NOT a STAGE_GROUPS key (every entry
-    # above lists it as a flat member) — this composite is named differently
-    # so that stays true, rather than "fetch" being simultaneously a plain
-    # leaf stage and a composite reserving other stages.
-    "fetch-with-apify": ("fetch", "apify-pull", "dedupe"),
+    # Each of these three chains its own dedupe+stats internally now (see
+    # `cli.py`) — reserving them here stops a manual "Dedupe"/"Stats" click
+    # from racing the same tail end a fetch-type run is about to reach on
+    # its own, the same reasoning every other composite above already has.
+    "fetch": ("dedupe", "stats"),
+    "apify-pull": ("dedupe", "stats"),
+    "jobright-fetch": ("dedupe", "stats"),
 }
+
+
+#: Schedule-tab-only presets: a name -> (base STAGES key, days back). Not
+#: `STAGES` entries themselves — these aren't independently launchable
+#: stages, just a lookup `scheduler._fire()` resolves into a real stage plus
+#: a window computed fresh every time it fires (`date.today() - days`),
+#: never a fixed date baked in at schedule-creation time. The Runs page's
+#: own date-range cards target the base stages directly instead, with a
+#: date the caller picked explicitly.
+RELATIVE_WINDOWS: dict[str, tuple[str, int]] = {
+    f"{base}-{suffix}": (base, days)
+    for base in ("fetch", "apify-pull", "jobright-fetch")
+    for suffix, days in (("1d", 1), ("1w", 7), ("2w", 14), ("1m", 30), ("2m", 60))
+}
+
+
+def resolve_stage(
+    stage: str,
+) -> tuple[str, tuple[date | None, date | None] | None]:
+    """Translate a caller-supplied stage name into what `start()` needs.
+
+    A real `STAGES` key passes straight through with no window. A
+    `RELATIVE_WINDOWS` preset name (e.g. "fetch-1w") resolves to its real
+    base stage plus a `since` computed fresh on *this* call — never a fixed
+    date, so the same schedule row means something different (and correct)
+    every time it's fired or run by hand.
+
+    The one function both `scheduler._fire()` and the dashboard's "Run now"
+    route call, so a schedule behaves identically whichever way it's
+    triggered — before this existed, "Run now" passed the preset name
+    straight to `start()`, which doesn't know it, and rejected it as an
+    unknown stage.
+    """
+    relative = RELATIVE_WINDOWS.get(stage)
+    if relative is None:
+        return stage, None
+    base_stage, days = relative
+    return base_stage, (date.today() - timedelta(days=days), None)
 
 
 def _reserved_keys(stage: str) -> tuple[str, ...]:

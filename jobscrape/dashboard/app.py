@@ -26,7 +26,7 @@ from .. import config, db, filters, scam
 from ..observability import health as health_check
 from . import analytics, charts, envfile
 from . import scheduler as scheduler_module
-from .runner import STAGES, manager
+from .runner import RELATIVE_WINDOWS, STAGES, manager, resolve_stage
 
 log = logging.getLogger("jobscrape.dashboard")
 
@@ -297,7 +297,10 @@ async def sources(request: Request) -> HTMLResponse:
 async def schedule_page(request: Request) -> HTMLResponse:
     conn = _conn()
     try:
-        return _page(request, "schedule.html", schedules=db.list_schedules(conn))
+        return _page(
+            request, "schedule.html", schedules=db.list_schedules(conn),
+            stages=_SCHEDULE_STAGE_CHOICES,
+        )
     finally:
         conn.close()
 
@@ -321,8 +324,27 @@ async def settings_page(request: Request) -> HTMLResponse:
 #: (`--since`/`--until`) — the only ones a date range may be posted against.
 _WINDOW_STAGES = frozenset(
     stage for stage, argv in STAGES.items()
-    if argv[0] in ("fetch", "export", "jobright-fetch")
+    if argv[0] in ("fetch", "export", "jobright-fetch", "apify-pull")
 )
+
+_STAGE_DISPLAY_NAMES = {
+    "fetch": "Fetch jobs",
+    "apify-pull": "Fetch Apify jobs",
+    "jobright-fetch": "Fetch Jobright jobs",
+}
+
+#: The Schedule tab's own curated dropdown — Full Pipeline plus the 15
+#: relative-window presets (`RELATIVE_WINDOWS`), in place of every raw
+#: `STAGES` key. Labels are display-only; the posted `value` is what
+#: `create_schedule`/`update_schedule` validate and what `scheduler._fire()`
+#: resolves into a real stage plus a freshly-computed window.
+_SCHEDULE_STAGE_CHOICES: list[tuple[str, str]] = [
+    ("full-sweep", "Fetch Full Pipeline"),
+    *(
+        (value, f"{_STAGE_DISPLAY_NAMES[base]}({value.rsplit('-', 1)[-1]})")
+        for value, (base, _days) in RELATIVE_WINDOWS.items()
+    ),
+]
 
 
 @app.post("/api/runs/{stage}/start")
@@ -379,7 +401,7 @@ async def create_schedule(
     cron_day_of_week: str = Form("*"),
     timezone: str = Form("Asia/Bangkok"),
 ) -> JSONResponse:
-    if stage not in STAGES:
+    if stage not in STAGES and stage not in RELATIVE_WINDOWS:
         return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
     conn = _conn()
     try:
@@ -403,7 +425,7 @@ async def update_schedule(
     cron_day_of_week: str = Form("*"),
     timezone: str = Form("Asia/Bangkok"),
 ) -> JSONResponse:
-    if stage not in STAGES:
+    if stage not in STAGES and stage not in RELATIVE_WINDOWS:
         return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
     conn = _conn()
     try:
@@ -452,8 +474,14 @@ async def run_schedule_now(schedule_id: int) -> JSONResponse:
         conn.close()
     if not row:
         return JSONResponse({"error": "no such schedule"}, status_code=404)
+    # `resolve_stage` so "Run now" behaves identically to the real cron fire
+    # (`scheduler._fire()`) — a `RELATIVE_WINDOWS` preset name like "fetch-1w"
+    # isn't a real STAGES key, and `manager.start()` would reject it outright.
+    stage, window = resolve_stage(row["stage"])
     try:
-        info = await manager.start(row["stage"], row["extra"].split() if row["extra"] else None)
+        info = await manager.start(
+            stage, row["extra"].split() if row["extra"] else None, window=window,
+        )
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
     conn = _conn()

@@ -188,12 +188,11 @@ def test_export_is_also_a_window_stage(client) -> None:
     assert {"fetch", "export"} <= _WINDOW_STAGES
 
 
-def test_fetch_with_apify_is_also_a_window_stage(client) -> None:
-    """`fetch-with-apify`'s argv starts with "fetch" too, so the dashboard's
-    "Fetch jobs" card (which targets this stage, not plain "fetch") still
-    accepts a date range."""
+def test_apify_pull_and_jobright_fetch_are_also_window_stages(client) -> None:
+    """The dashboard's "Fetch Apify jobs" and "Fetch JobRight jobs" cards
+    each target their own bare stage directly and need a date range too."""
     from jobscrape.dashboard.app import _WINDOW_STAGES
-    assert "fetch-with-apify" in _WINDOW_STAGES
+    assert {"apify-pull", "jobright-fetch"} <= _WINDOW_STAGES
 
 
 # --- schedule -----------------------------------------------------------
@@ -235,6 +234,39 @@ def test_create_schedule_rejects_an_unknown_stage(client) -> None:
 
 def test_run_now_for_a_missing_schedule_is_404(client) -> None:
     assert client.post("/api/schedule/999999/run-now").status_code == 404
+
+
+def test_run_now_resolves_a_relative_window_preset(client, monkeypatch) -> None:
+    """A schedule stored with a `RELATIVE_WINDOWS` preset name (e.g.
+    "fetch-1w") isn't a real `STAGES` key — "Run now" used to pass it to
+    `manager.start()` unresolved, which rejected it outright as unknown."""
+    from datetime import date, timedelta
+
+    from jobscrape.dashboard.runner import manager
+
+    create = client.post("/api/schedule", data={
+        "name": "Weekly fetch", "stage": "fetch-1w", "extra": "",
+        "cron_minute": "0", "cron_hour": "7", "cron_day_of_week": "*",
+        "timezone": "Asia/Bangkok",
+    })
+    assert create.status_code == 200, create.text
+    schedule_id = create.json()["id"]
+
+    seen = {}
+
+    async def fake_start(stage, extra=None, window=None):
+        seen["stage"] = stage
+        seen["window"] = window
+        return {"run_id": 1, "stage": stage, "pid": 1}
+
+    monkeypatch.setattr(manager, "start", fake_start)
+    response = client.post(f"/api/schedule/{schedule_id}/run-now")
+    assert response.status_code == 200, response.text
+
+    assert seen["stage"] == "fetch"
+    since, until = seen["window"]
+    assert since == date.today() - timedelta(days=7)
+    assert until is None
 
 
 # --- settings -------------------------------------------------------------

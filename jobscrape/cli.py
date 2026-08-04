@@ -582,24 +582,18 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                 log.exception("could not record run %s as failed", run_id)
             raise
 
-    # `--with-apify`: run as its own sibling step, same pattern
+    # Dedupe then stats, unconditionally — the same in-process-call shape
     # `cmd_schedule_run` already uses to compose `cmd_discover`/`cmd_fetch`/
-    # `cmd_apify_pull`/`cmd_dedupe` — a direct in-process call, not a new
-    # subprocess, so it shares this invocation's `--db` and inherits whatever
-    # `JOBSCRAPE_RUN_ID` was set for the dashboard's own bookkeeping.
-    # `ingest_and_record` opens its own `runs` row per Apify run ingested
-    # regardless of that env var, so this can add more than one history row —
-    # already true of the standalone "Apify pull" button, not new here.
-    if getattr(args, "with_apify", False):
-        rc = await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
-        if rc:
-            return rc
-        rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
-        if rc:
-            return rc
-
+    # `cmd_apify_pull`/`cmd_dedupe`, not a new subprocess, so this shares the
+    # current invocation's `--db` and inherits whatever `JOBSCRAPE_RUN_ID`
+    # was set for the dashboard's own bookkeeping. Every fetch-type command
+    # gets this same safety net now (see `cmd_apify_pull`/`cmd_jobright_fetch`)
+    # rather than only the old `--with-apify` combination.
     log.info("Fetch complete. %d rows touched; %d total jobs in database.", grand_total, total)
-    return 0
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+    return cmd_stats(_step_args("stats", [], args.db))
 
 
 # --------------------------------------------------------------------------
@@ -954,6 +948,12 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
     from .sources.apify import client
     from .sources.apify import ingest as ingest_module
 
+    since = parse_date(args.since)
+    until = parse_date(args.until)
+    if since and until and since > until:
+        log.error("--since (%s) is after --until (%s)", since, until)
+        return 2
+
     ok, reason = client.available()
     if not ok:
         # A missing key is a skip with an explanatory message, never an error —
@@ -1004,12 +1004,19 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
                 software_only=not args.all_roles,
                 us_only=not args.worldwide,
                 remote_only=not getattr(args, "all_workplaces", False),
+                since=since, until=until,
             )
             if result.error:
                 failures += 1
             if result.funnel:
                 log.info("   funnel: %s", result.funnel)
-    return 1 if failures and failures == len(run_ids) else 0
+
+    if failures and failures == len(run_ids):
+        return 1
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+    return cmd_stats(_step_args("stats", [], args.db))
 
 
 def cmd_jobright_ingest(args: argparse.Namespace) -> int:
@@ -1201,7 +1208,12 @@ def cmd_jobright_fetch(args: argparse.Namespace) -> int:
         )
     if result.funnel:
         log.info("   funnel: %s", result.funnel)
-    return 1 if result.error else 0
+    if result.error:
+        return 1
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+    return cmd_stats(_step_args("stats", [], args.db))
 
 
 def cmd_render_sync(args: argparse.Namespace) -> int:
@@ -1400,21 +1412,18 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
     if rc:
         return rc
 
-    # Every mode except weekly: Apify bills per actor run and its own
-    # scheduler decides how often postings appear, so pulling on the weekly
-    # leg too would just re-read the same runs `daily` already ingested.
+    # `cmd_fetch` already chains its own dedupe+stats now (every fetch-type
+    # command does), so there's no separate final step here anymore. Every
+    # mode except weekly also pulls Apify: Apify bills per actor run and its
+    # own scheduler decides how often postings appear, so pulling on the
+    # weekly leg too would just re-read the same runs `daily` already
+    # ingested. `apify-pull`'s own dedupe+stats chain runs *after* it adds
+    # Apify's rows, so that pass is the one that actually catches
+    # cross-source duplicates against the ATS boards `fetch` just wrote —
+    # same ordering the original single final dedupe call relied on.
     if mode != "weekly":
-        rc = await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
-        if rc:
-            return rc
-
-    # After apify-pull so Apify's rows are cross-source-deduplicated against
-    # the ATS boards in the same run.
-    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
-    if rc:
-        return rc
-
-    return cmd_stats(_step_args("stats", [], args.db))
+        return await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
+    return 0
 
 
 # --------------------------------------------------------------------------
@@ -1530,9 +1539,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_fetch.add_argument("--refetch-details", action="store_true",
                          help="re-download descriptions for postings already stored "
                               "(slow; only needed to repair existing rows)")
-    p_fetch.add_argument("--with-apify", action="store_true",
-                         help="also pull the last 3 successful Apify actor runs "
-                              "(Indeed/LinkedIn) and cross-source dedupe afterward")
 
     # export
     p_exp = sub.add_parser("export", help="write collected jobs to a file")
@@ -1596,6 +1602,7 @@ def build_parser() -> argparse.ArgumentParser:
         "apify-pull",
         help="ingest Apify runs by hand — recovery for a missed webhook, or a backfill",
     )
+    add_window(p_apify)
     p_apify.add_argument("--run", action="append",
                          help="ingest this run id (repeatable)")
     p_apify.add_argument("--actor", action="append",

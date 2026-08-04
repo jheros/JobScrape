@@ -13,7 +13,7 @@ import pytest
 
 from jobscrape import config, db
 from jobscrape.dashboard import analytics, charts
-from jobscrape.dashboard.runner import STAGE_GROUPS, STAGES, RunManager
+from jobscrape.dashboard.runner import RELATIVE_WINDOWS, STAGE_GROUPS, STAGES, RunManager
 from jobscrape.models import Job
 
 
@@ -240,7 +240,7 @@ def test_chart_escapes_untrusted_labels() -> None:
 def test_stage_allowlist_prevents_arbitrary_commands() -> None:
     """The web layer must never be able to assemble its own command line."""
     assert set(STAGES) == {
-        "discover", "discover-fast", "validate", "fetch", "fetch-with-apify",
+        "discover", "discover-fast", "validate", "fetch",
         "export", "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
         "daily-schedule", "weekly-schedule", "full-sweep", "jobright-fetch",
         "render-sync",
@@ -261,13 +261,40 @@ async def test_unknown_stage_is_rejected(tmp_path) -> None:
 
 
 def test_stage_groups_only_reference_real_stages() -> None:
-    """A composite's group must be plain, launchable stages, and never
-    reference the composite itself or another composite."""
+    """Every member of a composite's group must be a plain, launchable
+    stage, and a composite must never list itself."""
     for composite, members in STAGE_GROUPS.items():
         assert composite in STAGES
+        assert composite not in members
         for member in members:
             assert member in STAGES
-            assert member not in STAGE_GROUPS, "a composite's group must be flat"
+
+
+def test_stage_groups_are_pre_flattened() -> None:
+    """`_reserved_keys` never recurses — it only looks up one level via
+    `STAGE_GROUPS.get(stage, ())` — so now that `fetch`/`apify-pull`/
+    `jobright-fetch` each reserve their own `dedupe`/`stats` tail (every
+    fetch-type command chains them internally, see `cli.py`), any bigger
+    composite listing one of those as a member must already list whatever
+    that member's own group reserves too, rather than relying on recursion
+    that doesn't happen."""
+    for composite, members in STAGE_GROUPS.items():
+        for member in members:
+            for nested in STAGE_GROUPS.get(member, ()):
+                assert nested in members, (
+                    f"{composite!r} lists {member!r} (which reserves "
+                    f"{nested!r} on its own) but doesn't itself reserve {nested!r}"
+                )
+
+
+def test_relative_windows_resolve_to_real_stages() -> None:
+    """Every Schedule-tab preset name must resolve to an actual, launchable
+    stage — catches a typo here before it ships, not at 3am when a schedule
+    fires and `RunManager.start()` rejects it as unknown."""
+    for name, (base_stage, days) in RELATIVE_WINDOWS.items():
+        assert base_stage in STAGES, f"{name!r} points at unknown stage {base_stage!r}"
+        assert days > 0
+        assert name not in STAGES, f"{name!r} must stay a preset, not a real stage"
 
 
 async def test_composite_blocks_its_own_members(tmp_path, monkeypatch) -> None:
@@ -297,11 +324,11 @@ async def test_composite_blocks_its_own_members(tmp_path, monkeypatch) -> None:
     assert len(manager.active()) == 1
 
 
-async def test_fetch_with_apify_blocks_its_own_members(tmp_path, monkeypatch) -> None:
-    """The dashboard's "Fetch jobs" card runs `fetch-with-apify`, which
-    internally also touches `apify-pull` and `dedupe` (see `cmd_fetch`'s
-    `--with-apify` handling) — a manual click on either while it's running
-    must be refused, same as any other composite's members."""
+async def test_fetch_blocks_its_own_dedupe_and_stats_tail(tmp_path, monkeypatch) -> None:
+    """The dashboard's "Fetch jobs" card runs plain `fetch`, which now
+    chains its own `dedupe`+`stats` internally (see `cmd_fetch`, every
+    fetch-type command does this) — a manual click on either while it's
+    running must be refused, same as any other composite's members."""
     manager = RunManager(str(tmp_path / "r.db"))
 
     class _FakeProcess:
@@ -317,14 +344,14 @@ async def test_fetch_with_apify_blocks_its_own_members(tmp_path, monkeypatch) ->
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
     monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
 
-    await manager.start("fetch-with-apify")
+    await manager.start("fetch")
     assert manager.is_running("fetch")
-    assert manager.is_running("apify-pull")
     assert manager.is_running("dedupe")
-    with pytest.raises(RuntimeError):
-        await manager.start("apify-pull")
+    assert manager.is_running("stats")
     with pytest.raises(RuntimeError):
         await manager.start("dedupe")
+    with pytest.raises(RuntimeError):
+        await manager.start("stats")
     assert len(manager.active()) == 1
 
 

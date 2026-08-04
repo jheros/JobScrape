@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from ... import db
@@ -78,6 +79,8 @@ async def ingest_run(
     software_only: bool = True,
     us_only: bool = True,
     remote_only: bool = True,
+    since: date | None = None,
+    until: date | None = None,
 ) -> IngestResult:
     """Fetch one run's dataset, map it, filter it and store it.
 
@@ -134,6 +137,7 @@ async def ingest_run(
     kept, funnel = apply_filters_counted(
         jobs, software_only=software_only, us_only=us_only,
         remote_only=remote_only, allow_roles=allow_roles,
+        since=since, until=until,
     )
     result.kept = len(kept)
     result.funnel = funnel.as_dict()

@@ -90,7 +90,7 @@
       submitBtn.disabled = true;
       submitBtn.textContent = "Starting…";
       var body = new URLSearchParams(new FormData(fetchRangeForm)).toString();
-      post("/api/runs/fetch-with-apify/start", body).then(function (res) {
+      post("/api/runs/fetch/start", body).then(function (res) {
         if (!res.ok) {
           alert(res.data.error || "Could not start");
           submitBtn.disabled = false;
@@ -151,6 +151,41 @@
           + String(since.getDate()).padStart(2, "0");
         document.getElementById("jobright-since").value = iso;
         document.getElementById("jobright-until").value = "";
+      });
+    });
+  }
+
+  // --- apify-pull in a date range -------------------------------------------
+  // Own block/ids, same reasoning as the jobright one above.
+  var apifyRangeForm = document.getElementById("apify-range-form");
+  if (apifyRangeForm) {
+    apifyRangeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var submitBtn = apifyRangeForm.querySelector("button[type=submit]");
+      var label = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Starting…";
+      var body = new URLSearchParams(new FormData(apifyRangeForm)).toString();
+      post("/api/runs/apify-pull/start", body).then(function (res) {
+        if (!res.ok) {
+          alert(res.data.error || "Could not start");
+          submitBtn.disabled = false;
+          submitBtn.textContent = label;
+          return;
+        }
+        window.location.href = "/runs";
+      });
+    });
+
+    document.querySelectorAll("[data-apify-preset-hours]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var hours = parseInt(btn.getAttribute("data-apify-preset-hours"), 10);
+        var since = new Date(Date.now() - hours * 3600 * 1000);
+        var iso = since.getFullYear() + "-"
+          + String(since.getMonth() + 1).padStart(2, "0") + "-"
+          + String(since.getDate()).padStart(2, "0");
+        document.getElementById("apify-since").value = iso;
+        document.getElementById("apify-until").value = "";
       });
     });
   }

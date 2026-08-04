@@ -62,7 +62,10 @@ async def test_daily_mode_is_bounded_and_pulls_apify(recorder) -> None:
     rc = await cli.cmd_schedule_run(_mode_args("daily"))
     assert rc == 0
     stages = [name for name, _ in recorder]
-    assert stages == ["discover", "validate", "fetch", "apify-pull", "dedupe", "stats"]
+    # No separate dedupe/stats here anymore: `apify-pull` (stubbed above)
+    # chains its own now, same as `fetch` — schedule-run's own sequencing
+    # stops once it hands off to whichever one runs last.
+    assert stages == ["discover", "validate", "fetch", "apify-pull"]
 
     discover_args = dict(recorder)["discover"]
     assert discover_args.vector == ["ct", "github"]
@@ -78,8 +81,10 @@ async def test_weekly_mode_is_wider_and_skips_apify(recorder) -> None:
     rc = await cli.cmd_schedule_run(_mode_args("weekly"))
     assert rc == 0
     stages = [name for name, _ in recorder]
-    # No apify-pull: weekly would just re-ingest the same runs daily already did.
-    assert stages == ["discover", "validate", "fetch", "dedupe", "stats"]
+    # No apify-pull: weekly would just re-ingest the same runs daily already
+    # did. No separate dedupe/stats either — `fetch` (stubbed above) chains
+    # its own now.
+    assert stages == ["discover", "validate", "fetch"]
 
     discover_args = dict(recorder)["discover"]
     assert discover_args.vector is None  # every vector, none named explicitly
@@ -95,7 +100,7 @@ async def test_full_mode_is_unbounded(recorder) -> None:
     rc = await cli.cmd_schedule_run(_mode_args("full"))
     assert rc == 0
     stages = [name for name, _ in recorder]
-    assert stages == ["discover", "validate", "fetch", "apify-pull", "dedupe", "stats"]
+    assert stages == ["discover", "validate", "fetch", "apify-pull"]
 
     discover_args = dict(recorder)["discover"]
     assert discover_args.vector is None
@@ -115,4 +120,4 @@ async def test_a_failing_step_stops_the_sequence(recorder, monkeypatch) -> None:
     rc = await cli.cmd_schedule_run(_mode_args("full"))
     assert rc == 2
     stages = [name for name, _ in recorder]
-    assert stages == ["discover"]  # fetch/apify-pull/dedupe/stats never ran
+    assert stages == ["discover"]  # fetch/apify-pull never ran

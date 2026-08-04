@@ -19,8 +19,8 @@
     </label>
     <label>Stage
       <select name="stage" required>
-        {% for s in stages %}
-          <option value="{{ s }}">{{ s }}</option>
+        {% for value, label in stages %}
+          <option value="{{ value }}">{{ label }}</option>
         {% endfor %}
       </select>
     </label>

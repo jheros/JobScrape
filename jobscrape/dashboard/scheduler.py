@@ -24,7 +24,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from .. import config, db
-from .runner import manager
+from .runner import manager, resolve_stage
 
 log = logging.getLogger("jobscrape.dashboard.scheduler")
 
@@ -39,28 +39,36 @@ async def _fire(schedule_id: int) -> None:
     """A schedule's cron trigger fired. Reload the row (so an edit made after
     `reload()` added this job is honoured without live-mutating a trigger),
     then start the stage through the same `RunManager` every manual click
-    goes through."""
+    goes through.
+
+    A schedule's `stage` may be one of `RELATIVE_WINDOWS`'s preset names
+    (e.g. "fetch-1w") instead of a real `STAGES` key — `resolve_stage()`
+    turns it into the real stage plus a `since` computed fresh on *this*
+    fire, never a date fixed back when the schedule was created.
+    """
     with db.session() as conn:
         row = db.get_schedule(conn, schedule_id)
     if not row or not row["enabled"]:
         return  # disabled/deleted since this fire was scheduled
     extra = row["extra"].split() if row["extra"] else None
+    stage, window = resolve_stage(row["stage"])
+
     try:
-        info = await manager.start(row["stage"], extra)
+        info = await manager.start(stage, extra, window=window)
     except (ValueError, RuntimeError) as exc:
         # Expected and benign — e.g. the daily and weekly schedules landing
         # close together, or a manual run already occupying this stage. Not
         # an error worth an APScheduler executor traceback.
-        log.info("schedule %s (%s) skipped: %s", schedule_id, row["stage"], exc)
+        log.info("schedule %s (%s) skipped: %s", schedule_id, stage, exc)
         return
     with db.session() as conn:
         db.record_schedule_fired(conn, schedule_id, info["run_id"])
-    log.info("schedule %s fired %s as run %s", schedule_id, row["stage"], info["run_id"])
-    if row["stage"] != "render-sync" and config.RENDER_DATABASE_URL:
+    log.info("schedule %s fired %s as run %s", schedule_id, stage, info["run_id"])
+    if stage != "render-sync" and config.RENDER_DATABASE_URL:
         # Fire-and-forget: don't hold up the scheduler's own event waiting on
         # this. Whatever the stage just wrote should reach Render without
         # you clicking anything.
-        asyncio.create_task(_sync_after(row["stage"]))
+        asyncio.create_task(_sync_after(stage))
 
 
 async def _sync_after(stage: str) -> None:
