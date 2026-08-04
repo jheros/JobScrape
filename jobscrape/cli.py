@@ -1235,7 +1235,9 @@ def cmd_render_sync(args: argparse.Namespace) -> int:
             return 1
 
         try:
-            result = render_sync.sync(conn, render_conn, dry_run=args.dry_run)
+            result = render_sync.sync(
+                conn, render_conn, dry_run=args.dry_run, limit=args.limit,
+            )
         except Exception as exc:                       # noqa: BLE001 - reported, not raised
             log.exception("render-sync: sync failed")
             conn.rollback()
@@ -1699,6 +1701,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_render.add_argument("--dry-run", action="store_true",
                           help="report what would sync without writing to Render")
+    p_render.add_argument("--limit", type=int, default=None,
+                          help="cap how many changed rows one pass processes "
+                               "(oldest-changed-first); writes for real, unlike "
+                               "--dry-run, and advances the watermark to match")
 
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")

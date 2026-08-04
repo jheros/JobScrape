@@ -34,7 +34,11 @@ _CHANGED_SINCE_SQL = """
            GREATEST(last_seen_at, COALESCE(closed_at, last_seen_at)) AS changed_at
     FROM jobs
     WHERE (last_seen_at > ? OR closed_at > ?) AND duplicate_of IS NULL
+    ORDER BY changed_at ASC
 """
+#: Oldest-changed-first, so a `--limit`-capped run and the eventual full run
+#: behind it cover a contiguous range rather than an arbitrary, unordered
+#: slice — repeatable across several capped test runs in a row.
 
 _UPSERT_SQL = """
     INSERT INTO jobs (
@@ -67,6 +71,7 @@ _WATERMARK_SQL = """
     SELECT stats->>'watermark' AS watermark FROM runs
     WHERE stage = 'render-sync' AND status = 'ok'
       AND stats->>'watermark' IS NOT NULL
+      AND stats->>'dry_run' IS DISTINCT FROM 'true'
     ORDER BY id DESC LIMIT 1
 """
 
@@ -150,6 +155,7 @@ def sync(
     render_conn: db.Connection,
     *,
     dry_run: bool = False,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """One incremental pass: push jobscrape rows changed since the last
     successful sync into Render's `jobs` table, removing ones that closed.
@@ -164,19 +170,35 @@ def sync(
     The new watermark is the newest `changed_at` actually observed in this
     batch, not wall-clock "now" — a slow concurrent write mid-flight just
     gets picked up on the next pass instead of being silently skipped.
+
+    `limit`, unlike `dry_run`, still writes for real — it's a cap on how
+    many rows one pass processes (e.g. to test against a handful before a
+    full backfill), not a preview. The watermark advances to cover exactly
+    what was actually processed, so a later uncapped run picks up right
+    after rather than redoing this batch.
     """
     row = conn.execute(_WATERMARK_SQL).fetchone()
     watermark: datetime = (
         datetime.fromisoformat(row["watermark"]) if row and row["watermark"] else _EPOCH
     )
 
-    changed = conn.execute(_CHANGED_SINCE_SQL, (watermark, watermark)).fetchall()
+    sql, params = _CHANGED_SINCE_SQL, [watermark, watermark]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(limit)
+    changed = conn.execute(sql, tuple(params)).fetchall()
 
     upserted = deleted = 0
+    # A dry run must advance nothing -- including the watermark. Recording
+    # one anyway once made a real run right after see "0 seen": the dry
+    # run's own finish_run stored this same computed watermark under
+    # status='ok', so the next read-back treated everything it only
+    # *previewed* as already synced, though nothing had actually been
+    # written to Render at all.
     new_watermark = watermark
     for job_row in changed:
         changed_at = job_row.get("changed_at")
-        if changed_at and changed_at > new_watermark:
+        if not dry_run and changed_at and changed_at > new_watermark:
             new_watermark = changed_at
 
         if job_row.get("closed_at"):
