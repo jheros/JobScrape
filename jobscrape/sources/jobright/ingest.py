@@ -100,6 +100,13 @@ def ingest_and_record(
         result = ingest_records(conn, records, **kwargs)
     except Exception as exc:                      # noqa: BLE001 - reported, not raised
         log.exception("jobright: ingesting %d records failed", len(records))
+        # A DB-level failure (bad encoding, oversized payload, ...) leaves
+        # Postgres refusing every further statement on this connection until
+        # the transaction ends — without this, log_event/finish_run below
+        # would each raise InFailedSqlTransaction in turn, masking the real
+        # error and leaving this run stuck at status='running' forever.
+        # Harmless to call when the exception wasn't DB-related too.
+        conn.rollback()
         db.log_event(conn, db_run, f"ingest failed: {exc}",
                      stage="jobright", source="jobright", level="error")
         db.finish_run(conn, db_run, status="error", error=str(exc))

@@ -174,6 +174,13 @@ async def ingest_and_record(
             result = await ingest_run(fetcher, conn, run_id, **kwargs)
     except Exception as exc:                      # noqa: BLE001 - reported, not raised
         log.exception("apify: ingesting run %s failed", run_id)
+        # A DB-level failure leaves Postgres refusing every further statement
+        # on this connection until the transaction ends — without this,
+        # log_event/finish_run below would each raise InFailedSqlTransaction
+        # in turn, masking the real error and leaving this run stuck at
+        # status='running' forever. Harmless when the exception wasn't
+        # DB-related too.
+        conn.rollback()
         db.log_event(conn, db_run, f"run {run_id} failed: {exc}",
                      stage="apify", source="apify", level="error")
         db.finish_run(conn, db_run, status="error", error=str(exc))

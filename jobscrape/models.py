@@ -502,6 +502,26 @@ RAW_JSON_MAX = 400_000
 RAW_JSON_MAX_FIELD = 4_000
 
 
+def _strip_nul(value: Any) -> Any:
+    """Recursively remove NUL bytes from strings in a JSON-able structure.
+
+    `Job.__post_init__` does the same for the dataclass's own flat string
+    fields, but `raw` is a nested dict untouched by that pass. A NUL survives
+    `json.dumps` as the literal escape sequence ``\\u0000`` — valid JSON — and
+    Postgres's `jsonb` type rejects that outright: "unsupported Unicode
+    escape sequence: \\u0000 cannot be converted to text". Cleaning the
+    source structure before serialising avoids ever producing that sequence,
+    rather than trying to patch it out of already-escaped text afterward.
+    """
+    if isinstance(value, str):
+        return value.replace("\x00", "") if "\x00" in value else value
+    if isinstance(value, dict):
+        return {k: _strip_nul(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_strip_nul(v) for v in value]
+    return value
+
+
 def encode_raw_json(raw: Any) -> str | None:
     """Serialise a source payload for storage, or return None if there is none.
 
@@ -526,6 +546,7 @@ def encode_raw_json(raw: Any) -> str | None:
     if not raw:
         return None
 
+    raw = _strip_nul(raw)
     text = json.dumps(raw, default=str)
     if len(text) <= RAW_JSON_MAX:
         return text
