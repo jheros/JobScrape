@@ -802,6 +802,23 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
             db.clear_duplicate(conn, args.clear)
             log.info("Cleared duplicate flag on job id %d", args.clear)
             return 0
+
+        # `fetch`/`apify-pull`/`jobright-fetch` each chain a `--backfill`
+        # dedupe of their own now, so this can genuinely be called from
+        # several subprocesses at once. Two full-archive recomputes writing
+        # duplicate_of concurrently would be a real race — this Postgres
+        # advisory lock (transaction-scoped: releases automatically at the
+        # COMMIT resolve_all's own _apply() does, or at db.session()'s exit
+        # for a dry run, so there's no separate unlock to forget) makes sure
+        # only one is ever actually running at a time. Whoever's second
+        # waits here instead of racing; nothing in RunManager needs to know.
+        locked = conn.execute(
+            "SELECT pg_try_advisory_xact_lock(hashtext('jobscrape:dedupe')::bigint) AS ok"
+        ).fetchone()["ok"]
+        if not locked:
+            log.info("dedupe: another backfill is already running — waiting for it to finish")
+            conn.execute("SELECT pg_advisory_xact_lock(hashtext('jobscrape:dedupe')::bigint)")
+
         result = dedupe.resolve_all(conn, dry_run=args.dry_run)
         label = "Would collapse" if args.dry_run else "Collapsed"
         log.info(

@@ -97,13 +97,14 @@ STAGE_GROUPS: dict[str, tuple[str, ...]] = {
     "daily-schedule": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
     "weekly-schedule": ("discover", "validate", "fetch", "dedupe", "stats"),
     "full-sweep": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
-    # Each of these three chains its own dedupe+stats internally now (see
-    # `cli.py`) — reserving them here stops a manual "Dedupe"/"Stats" click
-    # from racing the same tail end a fetch-type run is about to reach on
-    # its own, the same reasoning every other composite above already has.
-    "fetch": ("dedupe", "stats"),
-    "apify-pull": ("dedupe", "stats"),
-    "jobright-fetch": ("dedupe", "stats"),
+    # `fetch`/`apify-pull`/`jobright-fetch` each chain their own dedupe+stats
+    # internally now (see `cli.py`), but deliberately have NO entry here —
+    # unlike the composites above, nothing stops them running side by side.
+    # They pull from unrelated sources, and the one thing that genuinely
+    # can't run twice at once (`dedupe --backfill`'s full-archive rewrite)
+    # is protected by a Postgres advisory lock in `cmd_dedupe` instead —
+    # whichever of them reaches its own dedupe step second just waits for
+    # the lock, invisible to RunManager, rather than being rejected here.
 }
 
 

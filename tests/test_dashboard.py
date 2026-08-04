@@ -324,11 +324,14 @@ async def test_composite_blocks_its_own_members(tmp_path, monkeypatch) -> None:
     assert len(manager.active()) == 1
 
 
-async def test_fetch_blocks_its_own_dedupe_and_stats_tail(tmp_path, monkeypatch) -> None:
-    """The dashboard's "Fetch jobs" card runs plain `fetch`, which now
-    chains its own `dedupe`+`stats` internally (see `cmd_fetch`, every
-    fetch-type command does this) — a manual click on either while it's
-    running must be refused, same as any other composite's members."""
+async def test_fetch_type_stages_can_run_concurrently(tmp_path, monkeypatch) -> None:
+    """`fetch`, `apify-pull` and `jobright-fetch` each chain their own
+    dedupe+stats internally (see `cmd_fetch`/etc.), but none of them
+    reserves `dedupe`/`stats` in `STAGE_GROUPS` — they pull from unrelated
+    sources and have no reason to serialize with each other. The one thing
+    that genuinely can't run twice at once (`dedupe --backfill`'s
+    full-archive rewrite) is protected by a Postgres advisory lock inside
+    `cmd_dedupe` instead (see `tests/test_dedupe.py`), not by RunManager."""
     manager = RunManager(str(tmp_path / "r.db"))
 
     class _FakeProcess:
@@ -345,14 +348,17 @@ async def test_fetch_blocks_its_own_dedupe_and_stats_tail(tmp_path, monkeypatch)
     monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
 
     await manager.start("fetch")
+    await manager.start("apify-pull")
+    await manager.start("jobright-fetch")
     assert manager.is_running("fetch")
-    assert manager.is_running("dedupe")
-    assert manager.is_running("stats")
-    with pytest.raises(RuntimeError):
-        await manager.start("dedupe")
-    with pytest.raises(RuntimeError):
-        await manager.start("stats")
-    assert len(manager.active()) == 1
+    assert manager.is_running("apify-pull")
+    assert manager.is_running("jobright-fetch")
+    assert len(manager.active()) == 3
+
+    # A manual Dedupe/Stats click is also unaffected by any of the three.
+    await manager.start("dedupe")
+    await manager.start("stats")
+    assert len(manager.active()) == 5
 
 
 async def test_stopping_a_composite_frees_its_whole_group(tmp_path, monkeypatch) -> None:

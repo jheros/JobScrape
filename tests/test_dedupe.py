@@ -11,7 +11,10 @@ must not leave its tier-1 dependents pointing at a non-canonical row).
 
 from __future__ import annotations
 
-from jobscrape import db, dedupe
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import NullPool
+
+from jobscrape import config, db, dedupe
 from jobscrape.models import Job
 
 
@@ -196,3 +199,35 @@ def test_resolve_scoped_only_touches_one_company() -> None:
             "SELECT COUNT(*) c FROM jobs WHERE company_slug = 'otherco' AND duplicate_of IS NOT NULL"
         ).fetchone()["c"]
         assert other_untouched == 0
+
+
+# --- advisory lock: cmd_dedupe's cross-process backfill serialization ------
+
+def test_advisory_lock_blocks_a_second_backfill_until_the_first_releases() -> None:
+    """`cmd_dedupe` (cli.py) wraps `resolve_all` in
+    `pg_advisory_xact_lock(hashtext('jobscrape:dedupe')::bigint)` so two
+    subprocesses' full-archive backfills never race. This exercises the
+    actual lock against Postgres — no mocking — mirroring the two-connection
+    check done manually before this was wired into `cmd_dedupe`.
+
+    Uses its own engine rather than `db.connect()`: the `_isolated_db`
+    autouse fixture monkeypatches that to always hand back the *same*
+    connection for the test's duration (so writes roll back at teardown),
+    which would make both "connections" here the same Postgres backend —
+    advisory locks are reentrant within one backend, so the test would
+    pass for the wrong reason. Two real connections need two real sessions.
+    """
+    lock_sql = text("SELECT pg_try_advisory_xact_lock(hashtext('jobscrape:dedupe')::bigint) AS ok")
+    engine = create_engine(config.TEST_DATABASE_URL, poolclass=NullPool, future=True)
+    conn1 = engine.connect()
+    conn2 = engine.connect()
+    try:
+        assert conn1.execute(lock_sql).mappings().one()["ok"] is True
+        assert conn2.execute(lock_sql).mappings().one()["ok"] is False
+        conn1.rollback()
+        assert conn2.execute(lock_sql).mappings().one()["ok"] is True
+        conn2.rollback()
+    finally:
+        conn1.close()
+        conn2.close()
+        engine.dispose()
