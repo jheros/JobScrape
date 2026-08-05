@@ -47,7 +47,17 @@ _WORKPLACE_ATTRIBUTES = {
 
 
 def _text(value: Any) -> str | None:
-    if value is None:
+    """Coerce a raw JSON leaf value to text, or `None`.
+
+    Rejects anything that isn't already scalar-ish (str/int/float) — not
+    just `None`. `item.get("company")` is a fallback for the rare item
+    where the actor reports company as a flat string instead of the usual
+    nested object; when that object comes back with every field null,
+    `company_obj.get("companyName")` is `None` and this used to stringify
+    the fallback's dict itself (`"{'companyName': None, ...}"`) straight
+    into the `company` column, rather than recognizing it wasn't text.
+    """
+    if not isinstance(value, (str, int, float)):
         return None
     text = str(value).strip()
     return text or None

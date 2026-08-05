@@ -117,6 +117,24 @@ def test_indeed_falls_back_to_the_company_name() -> None:
     assert other is not None and other.company_slug == "10a-labs"
 
 
+def test_a_fully_null_company_object_is_dropped_not_stringified() -> None:
+    """Real Indeed items come back with `company` as a dict of nulls when its
+    enrichment fails entirely — every sub-field `None`, no usable name
+    anywhere. `_text(item.get("company"))`'s fallback used to stringify that
+    dict itself straight into `job.company`
+    (`"{'companyName': None, 'companyShortName': None, ...}"`), which reached
+    the dashboard, the server, and the live Render-synced website as a
+    literal company name before this was caught."""
+    item = {**INDEED_ITEM, "company": {
+        "companyName": None, "companyShortName": None, "companyPageUrl": None,
+        "logoImgUrl": None, "logoImgUrl2x": None, "companyAddress": None,
+        "companyType": None, "estimatedEmployeeCount": None,
+        "estimatedRevenue": None, "industryType": None, "industrySector": None,
+        "corporateLink": None, "ceoName": None, "ceoPhotoUrl": None,
+    }}
+    assert indeed.to_job(item) is None
+
+
 def test_an_hourly_indeed_rate_is_annualised() -> None:
     """The 488-row bug, in the one place it could recur.
 
