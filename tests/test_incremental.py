@@ -189,6 +189,34 @@ async def test_known_ids_are_scoped_to_one_board(tmp_path) -> None:
         assert db.known_job_ids(conn, "lever", "acme") == set()
 
 
+# --- a stored job without a description must self-heal --------------------
+
+async def test_a_stored_job_with_no_description_is_not_skippable(tmp_path) -> None:
+    """`skippable_ids` (unlike `known_job_ids`) is what every adapter's
+    `known_ids` actually comes from — its whole contract is "we already have
+    their description". A posting whose very first detail request failed
+    (a timeout, a transient 5xx, an upstream template change) used to pass
+    `known_job_ids`' plain "does a row exist" check anyway, so it was
+    treated as already-captured forever: every later sweep skipped its
+    detail request too, on the theory that skipping was safe. 11 postings
+    across Workday and Rippling were found stuck this way in the real
+    archive, only recoverable with a one-off manual backfill. This is what
+    makes that self-healing instead — such a job must come back OUT of
+    `skippable_ids`, so the very next sweep asks for its detail again."""
+    path = tmp_path / "healing.db"
+    with db.session(path) as conn:
+        db.upsert_jobs(conn, [
+            Job(source="ashby", source_job_id="stuck-1", title="SWE", company="Acme",
+                company_slug="acme", job_url="https://x/1"),
+            Job(source="ashby", source_job_id="fine-1", title="SWE", company="Acme",
+                company_slug="acme", job_url="https://x/2",
+                description_text="Build the backend."),
+        ])
+        skip = db.skippable_ids(conn, "ashby", "acme")
+    assert "fine-1" in skip, "a job with a real description is safe to skip"
+    assert "stuck-1" not in skip, "a job with no description must be retried"
+
+
 # --- remembering rejected postings ---------------------------------------
 
 def test_rejected_postings_are_not_refetched(tmp_path) -> None:
@@ -200,7 +228,8 @@ def test_rejected_postings_are_not_refetched(tmp_path) -> None:
     with db.session(tmp_path / "r.db") as conn:
         db.upsert_jobs(conn, [
             Job(source="ashby", source_job_id="kept-1", title="SWE", company="Acme",
-                company_slug="acme", job_url="https://x/1"),
+                company_slug="acme", job_url="https://x/1",
+                description_text="Build things."),
         ])
         # Two rejected: one on role/region (no date), one outside the window.
         db.record_rejected(conn, "ashby", "acme", [

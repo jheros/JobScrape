@@ -752,8 +752,26 @@ def skippable_ids(
       window and it is re-evaluated rather than silently missed.
 
     Together these take request savings from ~48% to ~95% on a repeat sweep.
+
+    A stored job only qualifies for the first group if it actually has a
+    description — not just `known_job_ids`' plain "does a row exist" check.
+    Without this, a posting whose very first detail request failed (a
+    timeout, a transient 5xx, an upstream template change) got marked
+    "already have it" forever: every source using this list to skip its own
+    detail request (`known_ids` in `fetch_board`) never asked again, since
+    the row existing at all was treated as proof its description was
+    already captured. Measured on the real archive: 11 postings stuck this
+    way across Workday and Rippling alone, permanently empty until found
+    and manually backfilled — this makes that self-healing instead.
     """
-    ids = known_job_ids(conn, source, company_slug)
+    ids = {
+        row["source_job_id"]
+        for row in conn.execute(
+            "SELECT source_job_id FROM jobs WHERE source = ? AND company_slug = ? "
+            "AND description_text IS NOT NULL AND description_text != ''",
+            (source, company_slug),
+        )
+    }
 
     for row in conn.execute(
         "SELECT source_job_id, posted_at FROM posting_seen "
