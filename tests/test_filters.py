@@ -674,6 +674,33 @@ def test_structured_country() -> None:
     assert is_us_eligible("Munich", country="DE") is False
 
 
+@pytest.mark.parametrize(
+    "location,country",
+    [
+        ("Barcelona, CT, Spain", "ES"),   # CT = Cataluña, not Connecticut
+        ("Madrid, MD, Spain", "ES"),      # MD = Madrid region, not Maryland
+        ("Zaragoza, AR, Spain", "ES"),    # AR = Aragón, not Arkansas
+        ("Georgia", "GE"),                # the country, not the US state
+        ("Tbilisi, Georgia", "GE"),
+    ],
+)
+def test_a_foreign_region_code_is_not_read_as_a_us_state(location: str, country: str) -> None:
+    """Several US state abbreviations collide exactly with a foreign
+    region's own 2-letter code, and "Georgia" collides with a US state by
+    full name too — a resolved, non-US country is stronger evidence than
+    either text pattern and must win. Real data: dozens of Spain-only
+    SmartRecruiters postings and Georgia(country)-only Breezy postings were
+    kept as "could be US-eligible" this way."""
+    assert is_us_eligible(location, country=country) is False
+
+
+def test_a_us_state_still_wins_with_no_country_given() -> None:
+    """The collision guard only fires when a country is actually resolved
+    and non-US — an untagged posting still gets the benefit of the doubt."""
+    assert is_us_eligible("Barcelona, CT, Spain") is True
+    assert is_us_eligible("Georgia") is True
+
+
 def test_parse_us_location() -> None:
     assert parse_us_location("Austin, TX") == ("Austin", "TX")
     assert parse_us_location("Boston, Massachusetts") == ("Boston", "MA")
@@ -702,6 +729,17 @@ def test_parse_us_location_rejects_a_requisition_code_as_the_city() -> None:
     requisition code, not a city; `_CITY_NOISE_RE` only strips specific
     words, not arbitrary numbers, so this needs its own guard."""
     assert parse_us_location("09507 - Colorado Remote") == (None, "CO")
+
+
+def test_parse_us_location_does_not_store_a_foreign_region_code_as_a_state() -> None:
+    """Same collision as `is_us_eligible`'s guard, but here the consequence
+    is a wrong *value* rather than a wrongly-kept row: "Barcelona, CT,
+    Spain" used to store `state="CT"` as if Barcelona were in Connecticut."""
+    assert parse_us_location("Barcelona, CT, Spain", "ES") == (None, None)
+    assert parse_us_location("Madrid, MD, Spain", "ES") == (None, None)
+    assert parse_us_location("Georgia", "GE") == (None, None)
+    # No country given: benefit of the doubt, same as before this fix.
+    assert parse_us_location("Barcelona, CT, Spain") == ("Barcelona", "CT")
 
 
 def _job(**kw: object) -> Job:

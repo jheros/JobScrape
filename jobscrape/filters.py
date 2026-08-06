@@ -1122,7 +1122,26 @@ _US_REMOTE = re.compile(
 )
 
 
-def _has_us_state(text: str) -> bool:
+def _has_us_state(text: str, country: str | None = None) -> bool:
+    """Whether `text` names a US state — by a 2-letter code in "City, XX,
+    ..." shape, or a full state name anywhere.
+
+    A resolved, non-US `country` overrides both: several US state
+    abbreviations collide exactly with a foreign region's own 2-letter
+    code — "Barcelona, CT, Spain" (Cataluña) and "Madrid, MD, Spain"
+    read as Connecticut/Maryland by shape alone, and "Zaragoza, AR, Spain"
+    (Aragón) as Arkansas. Full names collide too: "Georgia" is a real US
+    state *and* a country, identically spelled, and a bare "Georgia" (no
+    state-shaped punctuation at all) only ever reaches the full-name branch
+    below. A `country` this function can already trust (an ISO code
+    resolved elsewhere, not a guess) settles the ambiguity outright —
+    trusting the text pattern over it is what let dozens of Spain-only and
+    Georgia(country)-only postings through as if they might be US-eligible.
+    """
+    if country:
+        code = country.strip().lower()
+        if code and code not in _US_COUNTRY_CODES and code not in _UNSCOPED_COUNTRY:
+            return False
     if _CITY_STATE.search(text) or _STATE_ANYWHERE.search(text):
         match = _CITY_STATE.search(text) or _STATE_ANYWHERE.search(text)
         return bool(match and match.group(1) in _STATE_ABBRS)
@@ -1164,7 +1183,7 @@ def is_us_eligible(
     if haystack:
         if _US_COUNTRY.search(haystack) or _US_REMOTE.search(haystack):
             return True
-        if _has_us_state(text):
+        if _has_us_state(text, country):
             return True
         lowered = text.lower()
         if any(city in lowered for city in _US_CITIES):
@@ -1219,16 +1238,27 @@ def _city_before(text: str, cut: int) -> str | None:
     return candidate
 
 
-def parse_us_location(location: str | None) -> tuple[str | None, str | None]:
+def parse_us_location(
+    location: str | None, country: str | None = None,
+) -> tuple[str | None, str | None]:
     """Best-effort split of a raw location string into (city, state).
 
     Three passes, most specific first: a trailing state code, a full state name
     anywhere, then the curated hub-city table for a string that names a city and
     no state at all. Returns ``(None, None)`` when nothing resolves — a bare
     "Remote" or an unlisted city yields nothing rather than a guess.
+
+    A resolved, non-US `country` skips the first two passes outright — the
+    same collision `_has_us_state` guards against (Spanish "Barcelona, CT,
+    Spain" reading as Connecticut, "Georgia" the country as the US state)
+    would otherwise store a US state on a posting that isn't one.
     """
     if not location:
         return None, None
+    if country:
+        code = country.strip().lower()
+        if code and code not in _US_COUNTRY_CODES and code not in _UNSCOPED_COUNTRY:
+            return None, None
     text = location.strip()
     match = _CITY_STATE.search(text) or _STATE_ANYWHERE.search(text)
     if match and match.group(1) in _STATE_ABBRS:
@@ -1575,7 +1605,7 @@ def apply_filters_counted(
         # adapter that supplied only one blocked the other from ever resolving —
         # 1,835 rows carried a state with no city for that reason.
         if not job.city or not job.state:
-            city, state = parse_us_location(job.location_raw)
+            city, state = parse_us_location(job.location_raw, job.country)
             job.city = job.city or city
             job.state = job.state or state
         if not job.country:
