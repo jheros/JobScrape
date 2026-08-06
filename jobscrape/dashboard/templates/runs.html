@@ -38,10 +38,11 @@
       <strong>Run the full pipeline</strong>
       <div class="detail">
         One button, the whole process: discover every board, validate every
-        unchecked one, fetch every currently open posting from every source
-        (including Apify), then collapse reposts and cross-source duplicates.
-        No date window and no caps — this is the complete, deduplicated
-        archive in a single run, at the cost of being the slowest option here.
+        unchecked one, fetch every currently open posting from the last 2
+        months from every source (including Apify), then collapse reposts
+        and cross-source duplicates. No cap on which boards get checked —
+        this is the complete, deduplicated archive for that window in a
+        single run, at the cost of being the slowest option here.
       </div>
     </div>
     <button class="btn ghost" data-start-stage="full-sweep" data-label="Run full pipeline">{{ icons.icon('play') }} Run full pipeline</button>

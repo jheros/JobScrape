@@ -1378,12 +1378,15 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
       What the Mon-Sat cron leg runs.
     - `weekly` — last 60 days, every discover vector, a wider validation cap.
       What the Sunday cron leg runs.
-    - `full`   — no date window, no validation cap, every discover vector:
-      the single "give me everything" button on the dashboard's Runs page.
-      Discover finds every reachable board, validate probes all of them
-      (not just a capped slice), and fetch collects every currently open
-      posting from every source — as complete as one run gets, at the cost
-      of being the slowest of the three.
+    - `full`   — also last 60 days, but no validation cap, every discover
+      vector: the single "give me everything (recent)" button on the
+      dashboard's Runs page. Discover finds every reachable board, validate
+      probes all of them (not just a capped slice), and fetch collects
+      every currently-open posting from the last 2 months from every
+      source. Used to have no date window at all — every currently open
+      posting regardless of age — but that's what was filling the archive
+      with postings from months back that nobody wants surfaced; capped to
+      match `weekly`'s window instead.
 
     `daily`/`weekly` are `scripts/schedule.sh` ported to Python so the
     dashboard's in-process scheduler can run the identical sequence without
@@ -1408,13 +1411,12 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
         validate_argv = ["--limit", "6000", "--concurrency", "6"]
         fetch_argv = ["--since", since]
     else:
-        # No --since/--until (every currently open posting) and no --limit on
-        # validate (every unchecked board, not a capped slice) — the two
-        # flags that make `daily`/`weekly` bounded, dropped on purpose.
-        since = None
+        # Same 60-day window as `weekly` — only `--limit` on validate is
+        # dropped (every unchecked board gets probed, not a capped slice).
+        since = (date.today() - timedelta(days=60)).isoformat()
         discover_argv = []
         validate_argv = ["--concurrency", "6"]
-        fetch_argv = []
+        fetch_argv = ["--since", since]
 
     log.info("=== schedule-run %s (since %s) ===", mode, since or "no window")
 
@@ -1439,8 +1441,16 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
     # Apify's rows, so that pass is the one that actually catches
     # cross-source duplicates against the ATS boards `fetch` just wrote —
     # same ordering the original single final dedupe call relied on.
-    if mode != "weekly":
+    if mode == "daily":
         return await cmd_apify_pull(_step_args("apify-pull", ["--last", "3"], args.db))
+    if mode == "full":
+        # Unlike daily's own pull, `full` promises a bounded "last 2 months"
+        # end to end — an old-but-still-open posting sitting in the last 3
+        # Apify runs would otherwise slip back in through this leg even
+        # after the board fetch above stopped keeping it.
+        return await cmd_apify_pull(
+            _step_args("apify-pull", ["--last", "3", "--since", since], args.db)
+        )
     return 0
 
 

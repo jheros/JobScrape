@@ -96,7 +96,11 @@ async def test_weekly_mode_is_wider_and_skips_apify(recorder) -> None:
     assert fetch_args.since == (date.today() - timedelta(days=60)).isoformat()
 
 
-async def test_full_mode_is_unbounded(recorder) -> None:
+async def test_full_mode_is_bounded_to_60_days(recorder) -> None:
+    """Full used to have no date window at all — every currently open
+    posting regardless of age — which is what filled the archive with
+    postings from months back. Now capped to the same window `weekly` uses,
+    end to end including the chained apify-pull leg."""
     rc = await cli.cmd_schedule_run(_mode_args("full"))
     assert rc == 0
     stages = [name for name, _ in recorder]
@@ -108,8 +112,12 @@ async def test_full_mode_is_unbounded(recorder) -> None:
     validate_args = dict(recorder)["validate"]
     assert validate_args.limit is None  # every unchecked board, not a capped slice
 
+    expected_since = (date.today() - timedelta(days=60)).isoformat()
     fetch_args = dict(recorder)["fetch"]
-    assert fetch_args.since is None and fetch_args.until is None
+    assert fetch_args.since == expected_since and fetch_args.until is None
+
+    apify_args = dict(recorder)["apify-pull"]
+    assert apify_args.since == expected_since
 
 
 async def test_a_failing_step_stops_the_sequence(recorder, monkeypatch) -> None:
