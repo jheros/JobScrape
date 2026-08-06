@@ -184,3 +184,41 @@ def test_job_cleans_its_location_on_construction() -> None:
     job = Job(source="neogov", source_job_id="1", title="Engineer", company="City",
               job_url="https://x/1", location_raw="Gaston, SC 29053 | 33.8316 | -81.1126")
     assert job.location_raw == "Gaston, SC 29053"
+
+
+@pytest.mark.parametrize(
+    "bad", ["Remote", "remote", "REMOTE", "NA", "TRUE", "worldwide", "ww", "-",
+            "-11; -10; -9.5; -9; -8; -7; -6; -5; -4"],
+)
+def test_a_placeholder_city_is_blanked_not_stored(bad: str) -> None:
+    """A workplace word, a "no restriction" sentinel, or a plain garbage
+    value has independently shown up as `city` from Indeed, SmartRecruiters,
+    Workday, Ashby, BambooHR, Adzuna, Breezy, and Himalayas — never a real
+    place, in any of them. Caught once here rather than per-adapter."""
+    from jobscrape.models import Job
+
+    job = Job(source="test", source_job_id="1", title="Engineer", company="Acme",
+              job_url="https://x/1", city=bad, state=bad)
+    assert job.city is None
+    assert job.state is None
+
+
+def test_a_real_city_and_state_survive_construction() -> None:
+    from jobscrape.models import Job
+
+    job = Job(source="test", source_job_id="1", title="Engineer", company="Acme",
+              job_url="https://x/1", city="Austin", state="TX")
+    assert job.city == "Austin"
+    assert job.state == "TX"
+
+
+def test_a_non_latin_city_name_is_not_mistaken_for_no_letters() -> None:
+    """The "no letters at all" placeholder check must be Unicode-aware — an
+    ASCII-only `[a-zA-Z]` test would wrongly blank a real Hebrew, Cyrillic,
+    or CJK place name as if it were a run of digits/punctuation."""
+    from jobscrape.models import Job
+
+    job = Job(source="test", source_job_id="1", title="Engineer", company="Acme",
+              job_url="https://x/1", city="בני ברק", state="Казань")
+    assert job.city == "בני ברק"
+    assert job.state == "Казань"

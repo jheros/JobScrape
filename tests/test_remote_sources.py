@@ -123,6 +123,21 @@ async def test_himalayas_unrestricted_role_is_worldwide() -> None:
     assert jobs[0].location_raw == "Worldwide"
 
 
+async def test_himalayas_timezone_restrictions_never_become_the_location() -> None:
+    """`timezoneRestrictions` is a list of raw UTC-offset numbers, never a
+    place name — real data was the full "-11" through "14" range (every
+    valid offset, i.e. no real restriction at all) written verbatim into
+    `location_raw`, which is exactly what a job with NO `locationRestrictions`
+    should read as "Worldwide", not a wall of numbers."""
+    page = {"jobs": [{
+        "guid": "g1", "title": "SWE", "companySlug": "acme",
+        "applicationLink": "https://x/1",
+        "timezoneRestrictions": ["-11", "-10", "-9.5", "9.5", "10", "14"],
+    }]}
+    jobs = await Himalayas().fetch(FakeFetcher(page))
+    assert jobs[0].location_raw == "Worldwide"
+
+
 async def test_himalayas_page_stride_matches_the_api_cap() -> None:
     """The API caps responses at 20 and ignores a larger `limit`.
 

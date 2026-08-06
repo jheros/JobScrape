@@ -17,11 +17,19 @@ API = "https://{slug}.breezy.hr/json"
 
 
 def _location(item: dict[str, Any]) -> tuple[str | None, str | None, str | None, str | None]:
-    """Return ``(display, city, state, country_code)`` from Breezy's nested shape."""
+    """Return ``(display, city, state, country_code)`` from Breezy's nested shape.
+
+    Breezy's own sentinel for "open to anywhere" is ``city: "ww"`` paired with
+    ``country: {id: "worldwide", name: "Worldwide"}`` — neither is a real
+    place, they're Breezy's way of saying there's no restriction at all, so
+    both are dropped here rather than stored as if they named somewhere.
+    """
     loc = item.get("location") or {}
     if not isinstance(loc, dict):
         return None, None, None, None
     city = loc.get("city")
+    if isinstance(city, str) and city.strip().lower() == "ww":
+        city = None
     state_obj = loc.get("state") or {}
     country_obj = loc.get("country") or {}
     state = state_obj.get("id") or state_obj.get("name") if isinstance(state_obj, dict) else None

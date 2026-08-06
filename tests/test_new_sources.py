@@ -271,6 +271,33 @@ async def test_breezy_handles_object_valued_fields() -> None:
     assert job.source_job_id == "acme:e7a1fed92878"
 
 
+async def test_breezy_worldwide_sentinel_is_not_a_place() -> None:
+    """Breezy's own sentinel for "open to anywhere" is `city: "ww"` paired
+    with `country: {id: "worldwide"}` — real values in the payload, but
+    neither is an actual place; both used to be stored verbatim."""
+    listing = [
+        {
+            "id": "abc123",
+            "name": "Remote Support Engineer",
+            "url": "https://acme.breezy.hr/p/abc123-support",
+            "published_date": "2026-06-26T13:51:03.752Z",
+            "location": {
+                "country": {"name": "Worldwide", "id": "worldwide"},
+                "city": "ww",
+                "is_remote": True,
+            },
+            "company": {"name": "Acme", "friendly_id": "acme"},
+        }
+    ]
+    page = ('<script type="application/ld+json">{"@type":"JobPosting",'
+            '"description":"<p>Support things.</p>"}</script>')
+    jobs = await Breezy().fetch_board(FakeFetcher(listing, text=page), "acme")
+    assert jobs is not None and len(jobs) == 1
+    job = jobs[0]
+    assert job.city is None
+    assert job.country is None
+
+
 # --- shared JSON-LD helper ------------------------------------------------
 
 def test_jsonld_finds_posting_in_graph() -> None:

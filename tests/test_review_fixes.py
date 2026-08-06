@@ -640,6 +640,17 @@ def test_an_unknown_country_name_is_kept_not_dropped() -> None:
     assert normalize_country("  ") is None
 
 
+@pytest.mark.parametrize("raw", ["worldwide", "Worldwide", "anywhere", "global"])
+def test_a_no_restriction_sentinel_is_not_kept_as_an_unknown_country(raw: str) -> None:
+    """Breezy's own `country.id` is literally `"worldwide"` for a fully open
+    role — unlike "Ruritania" above, this isn't an unrecognized *spelling* of
+    a real country, it's a source's way of saying there's no restriction at
+    all, which a blank `country` already means."""
+    from jobscrape.models import normalize_country
+
+    assert normalize_country(raw) is None
+
+
 @pytest.mark.parametrize(
     "state,location,expected",
     [

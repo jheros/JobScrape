@@ -1194,6 +1194,31 @@ def is_us_eligible(
 is_us_location = is_us_eligible
 
 
+def _city_before(text: str, cut: int) -> str | None:
+    """Everything before index `cut` (the matched state), cleaned up.
+
+    That leading chunk is usually the city — but not always: Workday in
+    particular sometimes orders a location "US, Minnesota, Eagan" (country,
+    state, city) rather than the usual "Eagan, Minnesota" — the state name
+    sits in the *middle*, so cutting there leaves "US" as the leading chunk,
+    a country code, not a city. Same shape for "Remote - Connecticut",
+    where cutting leaves "Remote -". Running the leftover through
+    `_CITY_NOISE_RE` (already built to strip exactly this kind of
+    decoration in the hub-city branch below) turns either case into "" — a
+    bare country code or workplace word is a wrong guess, so this returns
+    `None` rather than store one.
+
+    Also rejects a leftover with no letters at all — e.g. "09507 - Colorado
+    Remote" leaves "09507" (an internal requisition code), which
+    `_CITY_NOISE_RE` doesn't catch since it only strips specific words, not
+    arbitrary numbers. A number is never a city name either way.
+    """
+    candidate = _CITY_NOISE_RE.sub("", text[:cut].strip().strip(",")).strip(" ,-–—")
+    if not candidate or not any(ch.isalpha() for ch in candidate):
+        return None
+    return candidate
+
+
 def parse_us_location(location: str | None) -> tuple[str | None, str | None]:
     """Best-effort split of a raw location string into (city, state).
 
@@ -1207,13 +1232,12 @@ def parse_us_location(location: str | None) -> tuple[str | None, str | None]:
     text = location.strip()
     match = _CITY_STATE.search(text) or _STATE_ANYWHERE.search(text)
     if match and match.group(1) in _STATE_ABBRS:
-        city = text[: match.start()].strip().strip(",")
-        return (city or None), match.group(1)
+        return _city_before(text, match.start()), match.group(1)
     lowered = text.lower()
     for name, abbr in _STATES.items():
-        if re.search(rf"\b{re.escape(name)}\b", lowered):
-            city = re.sub(rf"\b{re.escape(name)}\b.*", "", text, flags=re.I)
-            return (city.strip().strip(",") or None), abbr
+        state_match = re.search(rf"\b{re.escape(name)}\b", lowered)
+        if state_match:
+            return _city_before(text, state_match.start()), abbr
     # No state named anywhere. The string may still be a city we know — the
     # single most common unresolved shape in the archive. Matched on the whole
     # cleaned string, not by containment, so "San Francisco Bay Area" and

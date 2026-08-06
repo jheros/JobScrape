@@ -46,13 +46,21 @@ def _company(item: dict[str, Any]) -> str:
 
 
 def _location(item: dict[str, Any]) -> str | None:
-    """Flatten the region restrictions into a filterable string."""
-    for key in ("locationRestrictions", "timezoneRestrictions"):
-        value = item.get(key)
-        if isinstance(value, list) and value:
-            return "; ".join(str(v) for v in value if v)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
+    """Flatten the region restrictions into a filterable string.
+
+    `timezoneRestrictions` used to be a second fallback here, but it is a
+    list of raw UTC-offset numbers ("-5", "3.5", ...), never a place name —
+    joining those into a string just wrote garbage like
+    "-11; -10; -9.5; ...; 14" into `location_raw`. Worst for the *least*
+    restricted postings: "no timezone restriction" and "every timezone
+    accepted" are the same list on this API, so a fully worldwide-remote
+    role produced the longest, most location-looking garbage of all.
+    """
+    value = item.get("locationRestrictions")
+    if isinstance(value, list) and value:
+        return "; ".join(str(v) for v in value if v)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     # No restriction stated means it is open anywhere, which includes the US.
     return "Worldwide"
 

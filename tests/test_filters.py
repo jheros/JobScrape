@@ -680,6 +680,30 @@ def test_parse_us_location() -> None:
     assert parse_us_location(None) == (None, None)
 
 
+def test_parse_us_location_rejects_a_country_prefix_as_the_city() -> None:
+    """Workday orders some postings "country, state, city" instead of the
+    usual "city, state" — cutting text at the state name left the leading
+    country code ("US"/"USA") stored as `city`, and the real city (after the
+    state) was never even looked at. A leftover that isn't a real place
+    should come back `None`, not a country code."""
+    assert parse_us_location("US, Minnesota, Eagan") == (None, "MN")
+    assert parse_us_location("USA Minnesota Eden Prairie") == (None, "MN")
+
+
+def test_parse_us_location_rejects_a_workplace_word_as_the_city() -> None:
+    """"Remote - Connecticut" left `city = "Remote -"` (the noise-stripping
+    regex only stripped the trailing comma, not the dash) — a real state
+    should still resolve, but the leftover noise must not become the city."""
+    assert parse_us_location("Remote - Connecticut") == (None, "CT")
+
+
+def test_parse_us_location_rejects_a_requisition_code_as_the_city() -> None:
+    """"09507 - Colorado Remote" left `city = "09507"` — an internal
+    requisition code, not a city; `_CITY_NOISE_RE` only strips specific
+    words, not arbitrary numbers, so this needs its own guard."""
+    assert parse_us_location("09507 - Colorado Remote") == (None, "CO")
+
+
 def _job(**kw: object) -> Job:
     base = dict(
         source="test", source_job_id="1", title="Software Engineer",

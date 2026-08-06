@@ -58,6 +58,39 @@ def clean_location(value: str | None) -> str | None:
     return _COORD_TAIL_RE.sub("", value).strip() or None
 
 
+#: Whole-value placeholders that keep turning up in a `city`/`state` field —
+#: never a real place, in any source: a workplace-type word standing in for
+#: an actual office (Indeed, SmartRecruiters, Workday, Ashby and others all
+#: independently ship `city: "Remote"`), a "no restriction" sentinel
+#: (Himalayas' timezone dump, Breezy's "ww"/"worldwide"), or a plain
+#: placeholder/garbage value (BambooHR's "NA", Adzuna's "TRUE"). Adapters
+#: keep shipping whatever their ATS's own field literally contains — same
+#: division of labour as `_NOT_A_COUNTRY` — so this is caught once, here,
+#: rather than in every adapter that happens to hit it.
+_NOT_A_PLACE = {
+    "remote", "hybrid", "onsite", "on-site", "n/a", "na", "tbd", "unknown",
+    "none", "null", "worldwide", "anywhere", "global", "international",
+    "various", "multiple", "true", "false", "xxx", "-", "ww",
+}
+def clean_place(value: str | None) -> str | None:
+    """Blank a `city`/`state` value that is actually one of `_NOT_A_PLACE`
+    or contains no letters at all, case/whitespace-insensitively.
+
+    "No letters" is checked with `str.isalpha()` per character, not an
+    ASCII `[a-zA-Z]` regex — a real place name is just as often Hebrew,
+    Cyrillic, or CJK as Latin script, and an ASCII-only check would wrongly
+    blank e.g. "בני ברק" (Bnei Brak) as if it were digits/punctuation.
+    """
+    if not value:
+        return None
+    text = value.strip()
+    if not text or text.lower() in _NOT_A_PLACE:
+        return None
+    if not any(ch.isalpha() for ch in text):
+        return None
+    return value
+
+
 # --- company slugs --------------------------------------------------------
 
 #: Trailing legal-entity suffixes, stripped so "Coinbase, Inc." and "Coinbase"
@@ -363,18 +396,30 @@ _US_IN_TEXT = re.compile(
 )
 
 
+#: Sentinels some sources put in a "country" field to mean "no restriction at
+#: all" (Breezy's own `country.id` is literally `"worldwide"` for a fully
+#: open role) — never a real country, in any spelling, so these are dropped
+#: rather than kept as an "unrecognized longer name" like a genuine one would be.
+_NOT_A_COUNTRY = {"worldwide", "anywhere", "global", "international", "remote", "any"}
+
+
 def normalize_country(value: str | None) -> str | None:
     """Collapse a country name or code to its ISO 3166-1 alpha-2 form.
 
     Returns the input unchanged when it is already a two-letter code, and
     ``None`` when there is nothing to normalize. An unrecognized longer name is
     returned as-is rather than dropped — losing it would be worse than storing
-    a spelling this table does not yet know.
+    a spelling this table does not yet know. The exception is `_NOT_A_COUNTRY`:
+    those aren't unrecognized spellings of a real country, they're a source's
+    way of saying there's no country restriction, which is exactly what a
+    blank `country` already means.
     """
     if not value:
         return None
     text = " ".join(str(value).strip().split())
     if not text:
+        return None
+    if text.lower() in _NOT_A_COUNTRY:
         return None
     mapped = _COUNTRY_ALIASES.get(text.lower())
     if mapped:
@@ -858,6 +903,8 @@ class Job:
         self.company = (self.company or "").strip()
         self.source_job_id = str(self.source_job_id)
         self.location_raw = clean_location(self.location_raw)
+        self.city = clean_place(self.city)
+        self.state = clean_place(self.state)
         # Four sources fill this and they disagree about blanks: SmartRecruiters
         # ships `{"label": ""}`, Workable ships a bare space. An empty string in
         # the column would read as "we know the industry and it is nothing".
