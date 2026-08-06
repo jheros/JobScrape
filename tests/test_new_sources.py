@@ -194,6 +194,54 @@ async def test_personio_missing_feed() -> None:
     assert await Personio().fetch_board(FakeFetcher(), "acme") is None
 
 
+_PERSONIO_XML_NO_DESCRIPTION = """<?xml version="1.0" encoding="utf-8"?>
+<workzag-jobs>
+  <position>
+    <id>2687536</id>
+    <subcompany>Acme GmbH</subcompany>
+    <office>Austin</office>
+    <department>Engineering</department>
+    <name>Backend Engineer (m/w/d)</name>
+    <jobDescriptions></jobDescriptions>
+    <employmentType>permanent</employmentType>
+    <schedule>full-time</schedule>
+    <createdAt>2026-06-25T17:23:34+00:00</createdAt>
+  </position>
+</workzag-jobs>
+"""
+
+_PERSONIO_JOB_PAGE = (
+    '<html><body><div class="page_jobDescriptionItem__eMzRv jb-description-item">'
+    '<h2 class="page_jobDescriptionItemTitle__uE_cg detail-block-title">Your mission</h2>'
+    '<div class="page_richTextContent__Bei8q rich-text-content detail-block-description">'
+    "Build APIs.<br>Ship them.</div></div></body></html>"
+)
+
+
+async def test_personio_falls_back_to_the_job_page_when_the_feed_has_no_description() -> None:
+    """Some tenants' feeds ship `<jobDescriptions></jobDescriptions>` empty
+    for every posting even though the same posting's own page has the real
+    text — a `<br>` with no closing tag inside the matched block is exactly
+    the case that used to make html_extract lose the match entirely."""
+    fetcher = FakeFetcher(text=[_PERSONIO_XML_NO_DESCRIPTION, _PERSONIO_JOB_PAGE])
+    jobs = await Personio().fetch_board(fetcher, "acme")
+    assert jobs is not None and len(jobs) == 1
+    job = jobs[0]
+    assert "Build APIs" in job.description_text
+    assert "Ship them" in job.description_text
+
+
+async def test_personio_skips_the_page_fallback_without_with_details() -> None:
+    """A cheap validate/probe pass must not spend an extra request per
+    empty-description posting."""
+    fetcher = FakeFetcher(text=[_PERSONIO_XML_NO_DESCRIPTION, _PERSONIO_JOB_PAGE])
+    jobs = await Personio().fetch_board(fetcher, "acme", with_details=False)
+    assert jobs is not None and len(jobs) == 1
+    assert not jobs[0].description_text
+    # The job page was never even requested.
+    assert fetcher._text == [_PERSONIO_JOB_PAGE]
+
+
 # --- BambooHR -------------------------------------------------------------
 
 async def test_bamboohr_list_plus_detail() -> None:
@@ -296,6 +344,30 @@ async def test_breezy_worldwide_sentinel_is_not_a_place() -> None:
     job = jobs[0]
     assert job.city is None
     assert job.country is None
+
+
+async def test_breezy_falls_back_to_the_page_s_own_description_div() -> None:
+    """Some tenants' posting pages no longer embed JSON-LD at all (a
+    template change, not a per-posting gap) — the page's own
+    `<div class="description">` still has the real body. A `<br>` with no
+    closing tag inside it is exactly the case that used to make
+    html_extract lose the match entirely."""
+    listing = [{
+        "id": "c9af2efd30eb", "name": "Software Engineer",
+        "url": "https://acme.breezy.hr/p/c9af2efd30eb-swe",
+        "published_date": "2026-06-26T13:51:03.752Z",
+        "company": {"name": "Acme", "friendly_id": "acme"},
+    }]
+    page = (
+        '<html><body><div class="content-container"><div class="description">'
+        "<p>Position Overview</p>Build safety tools.<br>Ship them.</div></div>"
+        "</body></html>"
+    )
+    jobs = await Breezy().fetch_board(FakeFetcher(listing, text=page), "acme")
+    assert jobs is not None and len(jobs) == 1
+    job = jobs[0]
+    assert "Build safety tools" in job.description_text
+    assert "Ship them" in job.description_text
 
 
 # --- shared JSON-LD helper ------------------------------------------------

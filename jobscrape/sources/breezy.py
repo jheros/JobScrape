@@ -12,6 +12,7 @@ from ..http import Fetcher, gather_limited
 from ..models import Job
 from . import jsonld
 from .base import BoardSource, Prefilter, shallow_refresh
+from .html_extract import elements_by_class
 
 API = "https://{slug}.breezy.hr/json"
 
@@ -46,11 +47,29 @@ class Breezy(BoardSource):
 
     async def _detail(self, fetcher: Fetcher, url: str | None) -> dict[str, Any] | None:
         """Breezy has no JSON detail endpoint, but the posting page embeds
-        schema.org JSON-LD carrying the full description."""
+        schema.org JSON-LD carrying the full description.
+
+        Some tenants' pages no longer embed JSON-LD at all (a template
+        change since this adapter was written, not a per-posting gap — 9%
+        of one archive's Breezy postings, all missing a description this
+        same way). The page's own `<div class="description">` still has the
+        real, fully-formed HTML body in every case checked, so that's the
+        fallback rather than losing the description outright. No second
+        request: the page is already in hand for the JSON-LD attempt above.
+        """
         if not url:
             return None
         html = await fetcher.get_text(url, retries=1)
-        return jsonld.first_job_posting(html)
+        posting = jsonld.first_job_posting(html)
+        if posting and posting.get("description"):
+            return posting
+        if not html:
+            return posting
+        blocks = elements_by_class(html, "description")
+        if blocks:
+            posting = dict(posting or {})
+            posting["description"] = blocks[0]
+        return posting
 
     async def fetch_board(
         self,
