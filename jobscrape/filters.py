@@ -1610,6 +1610,20 @@ def apply_filters_counted(
             job.state = job.state or state
         if not job.country:
             job.country = infer_country(job.state, job.location_raw)
+        # `state` means "US state abbreviation" everywhere else in this
+        # app, but an adapter's own structured location sometimes lands
+        # there regardless of country — SmartRecruiters copies Spain's
+        # province codes ("CT" for Cataluña, "MD" for the Madrid region)
+        # straight into `state`, which happen to collide exactly with real
+        # US state abbreviations. Applied unconditionally, not just to the
+        # `parse_us_location` fallback above: this same adapter sets both
+        # `city` and `state` itself, so that fallback never even runs for
+        # these rows. A resolved, non-US country means whatever is in
+        # `state` isn't a US state, whichever adapter put it there.
+        if job.state and job.country:
+            code = job.country.strip().lower()
+            if code not in _US_COUNTRY_CODES and code not in _UNSCOPED_COUNTRY:
+                job.state = None
         kept.append(job)
     funnel.kept = len(kept)
     return kept, funnel

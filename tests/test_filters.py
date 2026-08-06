@@ -787,6 +787,31 @@ def test_apply_filters_end_to_end() -> None:
     assert kept[0].city == "Austin" and kept[0].state == "TX"
 
 
+def test_an_adapter_supplied_foreign_state_is_cleared_not_just_parsed_ones() -> None:
+    """SmartRecruiters sets `city`/`state` itself from its own structured
+    location (Spain's "CT" province code for Cataluña) rather than leaving
+    them blank for `parse_us_location` to fill — so the fallback above never
+    even runs for this row, and only an unconditional check catches it."""
+    job = _job(
+        source_job_id="es-1", title="Software Engineer",
+        location_raw="Barcelona, CT, Spain", city="Barcelona", state="CT",
+        country="ES", posted_at="2026-06-10",
+    )
+    kept = apply_filters([job], since=date(2026, 6, 1), until=date(2026, 6, 30))
+    assert kept == [], "Spain-only posting must not pass US eligibility"
+
+    # A row that IS kept for a real reason (a genuine US mention elsewhere)
+    # still has its state cleared, since "CT" doesn't describe a US office.
+    mixed = _job(
+        source_job_id="es-2", title="Software Engineer",
+        location_raw="Barcelona, CT, Spain or New York, US",
+        city="Barcelona", state="CT", country="ES", posted_at="2026-06-10",
+    )
+    kept = apply_filters([mixed], since=date(2026, 6, 1), until=date(2026, 6, 30))
+    assert len(kept) == 1
+    assert kept[0].state is None
+
+
 # --- QA and management: software roles we deliberately do not collect ------
 #
 # Distinct from the blocklist above, which means "not a software job at all".
