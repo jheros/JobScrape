@@ -895,10 +895,29 @@ class Job:
         # `encode_raw_json`'s size cap exists to prevent for oversized
         # payloads. Stripped here, at construction, so no adapter has to
         # know to check for this itself.
+        #
+        # Some sources' "plain text" fields are themselves HTML-entity
+        # encoded — Himalayas ships titles like literal
+        # "&#x28;Senior&#x29; Full-Stack Developer", Jobicy ships a
+        # `department` the same way. Not an HTML-in-a-plain-field mistake
+        # (no tags), just an upstream serializer that escapes everything
+        # uniformly. Unescaped here, on every field, once, rather than
+        # waiting to find the next field on the next source that does this
+        # — `description_html` is the one exception: it's deliberately raw
+        # markup for `html_to_text` to unescape-and-strip together, and
+        # pre-unescaping it here could turn a description's own literal,
+        # correctly-escaped "&lt;script&gt;" into something that looks like
+        # a real tag by the time it gets there.
         for f in fields(self):
+            if f.name == "description_html":
+                continue
             value = getattr(self, f.name)
-            if isinstance(value, str) and "\x00" in value:
-                setattr(self, f.name, value.replace("\x00", ""))
+            if isinstance(value, str):
+                if "\x00" in value:
+                    value = value.replace("\x00", "")
+                if "&" in value:
+                    value = unescape(value)
+                setattr(self, f.name, value)
         self.title = (self.title or "").strip()
         self.company = (self.company or "").strip()
         self.source_job_id = str(self.source_job_id)

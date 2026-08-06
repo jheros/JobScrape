@@ -212,6 +212,39 @@ def test_a_real_city_and_state_survive_construction() -> None:
     assert job.state == "TX"
 
 
+def test_html_entities_in_plain_text_fields_are_unescaped() -> None:
+    """Himalayas ships titles like literal "&#x28;Senior&#x29; Full-Stack
+    Developer" and Jobicy ships `department` the same way — not HTML (no
+    tags), just an upstream serializer that entity-encodes everything. Every
+    plain-text field should come out clean, not just the two sources caught
+    so far."""
+    from jobscrape.models import Job
+
+    job = Job(
+        source="test", source_job_id="1",
+        title="&#x28;Senior&#x29; Full-Stack Developer - Full Remote",
+        company="Johnson &amp; Johnson", job_url="https://x/1",
+        department="Sales &amp; Marketing", industry="Tech &amp; Finance",
+    )
+    assert job.title == "(Senior) Full-Stack Developer - Full Remote"
+    assert job.company == "Johnson & Johnson"
+    assert job.department == "Sales & Marketing"
+    assert job.industry == "Tech & Finance"
+
+
+def test_description_html_is_not_unescaped_at_construction() -> None:
+    """`description_html` stays raw markup — `html_to_text` unescapes and
+    strips it together later. Unescaping it here first could turn a
+    description's own deliberately-escaped "&lt;script&gt;" into what looks
+    like a real tag by the time it gets there."""
+    from jobscrape.models import Job
+
+    job = Job(source="test", source_job_id="1", title="Engineer", company="Acme",
+              job_url="https://x/1",
+              description_html="<p>Don't write &lt;script&gt; tags.</p>")
+    assert job.description_html == "<p>Don't write &lt;script&gt; tags.</p>"
+
+
 def test_a_non_latin_city_name_is_not_mistaken_for_no_letters() -> None:
     """The "no letters at all" placeholder check must be Unicode-aware — an
     ASCII-only `[a-zA-Z]` test would wrongly blank a real Hebrew, Cyrillic,
