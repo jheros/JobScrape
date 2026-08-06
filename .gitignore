@@ -12,3 +12,7 @@ venv/
 build/
 dist/
 .DS_Store
+.playwright-mcp/
+docker-deploy-check.png
+graphify-out/
+remote-jobs-latest-100.json
