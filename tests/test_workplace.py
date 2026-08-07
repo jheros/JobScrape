@@ -66,6 +66,33 @@ def test_bare_city_is_unknown_not_guessed() -> None:
     assert classify_workplace(None) == "unknown"
 
 
+@pytest.mark.parametrize(
+    "location",
+    ["Global", "global", "  Global  ", "Multi Location", "multi location",
+     "United States", "USA", "usa", "US", "us"],
+)
+def test_a_bare_country_or_globe_location_is_remote(location: str) -> None:
+    """Naming the whole country/globe as the location, rather than a city,
+    is itself the remote signal -- no other wording needed."""
+    assert classify_workplace(None, location=location) == "remote"
+
+
+def test_a_qualified_global_is_not_the_bare_signal() -> None:
+    """"Global in Europe" names a REGION, not "open everywhere" -- the
+    whole-value check must not fire on a substring match."""
+    assert classify_workplace(None, location="Global in Europe") == "unknown"
+
+
+def test_a_bare_location_signal_does_not_override_stronger_evidence() -> None:
+    """A structured hint, an explicit is_remote, or wording in the title
+    itself all outrank the bare-location heuristic."""
+    assert classify_workplace(None, is_remote=False, location="Global") == "onsite"
+    assert classify_workplace(None, hint="Onsite", location="Global") == "onsite"
+    assert classify_workplace(
+        "Software Engineer (Hybrid)", location="Global",
+    ) == "hybrid"
+
+
 def _job(**kw: object) -> Job:
     base = dict(
         source="t", source_job_id="1", title="Software Engineer",
@@ -79,6 +106,12 @@ def test_job_populates_workplace_type() -> None:
     assert _job(location_raw="Remote - US").workplace_type == "remote"
     assert _job(location_raw="Austin, TX (Hybrid)").workplace_type == "hybrid"
     assert _job(location_raw="Austin, TX").workplace_type == "unknown"
+
+
+def test_job_with_a_bare_country_location_is_remote() -> None:
+    assert _job(location_raw="United States").workplace_type == "remote"
+    assert _job(location_raw="Global").workplace_type == "remote"
+    assert _job(location_raw="Global in Europe").workplace_type != "remote"
 
 
 def test_job_hint_overrides_location_text() -> None:

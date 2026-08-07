@@ -184,6 +184,16 @@ _RE_ONSITE = re.compile(
     re.I,
 )
 
+_BARE_REMOTE_LOCATIONS = frozenset({
+    "global", "multi location", "multiple locations", "united states", "usa", "us",
+})
+#: A `location_raw` that is ONLY one of these -- the whole value, nothing
+#: else -- is itself the remote signal: naming the entire country or globe
+#: as the location, rather than a city, is saying "not tied to one office".
+#: Whole-value match, never substring — "Global in Europe" names a REGION,
+#: not "open everywhere", and must not match; nor should a real city that
+#: happens to contain "US" or "Global" as a substring.
+
 
 #: Words that, appearing ANYWHERE in a posting, mark it remote — but only for a
 #: posting nothing else could classify. See the final sweep in
@@ -301,6 +311,7 @@ def classify_workplace(
     is_remote: bool | None = None,
     hint: str | None = None,
     full_text: str | None = None,
+    location: str | None = None,
 ) -> str:
     """Classify a posting as ``remote`` / ``hybrid`` / ``onsite`` / ``unknown``.
 
@@ -314,11 +325,21 @@ def classify_workplace(
     anchored-phrase pass (:data:`ANCHORED_WORKPLACE`), then the permissive remote
     sweep (:data:`REMOTE_MENTION`).
 
-    Five tiers, in descending order of how much the evidence is worth:
+    ``location`` is `location_raw` on its own, unblended — needed because tier
+    3.5 (below) checks it for an EXACT whole-value match, something the
+    ``text``/``full_text`` blobs (which already have it mixed in with the
+    title and description) can't support: a substring check there would let
+    "Global in Europe" match on "Global" the same as a bare "Global" would,
+    which is exactly the false positive a whole-value check exists to avoid.
+
+    Six tiers, in descending order of how much the evidence is worth:
 
     1. the source's own workplace field, mapped by value (:func:`classify_hint`)
     2. a structured ``is_remote`` boolean
     3. wording in title + location + the first 1,500 characters
+    3.5. ``location`` naming the whole country/globe rather than a city
+         (:data:`_BARE_REMOTE_LOCATIONS`) — "United States", "USA", "US",
+         "Global", "Multi Location", and nothing else in that field
     4. **anchored phrases anywhere in the posting** — "fully remote", "hybrid
        schedule", "3 days in the office", "must be on-site"
     5. any word in :data:`REMOTE_MENTION` anywhere, taken at face value
@@ -326,8 +347,8 @@ def classify_workplace(
     Tier 4 sits above tier 5 deliberately, and that ordering does real work: the
     sweep can only ever answer "remote", so before it existed a posting stating
     "3 days in the office" that mentioned remote once anywhere read as remote.
-    Both fill blanks only — a posting an earlier tier already classified keeps
-    that answer.
+    Tier 3.5, 4 and 5 all fill blanks only — a posting an earlier tier already
+    classified keeps that answer.
 
     **The collection filter reads this value** — see `filters.keeps_workplace`.
     `remote` is kept, `hybrid` and `onsite` are dropped, and `unknown` is kept
@@ -358,6 +379,12 @@ def classify_workplace(
             return "onsite"
         if _RE_REMOTE.search(body):
             return "remote"
+
+    if (
+        is_remote is not False
+        and location and location.strip().casefold() in _BARE_REMOTE_LOCATIONS
+    ):
+        return "remote"
 
     if full_text:
         lowered = full_text.lower()
@@ -1035,6 +1062,7 @@ class Job:
                         self.title, self.location_raw, self.description_text,
                     ) if part
                 ),
+                location=self.location_raw,
             )
         if self.is_remote is None and self.workplace_type == "remote":
             self.is_remote = True
