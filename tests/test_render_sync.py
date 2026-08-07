@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 
 from jobscrape import db, dedupe
 from jobscrape.models import Job
+from jobscrape import render_sync
 from jobscrape.render_sync import _dedup_key, _skills_array, _to_render_row, sync
 
 
@@ -114,6 +115,7 @@ class _FakeRenderConn:
     def __init__(self, fail_deletes_for: set = frozenset()) -> None:
         self.calls: list[tuple[str, tuple]] = []
         self.rollback_calls = 0
+        self.commit_calls = 0
         self._fail_deletes_for = fail_deletes_for
         self._aborted = False
 
@@ -121,16 +123,34 @@ class _FakeRenderConn:
         if self._aborted:
             raise AssertionError("executed on a connection still mid-aborted-transaction")
         self.calls.append((sql, params))
-        if sql.strip().startswith("DELETE") and params and params[0] in self._fail_deletes_for:
+        if sql.strip().startswith("DELETE") and any(
+            k in self._fail_deletes_for for k in params
+        ):
             self._aborted = True
             raise IntegrityError("DELETE FROM jobs WHERE dedup_key = ?", params, Exception("fk"))
 
     def commit(self) -> None:
-        pass
+        self.commit_calls += 1
 
     def rollback(self) -> None:
         self.rollback_calls += 1
         self._aborted = False
+
+
+def _upserted_keys(calls: list[tuple[str, tuple]]) -> list[str]:
+    """Every dedup_key upserted across all INSERT calls, whether a given
+    call is the single-row `_UPSERT_SQL` (dedup_key at index 2) or a
+    batched multi-row `_batch_upsert_sql` (params flattened 15-per-row,
+    dedup_key at index 2 of each chunk) -- `sync()` picks whichever shape
+    based on how many rows were pending at flush time, so a test asserting
+    on upserted keys needs to handle both."""
+    keys = []
+    for sql, params in calls:
+        if not sql.strip().startswith("INSERT"):
+            continue
+        for i in range(0, len(params), 15):
+            keys.append(params[i + 2])
+    return keys
 
 
 def _dup_job(**kw: Any) -> Job:
@@ -201,10 +221,9 @@ def test_sync_skips_a_delete_blocked_by_a_dependent_review() -> None:
         # q2 (an ordinary canonical row, queued after q0 in changed_at order)
         # must still have reached an upsert -- the abort must not have taken
         # the rest of the batch down with it.
-        upserts = [c for c in render.calls if c[0].strip().startswith("INSERT")]
-        assert any(c[1][2] == _dedup_key("adzuna", "q2", "https://x/q0",
-                                          "Backend Engineer -Remote", "Quora")
-                   for c in upserts)
+        assert _dedup_key("adzuna", "q2", "https://x/q0",
+                           "Backend Engineer -Remote", "Quora") \
+            in _upserted_keys(render.calls)
 
 
 def test_sync_republishes_a_row_after_clear_duplicate() -> None:
@@ -233,6 +252,74 @@ def test_sync_republishes_a_row_after_clear_duplicate() -> None:
         assert not deletes
 
 
+# --- sync(): batches writes and commits incrementally -----------------------
+
+
+def test_sync_batches_upserts_and_commits_incrementally(monkeypatch) -> None:
+    """Round-trip latency to Render, not query cost, is what made a large
+    sync take hours (see `_BATCH_SIZE`'s docstring) -- three rows through a
+    batch size of 2 must produce one 2-row batched INSERT plus one 1-row
+    INSERT (not three separate single-row calls), and must commit after
+    each flush rather than once at the very end, so a crash mid-run only
+    loses the batch still in flight."""
+    monkeypatch.setattr(render_sync, "_BATCH_SIZE", 2)
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="b0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="b1", posted_at="2026-07-02"),
+            _dup_job(source_job_id="b2", posted_at="2026-07-03"),
+        ])
+
+        render = _FakeRenderConn()
+        stats = sync(conn, render)
+
+        assert stats["upserted"] == 3
+        upserts = [c for c in render.calls if c[0].strip().startswith("INSERT")]
+        assert len(upserts) == 2
+        assert len(upserts[0][1]) == 2 * 15  # first flush: the full batch of 2
+        assert len(upserts[1][1]) == 1 * 15  # second flush: the trailing 1
+        assert set(_upserted_keys(render.calls)) == {
+            _dedup_key("adzuna", "b0", "https://x/q0", "iOS Engineer -Remote", "Quora"),
+            _dedup_key("adzuna", "b1", "https://x/q0", "iOS Engineer -Remote", "Quora"),
+            _dedup_key("adzuna", "b2", "https://x/q0", "iOS Engineer -Remote", "Quora"),
+        }
+        # Two flushes -> two commits, not one commit for the whole pass.
+        assert render.commit_calls == 2
+
+
+def test_sync_batch_delete_falls_back_to_one_row_when_one_is_blocked() -> None:
+    """A batched multi-row DELETE aborts entirely if ANY key in it hits
+    Render's `reviews.job_id` foreign key -- Postgres aborts the whole
+    statement, not just the offending row. `sync()` must retry that batch
+    one row at a time so only the truly blocked row is skipped, not the
+    other closed/duplicate rows that happened to share its batch."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="d0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="d1", posted_at="2026-07-02",
+                     title="Backend Engineer -Remote"),
+        ])
+        for sid in ("d0", "d1"):
+            conn.execute(
+                "UPDATE jobs SET closed_at = now() WHERE source_job_id = ?", (sid,)
+            )
+        conn.commit()
+
+        blocked_key = _dedup_key("adzuna", "d0", "https://x/q0",
+                                  "iOS Engineer -Remote", "Quora")
+        render = _FakeRenderConn(fail_deletes_for={blocked_key})
+        stats = sync(conn, render)
+
+        assert stats["skipped"] == 1
+        assert stats["deleted"] == 1  # d1 still got deleted despite d0 blocking the batch
+        # One rollback for the failed 2-row batch, one more for d0's own
+        # failed single-row retry in the fallback.
+        assert render.rollback_calls == 2
+        deletes = [c for c in render.calls if c[0].strip().startswith("DELETE")]
+        # The failed 2-row batch, then the fallback's two single-row retries.
+        assert len(deletes) == 3
+
+
 # --- sync(): a `--limit` cut must never split a tied `changed_at` group -----
 
 
@@ -259,9 +346,8 @@ def test_sync_limit_does_not_permanently_strand_a_tied_row() -> None:
         # shared timestamp, stranding the third permanently.
         stats = sync(conn, render, limit=2)
 
-        upserts = [c for c in render.calls if c[0].strip().startswith("INSERT")]
-        assert stats["upserted"] == 3 and len(upserts) == 3
-        keys = {c[1][2] for c in upserts}  # dedup_key is the 3rd bound param
+        assert stats["upserted"] == 3
+        keys = set(_upserted_keys(render.calls))
         assert keys == {
             _dedup_key("adzuna", "t0", "https://x/q0", "iOS Engineer -Remote", "Quora"),
             _dedup_key("adzuna", "t1", "https://x/q0", "iOS Engineer -Remote", "Quora"),

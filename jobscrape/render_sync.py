@@ -92,6 +92,48 @@ _UPSERT_SQL = """
 
 _DELETE_SQL = "DELETE FROM jobs WHERE dedup_key = ?"
 
+_BATCH_SIZE = 500
+#: Round-trip latency to Render's Postgres (measured ~220ms) dominates this
+#: module's wall-clock time far more than query execution ever does -- one
+#: statement per row turns tens of thousands of changed rows into hours,
+#: and holds one open transaction (and Render's table lock) the whole time.
+#: Batching into multi-row statements cuts the round-trip count by roughly
+#: this factor, and flushing (committing) each batch as it goes means a
+#: closed/duplicate posting stops lingering on the site for hours after it
+#: should have disappeared -- and a crash mid-run only loses the one batch
+#: still in flight, not everything since the last watermark. 500 rows * 15
+#: columns = 7,500 bound params per upsert batch, comfortably under
+#: Postgres's ~65,535-parameter ceiling per statement.
+
+
+def _batch_upsert_sql(n: int) -> str:
+    row = "(" + ", ".join(["?"] * 15) + ")"
+    return f"""
+        INSERT INTO jobs (
+            external_job_id, source_platform, dedup_key, title, company,
+            location, salary_min, salary_max, jd_url, jd_text, posted_date,
+            created_at, skills, domain, level
+        ) VALUES {", ".join([row] * n)}
+        ON CONFLICT (dedup_key) DO UPDATE SET
+            external_job_id = excluded.external_job_id,
+            source_platform = excluded.source_platform,
+            title = excluded.title,
+            company = excluded.company,
+            location = excluded.location,
+            salary_min = excluded.salary_min,
+            salary_max = excluded.salary_max,
+            jd_url = excluded.jd_url,
+            jd_text = excluded.jd_text,
+            posted_date = excluded.posted_date,
+            skills = excluded.skills,
+            domain = excluded.domain,
+            level = excluded.level
+    """
+
+
+def _batch_delete_sql(n: int) -> str:
+    return f"DELETE FROM jobs WHERE dedup_key IN ({', '.join(['?'] * n)})"
+
 _WATERMARK_SQL = """
     SELECT stats->>'watermark' AS watermark FROM runs
     WHERE stage = 'render-sync' AND status = 'ok'
@@ -244,6 +286,81 @@ def sync(
     # *previewed* as already synced, though nothing had actually been
     # written to Render at all.
     new_watermark = watermark
+
+    # Buffered separately and flushed together (deletes first) whenever
+    # either fills up -- see `_BATCH_SIZE`'s docstring for why batching
+    # matters here. Two rows sharing one dedup_key inside a single pass
+    # (one needing delete, the other upsert) is not something this schema
+    # can produce -- `dedup_key` is derived from a local row's own
+    # (source, source_job_id), which is already unique -- so there is no
+    # ordering hazard in flushing these independently.
+    pending_deletes: list[str] = []
+    pending_upserts: list[tuple[Any, ...]] = []
+
+    def flush_deletes() -> None:
+        nonlocal deleted, skipped
+        if not pending_deletes:
+            return
+        keys, pending_deletes[:] = pending_deletes[:], []
+        if len(keys) == 1:
+            try:
+                render_conn.execute(_DELETE_SQL, (keys[0],))
+                deleted += 1
+            except IntegrityError:
+                render_conn.rollback()
+                skipped += 1
+                log.warning(
+                    "render-sync: %s has a dependent review — leaving it "
+                    "in Render rather than deleting", keys[0],
+                )
+            return
+        try:
+            render_conn.execute(_batch_delete_sql(len(keys)), keys)
+            deleted += len(keys)
+        except IntegrityError:
+            # Render's own schema, not jobscrape's to manage (see this
+            # module's docstring) — a row a site visitor has reviewed is
+            # referenced by `reviews.job_id`, so a hard DELETE violates that
+            # foreign key, and Postgres aborts the WHOLE statement, not just
+            # the offending row. One un-deletable row must not cost this
+            # entire batch -- fall back to one row at a time, just for this
+            # batch, to isolate exactly which key(s) are blocked.
+            render_conn.rollback()
+            for key in keys:
+                try:
+                    render_conn.execute(_DELETE_SQL, (key,))
+                    deleted += 1
+                except IntegrityError:
+                    render_conn.rollback()
+                    skipped += 1
+                    log.warning(
+                        "render-sync: %s has a dependent review — leaving "
+                        "it in Render rather than deleting", key,
+                    )
+        render_conn.commit()
+
+    def flush_upserts() -> None:
+        nonlocal upserted
+        if not pending_upserts:
+            return
+        rows, pending_upserts[:] = pending_upserts[:], []
+        if len(rows) == 1:
+            render_conn.execute(_UPSERT_SQL, rows[0])
+        else:
+            render_conn.execute(
+                _batch_upsert_sql(len(rows)),
+                [v for row in rows for v in row],
+            )
+        upserted += len(rows)
+        render_conn.commit()
+
+    def flush_pending() -> None:
+        # Deletes first: a row that closed makes room for whatever comes
+        # after it under the same dedup_key sooner, matching this loop's
+        # own changed_at-ordered processing as closely as batching allows.
+        flush_deletes()
+        flush_upserts()
+
     for job_row in changed:
         changed_at = job_row.get("changed_at")
         if not dry_run and changed_at and changed_at > new_watermark:
@@ -255,47 +372,36 @@ def sync(
         # own key, but this row is not that key, and leaving it in Render
         # keeps a phantom duplicate on the site.
         if job_row.get("closed_at") or job_row.get("duplicate_of"):
-            if not dry_run:
-                dedup_key = _dedup_key(
-                    job_row.get("source") or "", job_row.get("source_job_id"),
-                    job_row.get("apply_url") or job_row.get("job_url"),
-                    job_row.get("title") or "", job_row.get("company") or "",
-                )
-                try:
-                    render_conn.execute(_DELETE_SQL, (dedup_key,))
-                except IntegrityError:
-                    # Render's own schema, not jobscrape's to manage (see this
-                    # module's docstring) — a row a site visitor has reviewed
-                    # is referenced by `reviews.job_id`, so a hard DELETE
-                    # violates that foreign key. One un-deletable row (real
-                    # user activity, not a jobscrape concern to override)
-                    # must not abort every other delete/upsert queued behind
-                    # it in the same batch -- skip it, leaving that one
-                    # phantom duplicate in place, and keep going.
-                    render_conn.rollback()
-                    skipped += 1
-                    log.warning(
-                        "render-sync: %s has a dependent review — leaving it "
-                        "in Render rather than deleting", dedup_key,
-                    )
-                    continue
-            deleted += 1
+            if dry_run:
+                deleted += 1
+                continue
+            dedup_key = _dedup_key(
+                job_row.get("source") or "", job_row.get("source_job_id"),
+                job_row.get("apply_url") or job_row.get("job_url"),
+                job_row.get("title") or "", job_row.get("company") or "",
+            )
+            pending_deletes.append(dedup_key)
+            if len(pending_deletes) >= _BATCH_SIZE or len(pending_upserts) >= _BATCH_SIZE:
+                flush_pending()
             continue
 
-        upserted += 1
-        if not dry_run:
-            values = _to_render_row(job_row)
-            render_conn.execute(_UPSERT_SQL, (
-                values["external_job_id"], values["source_platform"],
-                values["dedup_key"], values["title"], values["company"],
-                values["location"], values["salary_min"], values["salary_max"],
-                values["jd_url"], values["jd_text"], values["posted_date"],
-                values["created_at"], values["skills"], values["domain"],
-                values["level"],
-            ))
+        if dry_run:
+            upserted += 1
+            continue
+        values = _to_render_row(job_row)
+        pending_upserts.append((
+            values["external_job_id"], values["source_platform"],
+            values["dedup_key"], values["title"], values["company"],
+            values["location"], values["salary_min"], values["salary_max"],
+            values["jd_url"], values["jd_text"], values["posted_date"],
+            values["created_at"], values["skills"], values["domain"],
+            values["level"],
+        ))
+        if len(pending_upserts) >= _BATCH_SIZE or len(pending_deletes) >= _BATCH_SIZE:
+            flush_pending()
 
     if not dry_run:
-        render_conn.commit()
+        flush_pending()
 
     return {
         "seen": len(changed), "upserted": upserted, "deleted": deleted,
