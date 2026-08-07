@@ -335,34 +335,17 @@ def test_hybrid_and_onsite_are_never_collected(workplace: str, length: int) -> N
     "length,label",
     [(0, "no description at all"),
      (273, "a Jooble snippet"),
-     (500, "an Adzuna snippet, truncated at exactly 500")],
+     (5506, "a full Greenhouse description")],
 )
-def test_unknown_survives_when_there_was_nothing_to_go_on(length: int, label: str) -> None:
-    """The rule is that a posting is not punished for its source's snippet
-    length. Adzuna is the case it exists for: all 3,274 of its unknown rows are
-    exactly 500 characters, so a threshold below that would delete the source
-    entirely for a truncation the employer never chose."""
+def test_unknown_is_never_collected_whatever_the_description_length(
+    length: int, label: str,
+) -> None:
+    """The collection is remote-only: an arrangement the posting never
+    stated is not evidence it's remote, regardless of how much text there
+    was to state it in."""
     from jobscrape.filters import apply_filters
 
-    assert len(apply_filters([_posting("unknown", "x" * length)])) == 1, label
-
-
-def test_unknown_is_dropped_when_a_full_description_said_nothing() -> None:
-    """5,506 characters is Greenhouse's median. A posting that long which never
-    mentions an arrangement is not advertising remote work."""
-    from jobscrape.filters import apply_filters
-
-    assert apply_filters([_posting("unknown", "x" * 5506)]) == []
-
-
-def test_the_threshold_does_not_drift() -> None:
-    """Pinned on both sides, because an off-by-one here silently moves
-    thousands of rows and nothing else would notice."""
-    from jobscrape.filters import DESCRIPTION_EVIDENCE_CHARS, keeps_workplace
-
-    assert DESCRIPTION_EVIDENCE_CHARS == 800
-    assert keeps_workplace("unknown", 799) is True
-    assert keeps_workplace("unknown", 800) is False
+    assert apply_filters([_posting("unknown", "x" * length)]) == [], label
 
 
 @pytest.mark.parametrize("workplace", ["remote", "unknown", "hybrid", "onsite", None])
@@ -377,8 +360,7 @@ def test_a_null_workplace_is_treated_as_unknown() -> None:
     """The column is nullable and the classifier only fills a blank."""
     from jobscrape.filters import keeps_workplace
 
-    assert keeps_workplace(None, 0) is True
-    assert keeps_workplace(None, 5506) is False
+    assert keeps_workplace(None) is False
 
 
 def test_the_funnel_attributes_them_and_still_sums() -> None:
@@ -390,8 +372,8 @@ def test_the_funnel_attributes_them_and_still_sums() -> None:
             _posting("unknown", "x" * 5000), _posting("hybrid"), _posting("onsite")]
     kept, funnel = apply_filters_counted(jobs)
 
-    assert funnel.dropped_workplace == 3
-    assert funnel.kept == len(kept) == 2
+    assert funnel.dropped_workplace == 4
+    assert funnel.kept == len(kept) == 1
     d = funnel.as_dict()
     assert (d["dropped_company"] + d["dropped_role"] + d["dropped_location"]
             + d["dropped_window"] + d["dropped_workplace"] + d["kept"]) == d["seen"]

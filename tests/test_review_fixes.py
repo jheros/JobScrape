@@ -761,7 +761,9 @@ def test_city_and_state_fill_independently() -> None:
               company="Acme", job_url="https://x/1",
               location_raw="Austin, TX", state="TX")
     assert job.city is None
-    kept = apply_filters([job])
+    # remote_only=False: this test is about city/state parsing, not
+    # workplace_type -- the posting says nothing about remote work.
+    kept = apply_filters([job], remote_only=False)
     assert kept and kept[0].city == "Austin" and kept[0].state == "TX"
 
 

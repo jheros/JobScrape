@@ -803,12 +803,8 @@ def _purge_archive(
     the count (`cmd_fetch`) can just read `"deleted"`.
     """
     rows = conn.execute(
-        # `length(description_text)`, never the column: the workplace rule
-        # only asks how long it is, and pulling ~5 KB x 60,000 rows to
-        # answer that would be several hundred megabytes for nothing.
         "SELECT source, source_job_id, title, department, company, company_slug, "
-        "posted_at, workplace_type, "
-        "coalesce(length(description_text), 0) AS description_len FROM jobs"
+        "posted_at, workplace_type FROM jobs"
     ).fetchall()
 
     def verdict(row: Any) -> str | None:
@@ -824,15 +820,7 @@ def _purge_archive(
             # The category, so the report says WHICH preference removed it.
             return apply_filters_mod.is_excluded_role(row["title"], allow_roles) or "other"
         workplace = row["workplace_type"] or "unknown"
-        if remote_only and not apply_filters_mod.keeps_workplace(
-            workplace, row["description_len"]
-        ):
-            # An `unknown` dies for a different reason than an `onsite` —
-            # it had enough description to have said so and did not — and
-            # the dry run should say which, since one of them is a
-            # judgement call and the other is the posting's own words.
-            if workplace == "unknown":
-                return "not remote (unknown, described)"
+        if remote_only and not apply_filters_mod.keeps_workplace(workplace):
             return f"not remote ({workplace})"
         return None
 

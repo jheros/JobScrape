@@ -22,6 +22,11 @@ from jobscrape.models import Job
 
 
 def _job(job_id: str, title: str, **kw: Any) -> Job:
+    # workplace_type="remote" by default: none of this file's tests are about
+    # workplace classification, and the collection is remote-only now, so an
+    # unadorned job would otherwise be dropped by that filter before whatever
+    # this file is actually testing (role, dedupe, purge mechanics) ever runs.
+    kw.setdefault("workplace_type", "remote")
     return Job(
         source="greenhouse", source_job_id=job_id, title=title,
         company="Acme", company_slug="acme",

@@ -1442,56 +1442,17 @@ def is_blocked_company(value: str | None) -> bool:
     return bool(key) and key in _blocked_keys()
 
 
-#: How much description a posting must carry before its silence means anything.
-#:
-#: `classify_workplace` returns `unknown` when a posting never states an
-#: arrangement anywhere in its text — but "never states one" reads very
-#: differently depending on how much text there was. Measured across the
-#: `unknown` rows, description length is sharply BIMODAL:
-#:
-#:     jooble        p25 269   median 273   p75 277     <- snippet
-#:     adzuna            500          500       500     <- truncated at exactly 500
-#:     cornerstone       331          382     1,472
-#:     ukg               452          612       717
-#:     greenhouse      3,980        5,506     6,895     <- real description
-#:     workday         4,911        6,014     7,248
-#:     ashby           3,042        4,158     5,234
-#:
-#: Snippet sources cluster at 270-700 characters and real descriptions start
-#: around 2,300, with nothing in between. 800 sits in that empty valley, and the
-#: choice is insensitive across it: moving the cut from 600 to 800 keeps 91 more
-#: rows, and 800 to 1,200 keeps 142 more.
-#:
-#: Set this to 400 and Adzuna disappears entirely — all 3,274 of its unknown
-#: rows are exactly 500 characters, and cutting below that punishes them for a
-#: truncation their source imposed rather than for anything the employer said.
-DESCRIPTION_EVIDENCE_CHARS = 800
-
-
-def keeps_workplace(workplace: str | None, description_len: int) -> bool:
+def keeps_workplace(workplace: str | None) -> bool:
     """Whether a posting's work arrangement is one worth collecting.
 
-    Three-way, not a set membership, because `unknown` is conditional:
-
-    * ``remote`` — always kept.
-    * ``hybrid`` / ``onsite`` — never. These postings said so themselves.
-    * ``unknown`` — kept ONLY when the description was too thin to tell. A
-      posting carrying 5,000 characters that never mentions an arrangement is
-      not advertising remote work; one carrying a 273-character Jooble snippet
-      simply has not been asked.
-
-    The cost of the strict half is real and worth stating: a genuinely remote
-    job whose full posting forgot to say so is deleted here, and once the
-    listing closes it cannot be recovered by refetching. 353 such postings were
-    measured before this rule went in — 350 of them one employer whose text
-    reads "a 100% distributed setting - Speechify has no office", which names
-    no word the classifier knows.
+    Only ``remote`` is. ``hybrid``/``onsite`` said so themselves, and
+    ``unknown`` — a posting that never states an arrangement anywhere in its
+    text, `classify_workplace`'s own docstring covers what counts as
+    "stating" one — no longer gets the benefit of the doubt a thin
+    description used to buy it: the collection is remote-only now, and an
+    unstated arrangement is not evidence of one.
     """
-    if workplace == "remote":
-        return True
-    if workplace in ("hybrid", "onsite"):
-        return False
-    return description_len < DESCRIPTION_EVIDENCE_CHARS
+    return workplace == "remote"
 
 
 def apply_filters(
@@ -1607,9 +1568,7 @@ def apply_filters_counted(
         # stages above, this one cannot save the detail request that fetched it.
         # It keeps the archive to what you want to publish; it does not make a
         # sweep cheaper.
-        if remote_only and not keeps_workplace(
-            job.workplace_type or "unknown", len(job.description_text or "")
-        ):
+        if remote_only and not keeps_workplace(job.workplace_type or "unknown"):
             funnel.dropped_workplace += 1
             continue
         # Each field filled independently. Requiring BOTH to be blank meant an

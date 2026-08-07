@@ -792,7 +792,11 @@ def test_apply_filters_end_to_end() -> None:
         _job(source_job_id="d", title="Software Engineer", location_raw="Austin, TX",
              posted_at="2025-01-01"),
     ]
-    kept = apply_filters(jobs, since=date(2026, 6, 1), until=date(2026, 6, 30))
+    # remote_only=False: this test is about role/location/date filtering, not
+    # workplace_type -- none of these postings say anything about remote work.
+    kept = apply_filters(
+        jobs, since=date(2026, 6, 1), until=date(2026, 6, 30), remote_only=False,
+    )
     assert [j.source_job_id for j in kept] == ["a"]
     assert kept[0].city == "Austin" and kept[0].state == "TX"
 
@@ -807,7 +811,11 @@ def test_an_adapter_supplied_foreign_state_is_cleared_not_just_parsed_ones() -> 
         location_raw="Barcelona, CT, Spain", city="Barcelona", state="CT",
         country="ES", posted_at="2026-06-10",
     )
-    kept = apply_filters([job], since=date(2026, 6, 1), until=date(2026, 6, 30))
+    # remote_only=False: this test is about US-eligibility/location handling,
+    # not workplace_type.
+    kept = apply_filters(
+        [job], since=date(2026, 6, 1), until=date(2026, 6, 30), remote_only=False,
+    )
     assert kept == [], "Spain-only posting must not pass US eligibility"
 
     # A row that IS kept for a real reason (a genuine US mention elsewhere)
@@ -817,7 +825,9 @@ def test_an_adapter_supplied_foreign_state_is_cleared_not_just_parsed_ones() -> 
         location_raw="Barcelona, CT, Spain or New York, US",
         city="Barcelona", state="CT", country="ES", posted_at="2026-06-10",
     )
-    kept = apply_filters([mixed], since=date(2026, 6, 1), until=date(2026, 6, 30))
+    kept = apply_filters(
+        [mixed], since=date(2026, 6, 1), until=date(2026, 6, 30), remote_only=False,
+    )
     assert len(kept) == 1
     assert kept[0].state is None
 
@@ -1491,7 +1501,9 @@ def test_a_blocked_posting_is_attributed_to_the_company_stage() -> None:
     kept, funnel = apply_filters_counted(
         [job("Amazon"), job("Apple Roofing"), job("Acme"),
          # Fails role AND company: company wins, because it runs first.
-         job("Stripe", "Front End Team Leader")]
+         job("Stripe", "Front End Team Leader")],
+        # This test is about funnel attribution order, not workplace_type.
+        remote_only=False,
     )
     assert [k.company for k in kept] == ["Apple Roofing", "Acme"]
     assert funnel.dropped_company == 2

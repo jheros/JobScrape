@@ -608,7 +608,9 @@ async def test_adzuna_area_full_state_name_is_not_stored_verbatim() -> None:
 
     from jobscrape.filters import apply_filters_counted
 
-    kept, _ = apply_filters_counted(jobs, software_only=False)
+    # remote_only=False: this test is about state-abbreviation resolution,
+    # not workplace_type -- the posting says nothing about remote work.
+    kept, _ = apply_filters_counted(jobs, software_only=False, remote_only=False)
     assert kept[0].state == "CA", "must resolve to the abbreviation, not the full name"
 
 
