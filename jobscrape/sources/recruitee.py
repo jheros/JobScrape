@@ -11,7 +11,7 @@ from typing import Any
 
 from ..http import Fetcher
 from ..models import Job
-from .base import BoardSource, Prefilter
+from .base import BoardSource, Prefilter, join_locations
 
 API = "https://{slug}.recruitee.com/api/offers/"
 
@@ -55,7 +55,7 @@ class Recruitee(BoardSource):
                 for loc in locations
                 if isinstance(loc, dict) and (loc.get("name") or loc.get("city"))
             ]
-            location_raw = "; ".join(str(n) for n in names) or item.get("location")
+            location_raw = join_locations(str(n) for n in names) or item.get("location")
 
             html = "\n".join(
                 part for part in (item.get("description"), item.get("requirements"))

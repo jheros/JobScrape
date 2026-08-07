@@ -39,6 +39,32 @@ def is_complete(jobs: Any) -> bool:
     return bool(getattr(jobs, "complete", False))
 
 
+_MAX_JOINED_LOCATIONS = 5
+
+
+def join_locations(places: Any, sep: str = "; ") -> str:
+    """Join a posting's office/location names into one ``location_raw``
+    string, capping how many are shown.
+
+    Several adapters (Workday, Workable, Recruitee, Greenhouse) build
+    ``location_raw`` by joining every place a posting lists — fine for a
+    handful of offices, but a "remote, open to any of these US states"
+    posting can list all 50 individually. Measured on the real archive: up
+    to 1,893 characters / 52 entries on a single Workday posting. Past
+    ``_MAX_JOINED_LOCATIONS`` this shows the first few (still real,
+    genuine places, not a placeholder) plus a count of the rest, rather
+    than every one of them — long enough to stay meaningful, short enough
+    not to blow out storage or a page layout built for "Austin, TX".
+    """
+    seen = list(dict.fromkeys(p.strip() for p in places if isinstance(p, str) and p.strip()))
+    if not seen:
+        return ""
+    if len(seen) <= _MAX_JOINED_LOCATIONS:
+        return sep.join(seen)
+    shown = seen[:_MAX_JOINED_LOCATIONS]
+    return sep.join(shown) + f"{sep}+{len(seen) - _MAX_JOINED_LOCATIONS} more"
+
+
 class Prefilter(Protocol):
     """Cheap "is this worth a detail request?" test.
 
