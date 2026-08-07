@@ -50,12 +50,44 @@ def html_to_text(html: str | None) -> str:
 #: ``(\.\d+)?`` cover negative longitudes and integer-only coordinates.
 _COORD_TAIL_RE = re.compile(r"\s*(\|\s*-?\d+(\.\d+)?\s*)+$")
 
+_MAX_LOCATION_SEGMENTS = 5
+#: A posting open to every US state as a separate remote location lists each
+#: one individually — measured up to 1,893 characters / 52 entries on one
+#: real Workday posting. This isn't always an adapter joining several
+#: fields together: one Greenhouse posting's own `location.name` field
+#: carried a "; "-joined 50-state enumeration directly, no adapter-side
+#: join involved at all — so this is caught once, here, on the final
+#: string, rather than in every adapter that might produce or simply
+#: relay one.
+
+
+def _cap_segments(value: str, sep: str) -> str:
+    segments = list(dict.fromkeys(s.strip() for s in value.split(sep) if s.strip()))
+    shown = segments[:_MAX_LOCATION_SEGMENTS]
+    return sep.join(shown) + f"{sep}+{len(segments) - _MAX_LOCATION_SEGMENTS} more"
+
 
 def clean_location(value: str | None) -> str | None:
-    """Strip a trailing coordinate tail from a raw location string."""
+    """Strip a trailing coordinate tail, and cap an excessively long
+    semicolon- or comma-joined location string to its first few entries
+    plus a count of the rest.
+
+    "; " is checked first and, if it alone already accounts for more than
+    `_MAX_LOCATION_SEGMENTS` segments, wins outright without also
+    consulting ", " — "; " separates distinct PLACES ("Austin, TX;
+    Remote"), ", " separates the parts of ONE place ("Austin, TX, US"), so
+    capping on "; " when both are present keeps each shown place intact
+    instead of slicing one apart mid-name.
+    """
     if not value:
         return value
-    return _COORD_TAIL_RE.sub("", value).strip() or None
+    value = _COORD_TAIL_RE.sub("", value).strip()
+    if not value:
+        return None
+    for sep in ("; ", ", "):
+        if value.count(sep) + 1 > _MAX_LOCATION_SEGMENTS:
+            return _cap_segments(value, sep)
+    return value
 
 
 #: Whole-value placeholders that keep turning up in a `city`/`state` field —

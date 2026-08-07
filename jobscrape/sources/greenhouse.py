@@ -11,7 +11,7 @@ from typing import Any
 
 from ..http import Fetcher
 from ..models import Job
-from .base import BoardSource, join_locations
+from .base import BoardSource
 
 API = "https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
 BOARD = "https://boards-api.greenhouse.io/v1/boards/{slug}"
@@ -46,7 +46,7 @@ class Greenhouse(BoardSource):
             departments = [
                 d.get("name") for d in (item.get("departments") or []) if d.get("name")
             ]
-            location = (item.get("location") or {}).get("name") or join_locations(offices, sep=", ")
+            location = (item.get("location") or {}).get("name") or ", ".join(offices)
 
             # Metadata is a free-form list; a pay range sometimes lives there.
             # Anything not found here is recovered by Job's description scan.

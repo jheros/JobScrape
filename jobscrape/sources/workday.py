@@ -17,7 +17,7 @@ from typing import Any
 from .. import config
 from ..http import Fetcher, gather_limited
 from ..models import Job, classify_hint, html_to_text
-from .base import BoardSource, DEFAULT_QUERIES, Prefilter, join_locations, shallow_refresh
+from .base import BoardSource, DEFAULT_QUERIES, Prefilter, shallow_refresh
 
 CXS = "https://{tenant}.{wd}.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
 #: Hard cap. Workday rejects a larger `limit` with HTTP 400.
@@ -71,7 +71,7 @@ def _location(detail: dict[str, Any], posting: dict[str, Any]) -> str | None:
     places = [p.strip() for p in ([primary] if isinstance(primary, str) else []) + extra
               if isinstance(p, str) and p.strip()]
     if places:
-        return join_locations(places)
+        return "; ".join(dict.fromkeys(places))
     fallback = posting.get("locationsText")
     if isinstance(fallback, str) and fallback.strip() and not _PLACEHOLDER_LOCATION.match(fallback):
         return fallback.strip()

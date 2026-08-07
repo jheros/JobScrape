@@ -6,7 +6,7 @@ from typing import Any
 
 from ..http import Fetcher
 from ..models import Job
-from .base import BoardSource, join_locations
+from .base import BoardSource
 
 ACCOUNT = "https://apply.workable.com/api/v1/widget/accounts/{slug}"
 
@@ -57,7 +57,7 @@ class Workable(BoardSource):
 
             city = item.get("city")
             state = item.get("state") or item.get("region")
-            location_raw = join_locations(locations)
+            location_raw = "; ".join(locations)
             telecommuting = item.get("telecommuting")
 
             description = item.get("description") or ""

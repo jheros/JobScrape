@@ -543,39 +543,6 @@ async def test_workday_falls_back_to_keyword_search_when_empty_returns_nothing()
 # against a truncated set retires postings the run never reached.
 
 
-# --- join_locations(): caps a joined location string's length ---------------
-
-
-def test_join_locations_under_the_cap_joins_everything() -> None:
-    from jobscrape.sources.base import join_locations
-
-    assert join_locations(["Austin, TX", "Remote"]) == "Austin, TX; Remote"
-
-
-def test_join_locations_drops_duplicates_and_blanks() -> None:
-    from jobscrape.sources.base import join_locations
-
-    assert join_locations(["Austin, TX", "", "Austin, TX", None, "  "]) == "Austin, TX"
-
-
-def test_join_locations_over_the_cap_shows_a_few_plus_a_count() -> None:
-    """A posting open to every US state as a separate remote location is real
-    data (measured up to 1,893 characters / 52 entries on one Workday
-    posting) -- summarise past the cap instead of storing all of them."""
-    from jobscrape.sources.base import join_locations
-
-    states = [f"Remote - {n}" for n in range(1, 51)]
-    result = join_locations(states)
-    assert result == "Remote - 1; Remote - 2; Remote - 3; Remote - 4; Remote - 5; +45 more"
-
-
-def test_join_locations_empty_is_empty_string() -> None:
-    from jobscrape.sources.base import join_locations
-
-    assert join_locations([]) == ""
-    assert join_locations([None, "", "  "]) == ""
-
-
 def test_plain_list_is_read_as_incomplete() -> None:
     """The safe default: anything that does not explicitly claim completeness
     is treated as incomplete, so forgetting to set it under-closes rather than

@@ -793,22 +793,6 @@ def test_the_extra_offices_are_joined_rather_than_summarised() -> None:
     )
 
 
-def test_a_remote_posting_open_to_every_us_state_is_summarised_not_dumped() -> None:
-    """Real Workday data: a posting open to any of the 50 states lists each
-    one as its own `additionalLocations` entry -- measured at 1,893
-    characters / 52 entries for one real posting. `_location` must cap it
-    via `join_locations` rather than store the entire enumeration."""
-    from jobscrape.sources.workday import _location
-
-    states = [f"Remote - {n}, USA" for n in range(1, 51)]
-    detail = {"location": "Austin, Texas, US", "additionalLocations": states}
-    result = _location(detail, {"locationsText": "51 Locations"})
-
-    assert result.startswith("Austin, Texas, US; Remote - 1, USA")
-    assert result.endswith("+46 more")
-    assert len(result) < 200
-
-
 def test_workday_prefers_the_iso_code_over_the_descriptor() -> None:
     """Both are in the same payload; only one is a country code."""
     from jobscrape.sources.workday import _country

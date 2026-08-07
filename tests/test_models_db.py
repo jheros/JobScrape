@@ -227,6 +227,67 @@ def test_clean_location_requires_a_numeric_tail() -> None:
     assert clean_location(None) is None
 
 
+def test_clean_location_caps_a_semicolon_joined_state_enumeration() -> None:
+    """A posting open to every US state as a separate remote location lists
+    each one individually -- measured up to 1,893 characters / 52 entries
+    on one real Workday posting. Cap it to the first few plus a count
+    rather than storing the entire enumeration."""
+    from jobscrape.models import clean_location
+
+    states = [f"Remote - {n}, USA" for n in range(1, 51)]
+    result = clean_location("; ".join(states))
+
+    assert result == (
+        "Remote - 1, USA; Remote - 2, USA; Remote - 3, USA; "
+        "Remote - 4, USA; Remote - 5, USA; +45 more"
+    )
+
+
+def test_clean_location_caps_regardless_of_where_the_join_happened() -> None:
+    """One real Greenhouse posting's own `location.name` field carried a
+    "; "-joined 50-state enumeration directly -- no adapter-side join
+    involved at all. The cap has to catch this on the final string, not
+    rely on every adapter to join responsibly."""
+    from jobscrape.models import clean_location
+
+    raw = "; ".join(f"{s} - Remote" for s in
+                     ["Arizona", "Arkansas", "Florida", "Georgia", "Idaho", "Indiana"])
+    result = clean_location(raw)
+
+    assert result == "Arizona - Remote; Arkansas - Remote; Florida - Remote; " \
+        "Georgia - Remote; Idaho - Remote; +1 more"
+
+
+def test_clean_location_prefers_semicolon_over_comma_when_both_cross_the_cap() -> None:
+    """"; " separates distinct places, ", " separates one place's own parts
+    -- capping on "; " when a value has both keeps each shown place intact
+    ("Austin, TX, US") instead of slicing one apart mid-name."""
+    from jobscrape.models import clean_location
+
+    places = [f"City{n}, ST, US" for n in range(1, 7)]  # 6 places, 12 commas total
+    result = clean_location("; ".join(places))
+
+    assert result == "City1, ST, US; City2, ST, US; City3, ST, US; " \
+        "City4, ST, US; City5, ST, US; +1 more"
+
+
+def test_clean_location_falls_back_to_comma_when_semicolon_alone_is_under_the_cap() -> None:
+    """A single place's own name can be long enough to read as many segments
+    on ", " even with no "; " anywhere -- e.g. a poorly-joined office list."""
+    from jobscrape.models import clean_location
+
+    result = clean_location(", ".join(f"Office{n}" for n in range(1, 8)))
+
+    assert result == "Office1, Office2, Office3, Office4, Office5, +2 more"
+
+
+def test_clean_location_under_the_cap_is_untouched() -> None:
+    from jobscrape.models import clean_location
+
+    assert clean_location("Austin, TX; Remote") == "Austin, TX; Remote"
+    assert clean_location("Austin, TX, US") == "Austin, TX, US"
+
+
 def test_job_cleans_its_location_on_construction() -> None:
     from jobscrape.models import Job
 
