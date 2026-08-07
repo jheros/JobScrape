@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import create_engine
+from sqlalchemy.exc import IntegrityError
 
 from . import config, db
 
@@ -235,7 +236,7 @@ def sync(
             r for r in spillover if (r["source"], r["source_job_id"]) not in have
         ]
 
-    upserted = deleted = 0
+    upserted = deleted = skipped = 0
     # A dry run must advance nothing -- including the watermark. Recording
     # one anyway once made a real run right after see "0 seen": the dry
     # run's own finish_run stored this same computed watermark under
@@ -254,14 +255,31 @@ def sync(
         # own key, but this row is not that key, and leaving it in Render
         # keeps a phantom duplicate on the site.
         if job_row.get("closed_at") or job_row.get("duplicate_of"):
-            deleted += 1
             if not dry_run:
                 dedup_key = _dedup_key(
                     job_row.get("source") or "", job_row.get("source_job_id"),
                     job_row.get("apply_url") or job_row.get("job_url"),
                     job_row.get("title") or "", job_row.get("company") or "",
                 )
-                render_conn.execute(_DELETE_SQL, (dedup_key,))
+                try:
+                    render_conn.execute(_DELETE_SQL, (dedup_key,))
+                except IntegrityError:
+                    # Render's own schema, not jobscrape's to manage (see this
+                    # module's docstring) — a row a site visitor has reviewed
+                    # is referenced by `reviews.job_id`, so a hard DELETE
+                    # violates that foreign key. One un-deletable row (real
+                    # user activity, not a jobscrape concern to override)
+                    # must not abort every other delete/upsert queued behind
+                    # it in the same batch -- skip it, leaving that one
+                    # phantom duplicate in place, and keep going.
+                    render_conn.rollback()
+                    skipped += 1
+                    log.warning(
+                        "render-sync: %s has a dependent review — leaving it "
+                        "in Render rather than deleting", dedup_key,
+                    )
+                    continue
+            deleted += 1
             continue
 
         upserted += 1
@@ -281,5 +299,5 @@ def sync(
 
     return {
         "seen": len(changed), "upserted": upserted, "deleted": deleted,
-        "watermark": new_watermark.isoformat(), "dry_run": dry_run,
+        "skipped": skipped, "watermark": new_watermark.isoformat(), "dry_run": dry_run,
     }

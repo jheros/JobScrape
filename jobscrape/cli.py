@@ -1343,7 +1343,8 @@ def cmd_render_sync(args: argparse.Namespace) -> int:
 
         message = (
             f"render-sync: {result['seen']} seen, {result['upserted']} upserted, "
-            f"{result['deleted']} deleted" + (" (dry run)" if result["dry_run"] else "")
+            f"{result['deleted']} deleted, {result.get('skipped', 0)} skipped "
+            "(dependent review)" + (" (dry run)" if result["dry_run"] else "")
         )
         log.info(message)
         db.log_event(conn, run_id, message, stage="render-sync", counters=result)

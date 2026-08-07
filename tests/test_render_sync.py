@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
+
 from jobscrape import db, dedupe
 from jobscrape.models import Job
 from jobscrape.render_sync import _dedup_key, _skills_array, _to_render_row, sync
@@ -101,16 +103,34 @@ def test_to_render_row_falls_back_to_job_url_when_no_apply_url():
 class _FakeRenderConn:
     """Records every call rather than writing anywhere -- Render's own
     schema doesn't exist in this test environment, and `sync()` never reads
-    a result back from `render_conn`, so recording is enough."""
+    a result back from `render_conn`, so recording is enough.
 
-    def __init__(self) -> None:
+    ``fail_deletes_for`` simulates a DELETE hitting Render's own
+    `reviews.job_id` foreign key -- a dedup_key in that set raises
+    `IntegrityError` (and must be followed by a `rollback()` before this
+    fake conn accepts anything else, same as a real Postgres connection
+    after an aborted statement)."""
+
+    def __init__(self, fail_deletes_for: set = frozenset()) -> None:
         self.calls: list[tuple[str, tuple]] = []
+        self.rollback_calls = 0
+        self._fail_deletes_for = fail_deletes_for
+        self._aborted = False
 
     def execute(self, sql: str, params: tuple = ()) -> None:
+        if self._aborted:
+            raise AssertionError("executed on a connection still mid-aborted-transaction")
         self.calls.append((sql, params))
+        if sql.strip().startswith("DELETE") and params and params[0] in self._fail_deletes_for:
+            self._aborted = True
+            raise IntegrityError("DELETE FROM jobs WHERE dedup_key = ?", params, Exception("fk"))
 
     def commit(self) -> None:
         pass
+
+    def rollback(self) -> None:
+        self.rollback_calls += 1
+        self._aborted = False
 
 
 def _dup_job(**kw: Any) -> Job:
@@ -150,6 +170,41 @@ def test_sync_deletes_a_row_dedupe_just_suppressed() -> None:
         assert deletes and deletes[0][1] == (_dedup_key("adzuna", "q0", "https://x/q0",
                                                           "iOS Engineer -Remote", "Quora"),)
         assert upserts  # q1, the canonical, still gets published normally
+
+
+def test_sync_skips_a_delete_blocked_by_a_dependent_review() -> None:
+    """Render's `reviews.job_id` foreign key can block a hard DELETE for a
+    row a site visitor has reviewed -- real production behavior, not
+    something jobscrape's own schema can predict or manage. One
+    un-deletable row must not abort every other delete/upsert queued behind
+    it in the same batch, and the connection must be usable again
+    afterward (a real Postgres connection needs an explicit ROLLBACK after
+    an aborted statement before it will accept anything else)."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="q0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="q1", posted_at="2026-07-02"),
+            _dup_job(source_job_id="q2", posted_at="2026-07-03",
+                     title="Backend Engineer -Remote"),
+        ])
+        result = dedupe.resolve_all(conn)
+        assert result["collapsed"] == 1
+
+        blocked_key = _dedup_key("adzuna", "q0", "https://x/q0",
+                                  "iOS Engineer -Remote", "Quora")
+        render = _FakeRenderConn(fail_deletes_for={blocked_key})
+        stats = sync(conn, render)
+
+        assert stats["skipped"] == 1
+        assert stats["deleted"] == 0  # q0 was the only closed/duplicate row
+        assert render.rollback_calls == 1
+        # q2 (an ordinary canonical row, queued after q0 in changed_at order)
+        # must still have reached an upsert -- the abort must not have taken
+        # the rest of the batch down with it.
+        upserts = [c for c in render.calls if c[0].strip().startswith("INSERT")]
+        assert any(c[1][2] == _dedup_key("adzuna", "q2", "https://x/q0",
+                                          "Backend Engineer -Remote", "Quora")
+                   for c in upserts)
 
 
 def test_sync_republishes_a_row_after_clear_duplicate() -> None:
