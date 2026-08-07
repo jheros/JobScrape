@@ -95,7 +95,14 @@ class JazzHR(BoardSource):
                     source=self.name,
                     source_job_id=f"{slug}:{token}",
                     title=candidates[token].rstrip("/").rsplit("/", 1)[-1].replace("-", " "),
-                    company=slug,
+                    # No fallback to `slug` here: the real company name only
+                    # ever comes from the per-posting schema.org block below,
+                    # which an already-known posting never fetches. `slug`
+                    # used to get sent as if it were fresh data on every
+                    # repeat sweep, overwriting the real captured name — `""`
+                    # instead lets `db.upsert_jobs`'s NULLIF guard preserve
+                    # whatever was already stored.
+                    company="",
                     company_slug=slug,
                     job_url=candidates[token],
                     apply_url=candidates[token],

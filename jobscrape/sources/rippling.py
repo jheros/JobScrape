@@ -108,7 +108,14 @@ class Rippling(BoardSource):
         known = known_ids or set()
         details: dict[str, dict[str, Any]] = {}
         if with_details:
-            needed = [p["uuid"] for p in postings if p["uuid"] not in known]
+            # `known` holds `source_job_id` values straight from the DB
+            # (`db.skippable_ids`), which for this adapter is `slug:uuid` —
+            # comparing it against the bare `uuid` here meant this filter
+            # could never actually match anything, so a detail request was
+            # (re-)sent for literally every posting on every sweep,
+            # defeating the whole point of `known_ids` (no request savings)
+            # and never once exercising the `shallow_refresh` path below.
+            needed = [p["uuid"] for p in postings if f"{slug}:{p['uuid']}" not in known]
             fetched = await gather_limited(
                 [self._detail(fetcher, slug, j) for j in needed], limit=4
             )
@@ -126,7 +133,15 @@ class Rippling(BoardSource):
                 source=self.name,
                 source_job_id=f"{slug}:{job_id}",
                 title=item.get("name") or detail.get("name") or "",
-                company=detail.get("companyName") or slug,
+                # No `or slug` fallback: `companyName` only ever exists on the
+                # per-posting DETAIL call, which an already-known posting
+                # skips entirely (`detail` is `{}`). Falling back to the bare
+                # slug used to send that as if it were a real update on every
+                # repeat sweep, overwriting the real captured name — `""`
+                # instead lets `db.upsert_jobs`'s NULLIF guard preserve
+                # whatever was already stored, same as a shallow-refreshed
+                # description/salary already does.
+                company=detail.get("companyName") or "",
                 company_slug=slug,
                 job_url=item.get("url") or detail.get("url") or "",
                 location_raw=_locations(detail, item),
@@ -140,7 +155,7 @@ class Rippling(BoardSource):
                 description_text=html_to_text(body) or None,
                 raw=detail or item,
             )
-            if job_id in known:
+            if f"{slug}:{job_id}" in known:
                 job = shallow_refresh(job)
             jobs.append(job)
         return jobs

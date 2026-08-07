@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..http import Fetcher
-from ..models import Job
+from ..models import Job, normalize_country
 from .base import BoardSource, Prefilter
 
 API = "https://{slug}.teamtailor.com/jobs.json"
@@ -43,6 +43,27 @@ def _location_from_schema(posting: dict[str, Any]) -> str | None:
         if text and text not in names:
             names.append(text)
     return "; ".join(names) or None
+
+
+def _country_from_schema(posting: dict[str, Any]) -> str | None:
+    """First structured ``addressCountry`` out of schema.org ``jobLocation``.
+
+    Never wired up before, so `Job.country` depended entirely on
+    `infer_country` guessing from the flattened `location_raw` text — a
+    structured code straight from the posting is more reliable than that,
+    same as every other adapter that ships one.
+    """
+    raw = posting.get("jobLocation")
+    if not raw:
+        return None
+    entries = raw if isinstance(raw, list) else [raw]
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        address = entry.get("address")
+        if isinstance(address, dict) and address.get("addressCountry"):
+            return str(address["addressCountry"])
+    return None
 
 
 class Teamtailor(BoardSource):
@@ -90,6 +111,7 @@ class Teamtailor(BoardSource):
                     apply_url=(posting.get("directApply") and item.get("url"))
                     or item.get("url"),
                     location_raw=_location_from_schema(posting),
+                    country=normalize_country(_country_from_schema(posting)),
                     # schema.org marks remote roles with this flag.
                     workplace_hint="remote"
                     if posting.get("jobLocationType") == "TELECOMMUTE"

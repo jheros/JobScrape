@@ -429,12 +429,36 @@ def normalize_country(value: str | None) -> str | None:
     return text
 
 
+#: Non-US country names from `_COUNTRY_ALIASES`, as a word-boundary pattern.
+#:
+#: `infer_country`'s ``state`` evidence is only trustworthy when it came from
+#: `filters.parse_us_location` (which only ever emits real US abbreviations) —
+#: but several adapters set `Job.state` directly from their own structured
+#: field, and some of those copy a foreign region code that collides exactly
+#: with a real US abbreviation: SmartRecruiters stores Spain's province codes
+#: verbatim ("CT" for Cataluña, "MD" for Madrid, "AR" for Aragón). Trusting
+#: `state` unconditionally read those as Connecticut/Maryland/Arkansas and
+#: stamped `country="US"` on a Spain-only posting — which then short-circuits
+#: `is_us_eligible`'s own "Spain" check, since a resolved `country="US"` is
+#: accepted outright before location text is even considered. When the
+#: location string itself names a non-US country with nothing countervailing,
+#: that is stronger evidence than an unverified `state` and wins.
+_NON_US_COUNTRY_NAMES = re.compile(
+    r"\b(" + "|".join(
+        re.escape(name) for name, code in _COUNTRY_ALIASES.items()
+        if code not in ("US", "GB")
+    ) + r")\b",
+    re.I,
+)
+
+
 def infer_country(state: str | None, location_raw: str | None) -> str | None:
     """Resolve a country from evidence already present, or ``None``.
 
     Two kinds of evidence count, both stated rather than assumed: a resolved US
-    ``state`` (the state parser only ever emits real US abbreviations), or the
-    location string naming the US outright.
+    ``state``, or the location string naming the US outright. A `state` is
+    trusted unless the location text itself names a different country with no
+    countervailing US mention — see `_NON_US_COUNTRY_NAMES`.
 
     Deliberately narrow. 20,689 rows had no country and it was tempting to
     default the survivors to "US" — the archive is US-filtered, after all. But
@@ -442,9 +466,11 @@ def infer_country(state: str | None, location_raw: str | None) -> str | None:
     stamping those "US" would be a guess wearing the same clothes as a fact.
     They stay ``None``, for the same reason `workplace_type` has an "unknown".
     """
-    if state:
+    us_named = bool(location_raw and _US_IN_TEXT.search(location_raw))
+    non_us_named = bool(location_raw and _NON_US_COUNTRY_NAMES.search(location_raw))
+    if state and not (non_us_named and not us_named):
         return "US"
-    if location_raw and _US_IN_TEXT.search(location_raw):
+    if us_named:
         return "US"
     return None
 

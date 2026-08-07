@@ -79,6 +79,55 @@ def test_upsert_preserves_description_against_null(tmp_path) -> None:
         assert row["description_text"] == "Full details"
 
 
+def test_upsert_preserves_company_and_title_against_blank(tmp_path) -> None:
+    """Rippling/JazzHR/Paycom only know the real company from a per-posting
+    detail call; iCIMS/Jobvite have no listing payload at all, so title is
+    detail-only too. An already-known posting's shallow refresh sends `""`
+    for whichever of these it can't re-derive without a detail request --
+    same shape as description above, but `company`/`title` are required
+    fields (never a real `None`), so this exercises the NULLIF branch of
+    the upsert instead of a plain COALESCE."""
+    path = tmp_path / "t.db"
+    with db.session(path) as conn:
+        db.upsert_jobs(conn, [_job("1", company="Acme Corp", title="Backend Engineer")])
+        db.upsert_jobs(conn, [_job("1", company="", title="")])
+        row = conn.execute("SELECT company, title FROM jobs").fetchone()
+        assert row["company"] == "Acme Corp"
+        assert row["title"] == "Backend Engineer"
+
+        # A real update (not a blank shallow refresh) must still win.
+        db.upsert_jobs(conn, [_job("1", company="Acme Corp (renamed)", title="Backend Engineer II")])
+        row = conn.execute("SELECT company, title FROM jobs").fetchone()
+        assert row["company"] == "Acme Corp (renamed)"
+        assert row["title"] == "Backend Engineer II"
+
+
+def test_upsert_preserves_employment_type_country_location_department_is_remote(tmp_path) -> None:
+    """Same failure, four more fields wide: all detail-only for at least one
+    adapter (Rippling/Paycom for employment_type/country, iCIMS/Jobvite for
+    location_raw/department/is_remote), all genuinely Optional so a plain
+    COALESCE (not NULLIF) is what protects them."""
+    path = tmp_path / "t.db"
+    with db.session(path) as conn:
+        db.upsert_jobs(conn, [_job(
+            "1", employment_type="full_time", country="US",
+            location_raw="Austin, TX", department="Engineering", is_remote=True,
+        )])
+        db.upsert_jobs(conn, [_job(
+            "1", employment_type=None, country=None,
+            location_raw=None, department=None, is_remote=None,
+        )])
+        row = conn.execute(
+            "SELECT employment_type, country, location_raw, department, is_remote "
+            "FROM jobs"
+        ).fetchone()
+        assert row["employment_type"] == "full_time"
+        assert row["country"] == "US"
+        assert row["location_raw"] == "Austin, TX"
+        assert row["department"] == "Engineering"
+        assert row["is_remote"] is True
+
+
 def test_first_seen_is_stable_across_reruns(tmp_path) -> None:
     path = tmp_path / "t.db"
     with db.session(path) as conn:

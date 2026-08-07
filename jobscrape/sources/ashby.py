@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..http import Fetcher, gather_limited
-from ..models import Job, annualise
+from ..models import Job, annualise, normalize_country
 from .base import BoardSource, Prefilter, shallow_refresh
 
 REST_ENDPOINT = "https://api.ashbyhq.com/posting-api/job-board"
@@ -120,6 +120,13 @@ class Ashby(BoardSource):
             or compensation.get("scrapeableCompensationSalarySummary")
         )
         low, high, currency = _salary_from_components(compensation)
+        # `address.postalAddress` is structured, schema.org-shaped location
+        # data the REST feed carries alongside the flat `location` string --
+        # never read before, so `Job.country`/`state`/`city` depended entirely
+        # on `infer_country`/`parse_us_location` guessing from that free text.
+        # A structured code straight from the posting is more reliable than
+        # that, same as every other adapter that ships one.
+        postal = ((item.get("address") or {}).get("postalAddress")) or {}
         return Job(
             source=self.name,
             source_job_id=str(item.get("id")),
@@ -129,6 +136,9 @@ class Ashby(BoardSource):
             job_url=item.get("jobUrl") or f"https://jobs.ashbyhq.com/{slug}/{item.get('id')}",
             apply_url=item.get("applyUrl"),
             location_raw=item.get("location"),
+            city=postal.get("addressLocality"),
+            state=postal.get("addressRegion"),
+            country=normalize_country(postal.get("addressCountry")),
             is_remote=item.get("isRemote"),
             workplace_hint=item.get("workplaceType"),
             employment_type=item.get("employmentType"),

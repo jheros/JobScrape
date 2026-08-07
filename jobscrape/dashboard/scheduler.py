@@ -30,6 +30,15 @@ log = logging.getLogger("jobscrape.dashboard.scheduler")
 
 scheduler = AsyncIOScheduler()
 
+#: Strong references to fire-and-forget `_sync_after` tasks. `asyncio`'s own
+#: event loop holds only a WEAK reference to a task returned by
+#: `create_task()` — with nothing else referencing it, the task is eligible
+#: for garbage collection at any point during its `await asyncio.sleep(15)`
+#: polling loop, silently cancelling the pending render-sync with no error
+#: logged anywhere. Discarded via the task's own done-callback once it
+#: finishes, so this never grows unbounded.
+_pending_syncs: set[asyncio.Task] = set()
+
 
 def _job_id(schedule_id: int) -> str:
     return f"schedule-{schedule_id}"
@@ -77,8 +86,12 @@ def maybe_sync_after(stage: str) -> None:
     separate button.
     """
     if stage != "render-sync" and config.RENDER_DATABASE_URL:
-        # Fire-and-forget: don't hold up the caller waiting on this.
-        asyncio.create_task(_sync_after(stage))
+        # Fire-and-forget: don't hold up the caller waiting on this. Held in
+        # `_pending_syncs` — see that set's own comment for why a bare
+        # `create_task()` here is not safe on its own.
+        task = asyncio.create_task(_sync_after(stage))
+        _pending_syncs.add(task)
+        task.add_done_callback(_pending_syncs.discard)
 
 
 async def _sync_after(stage: str) -> None:
@@ -100,24 +113,39 @@ async def _sync_after(stage: str) -> None:
 def reload() -> None:
     """Drop every job and re-add one per enabled row. Called at startup and
     after any create/update/delete/toggle so an edit takes effect immediately,
-    with no dashboard restart needed."""
+    with no dashboard restart needed.
+
+    One row's own trigger is invalid (a bad cron field combination, an
+    unrecognised timezone) does not take the rest down with it: everything
+    was already cleared by `remove_all_jobs()` above, so letting `add_job`
+    raise past this loop would leave every OTHER, perfectly valid schedule
+    unscheduled too -- and since every create/update/toggle route calls this
+    synchronously, that one bad row would also fail the request that was
+    trying to edit an unrelated schedule.
+    """
     scheduler.remove_all_jobs()
     with db.session() as conn:
         rows = db.list_schedules(conn)
     for row in rows:
         if not row["enabled"]:
             continue
-        scheduler.add_job(
-            _fire,
-            trigger=CronTrigger(
-                minute=row["cron_minute"], hour=row["cron_hour"],
-                day_of_week=row["cron_day_of_week"], timezone=row["timezone"],
-            ),
-            args=[row["id"]],
-            id=_job_id(row["id"]),
-            replace_existing=True,
-            misfire_grace_time=3600,
-        )
+        try:
+            scheduler.add_job(
+                _fire,
+                trigger=CronTrigger(
+                    minute=row["cron_minute"], hour=row["cron_hour"],
+                    day_of_week=row["cron_day_of_week"], timezone=row["timezone"],
+                ),
+                args=[row["id"]],
+                id=_job_id(row["id"]),
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+        except Exception:
+            log.exception(
+                "schedule %s (%r) has an invalid trigger — skipped, other "
+                "schedules unaffected", row["id"], row["stage"],
+            )
     log.info("scheduler reloaded: %d active job(s)", len(scheduler.get_jobs()))
 
 

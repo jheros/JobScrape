@@ -74,7 +74,7 @@ async def test_parsing(monkeypatch) -> None:
                 "job_publisher": "LinkedIn",
                 "job_posted_at_datetime_utc": "2026-07-20T12:00:00.000Z",
                 "job_min_salary": 150000, "job_max_salary": 200000,
-                "job_salary_currency": "USD",
+                "job_salary_currency": "USD", "job_salary_period": "YEAR",
                 "job_description": "Build things.",
             }
         ]
@@ -89,6 +89,41 @@ async def test_parsing(monkeypatch) -> None:
     assert job.posted_at is not None and job.posted_at.startswith("2026-07-20")
     # Provenance: which board the listing was aggregated from.
     assert job.department == "LinkedIn"
+
+
+async def test_hourly_salary_is_annualised(monkeypatch) -> None:
+    """`job_salary_period` was never read, so an hourly `job_min_salary` was
+    stored as if it were an annual figure -- $45-$55 filed as a $45-$55/year
+    salary instead of the ~$94k-$114k it actually is."""
+    monkeypatch.setattr(config, "RAPIDAPI_KEY", "test-key")
+    monkeypatch.setattr(config, "JSEARCH_MAX_REQUESTS", 1)
+    payload = {"data": [{
+        "job_id": "hourly1", "job_title": "Support Engineer",
+        "employer_name": "Acme Inc",
+        "job_apply_link": "https://example.com/apply/hourly1",
+        "job_min_salary": 45, "job_max_salary": 55,
+        "job_salary_currency": "USD", "job_salary_period": "HOUR",
+    }]}
+    jobs = await JSearch().fetch(FakeFetcher(payload))
+    assert len(jobs) == 1
+    assert jobs[0].salary_min == 45 * 2080
+    assert jobs[0].salary_max == 55 * 2080
+
+
+async def test_salary_with_unrecognised_period_is_dropped_not_guessed() -> None:
+    """An unrecognised period must not silently default to annual -- that
+    would file a wrong number as if it were a real one."""
+    from jobscrape.sources.jsearch import JSearch as _JS
+
+    job = _JS()._parse({
+        "job_id": "weird1", "job_title": "X",
+        "job_min_salary": 100, "job_max_salary": 200,
+        "job_salary_period": "FEE_BASIS",
+    })
+    assert job is not None
+    assert job.salary_min is None
+    assert job.salary_max is None
+    assert job.salary_currency is None
 
 
 async def test_unexpected_shape_degrades_rather_than_raises(monkeypatch) -> None:

@@ -12,7 +12,7 @@ from typing import Any
 
 from .. import config
 from ..http import Fetcher
-from ..models import Job
+from ..models import Job, annualise
 from .base import DEFAULT_QUERIES, GlobalSource, JobBatch
 
 API = "https://data.usajobs.gov/api/search"
@@ -59,8 +59,18 @@ class USAJobs(GlobalSource):
 
         jobs: list[Job] = []
         seen: set[str] = set()
-        # See JobBatch — only an exhaustive crawl may be used to close postings.
-        complete = True
+        # `DatePosted` is USAJobs's own "days back from today" filter, and the
+        # API does not accept a value past 60 -- so a `since` requesting a
+        # wider window than that gets silently capped to the last 60 days.
+        # `complete` gates source-wide closure (`cli.py`'s `mark_board_closures`
+        # call), and a posting older than 60 days but still inside the
+        # requested window is never even queried for in that case -- closing
+        # against a `seen` set that never reached it would retire postings
+        # this run simply never looked at, not postings that are actually
+        # gone. Starting `complete` here, before pagination, means the usual
+        # per-page reasons below can only ever narrow it further, never
+        # accidentally report a truncated crawl as exhaustive.
+        complete = not (since and (date.today() - since).days > 60)
         for term in queries or DEFAULT_QUERIES:
             page = 1
             exhausted = False
@@ -120,11 +130,16 @@ class USAJobs(GlobalSource):
         duties = descriptor.get("QualificationSummary") or ""
         html = "\n\n".join(p for p in (summary, duties) if p)
 
-        def _num(value: Any) -> float | None:
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
+        # `RateIntervalCode` is "Per Year" for most postings but plenty are
+        # "Per Hour" (also "Per Day", "Per Month", ...) — storing
+        # MinimumRange/MaximumRange verbatim regardless filed an hourly rate
+        # as if it were an annual salary. `annualise` scales it (a no-op for
+        # "Per Year", `PERIODS_PER_YEAR["year"] == 1.0`) and returns `None`
+        # for a code it doesn't recognise ("Fee Basis", "Without
+        # Compensation") rather than guessing.
+        rate_interval = remuneration.get("RateIntervalCode")
+        salary_min = annualise(remuneration.get("MinimumRange"), rate_interval)
+        salary_max = annualise(remuneration.get("MaximumRange"), rate_interval)
 
         return Job(
             source=self.name,
@@ -146,9 +161,9 @@ class USAJobs(GlobalSource):
             or None,
             department=descriptor.get("DepartmentName"),
             posted_at=descriptor.get("PublicationStartDate"),
-            salary_min=_num(remuneration.get("MinimumRange")),
-            salary_max=_num(remuneration.get("MaximumRange")),
-            salary_currency=remuneration.get("RateIntervalCode") and "USD",
+            salary_min=salary_min,
+            salary_max=salary_max,
+            salary_currency="USD" if (salary_min is not None or salary_max is not None) else None,
             description_html=html or None,
             raw=descriptor,
         )

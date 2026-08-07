@@ -179,6 +179,14 @@ def test_sql_verdict_matches_python_verdict_row_for_row() -> None:
         ("Old Evergreen Role", 200, "We are always hiring engineers."),
         ("Undated Role", None, "Build things."),
         ("Pipeline Role", 2, "You will own our data pipeline."),
+        # A whole-day-multiple fixture set never exercises the boundary
+        # between FRESH_WINDOW_DAYS and FRESH_WINDOW_DAYS+1: `classify()`
+        # floors age to whole days, so a posting at 14 days + 12 hours is
+        # still `age=14` (fresh) in Python -- a naive SQL bound comparing
+        # continuous elapsed time against the same 14-day interval would
+        # call this one stale instead. Without a fixture landing inside
+        # that fractional window, that exact drift is invisible here.
+        ("Just Past Fresh Role", 14.5, "Build things."),
     ]
     with db.session() as conn:
         jobs = []

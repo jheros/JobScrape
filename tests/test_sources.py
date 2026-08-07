@@ -119,6 +119,35 @@ async def test_lever_epoch_ms_and_assembled_description() -> None:
 
 
 @pytest.mark.asyncio
+async def test_lever_unspecified_workplace_type_is_not_read_as_onsite() -> None:
+    """Lever's own vocabulary includes `unspecified` -- "not stated", not
+    "confirmed onsite". Reading it as `is_remote=False` used to feed
+    `classify_workplace`'s last-resort tier ("an explicit False flag is
+    still evidence") and file the posting as onsite, which the collection
+    filter drops outright."""
+    from jobscrape.sources.lever import Lever
+
+    payload = [
+        {
+            "id": "b1",
+            "text": "Backend Engineer",
+            "hostedUrl": "https://jobs.lever.co/acme/b1",
+            "createdAt": 1784569799619,
+            "country": "US",
+            "workplaceType": "unspecified",
+            "categories": {"location": "New York, NY"},
+            "description": "<p>No mention of any arrangement here.</p>",
+            "descriptionPlain": "No mention of any arrangement here.",
+        }
+    ]
+    jobs = await Lever().fetch_board(FakeFetcher(payload), "acme")
+    assert jobs is not None and len(jobs) == 1
+    job = jobs[0]
+    assert job.is_remote is None
+    assert job.workplace_type == "unknown"
+
+
+@pytest.mark.asyncio
 async def test_workable_merges_one_requisition_across_locations() -> None:
     """Workable repeats a requisition per city; those must merge, not overwrite.
 
@@ -250,6 +279,25 @@ def test_hackernews_returns_none_when_no_job_link() -> None:
     assert _best_job_url("no links here") is None
 
 
+def test_hackernews_location_match_stays_case_sensitive_for_state_codes() -> None:
+    """`[A-Z]{2}\\b|remote|onsite|hybrid` run under `re.I` used to apply
+    case-insensitivity to the WHOLE pattern, so a lowercase word like "on"
+    (in "on call rotation") satisfied the state-code alternative too --
+    picking that part as the location instead of the real "Austin, TX" one
+    later in the list."""
+    from jobscrape.sources.hackernews import HackerNews
+
+    text = (
+        "Acme Corp | Site Reliability Engineer, on call rotation | Austin, TX\n"
+        "We build infrastructure tooling for a living, come join us building "
+        "more of it every single day of the week doing infrastructure work."
+    )
+    comment = {"id": 1, "text": text, "created_at": "2026-07-01T00:00:00Z"}
+    job = HackerNews()._parse(comment)
+    assert job is not None
+    assert job.location_raw == "Austin, TX"
+
+
 # --- Ashby: REST primary, GraphQL fallback --------------------------------
 #
 # The REST endpoint returns every posting with its description, publish date
@@ -356,6 +404,52 @@ async def test_ashby_rest_shallow_refreshes_known_postings() -> None:
     assert jobs[0].description_html is None
     assert jobs[0].posted_at is None
     assert jobs[0].title == "Senior Backend Engineer"  # listing fields survive
+
+
+@pytest.mark.asyncio
+async def test_ashby_rest_reads_structured_address_fields() -> None:
+    """`address.postalAddress` is structured, schema.org-shaped location data
+    the REST feed carries alongside the flat `location` string -- reading it
+    is more reliable than `infer_country`'s guess from that free text (and,
+    same as the Pinpoint/SmartRecruiters collision, stops a foreign region
+    code in `state` from being misread as a US abbreviation)."""
+    from jobscrape.sources.ashby import Ashby
+
+    payload = {
+        "apiVersion": "1",
+        "jobs": [{
+            "id": "abc123",
+            "title": "Backend Engineer",
+            "location": "Madrid, Spain",
+            "address": {
+                "postalAddress": {
+                    "addressLocality": "Madrid",
+                    "addressRegion": "MD",
+                    "addressCountry": "ES",
+                },
+            },
+        }],
+    }
+    jobs = await Ashby().fetch_board(FakeFetcher(payload), "Acme")
+    assert jobs is not None and len(jobs) == 1
+    job = jobs[0]
+    assert job.city == "Madrid"
+    assert job.state == "MD"
+    assert job.country == "ES"
+
+
+@pytest.mark.asyncio
+async def test_ashby_rest_without_an_address_object_is_unaffected() -> None:
+    """Most real boards don't send `address` at all -- must degrade to no
+    structured location, not raise."""
+    from jobscrape.sources.ashby import Ashby
+
+    payload = {"apiVersion": "1", "jobs": [{
+        "id": "abc123", "title": "Backend Engineer", "location": "Remote",
+    }]}
+    jobs = await Ashby().fetch_board(FakeFetcher(payload), "Acme")
+    assert jobs is not None and len(jobs) == 1
+    assert jobs[0].country is None
 
 
 # --- Workday: empty-search enumeration ------------------------------------
@@ -485,6 +579,37 @@ async def test_adzuna_exhausted_crawl_is_complete() -> None:
     jobs = await Adzuna().fetch(FakeFetcher(short_page), queries=["engineer"])
     assert len(jobs) == 1
     assert is_complete(jobs) is True
+
+
+@pytest.mark.asyncio
+async def test_adzuna_area_full_state_name_is_not_stored_verbatim() -> None:
+    """Adzuna's `location.area` breadcrumb is ["US", "California", "San
+    Francisco"] -- a FULL state name, not the two-letter abbreviation `state`
+    means everywhere else in this app (`--state CA`, the SmartRecruiters
+    collision guard, ...). Storing "California" there used to silently fail
+    every comparison expecting a code; `job.state` must end up as the correct
+    abbreviation (via `Job.__post_init__`'s own location parsing) instead."""
+    from jobscrape import config as cfg
+    from jobscrape.sources.adzuna import Adzuna
+
+    cfg.ADZUNA_APP_ID, cfg.ADZUNA_APP_KEY = "id", "key"
+    page = {"results": [{
+        "id": "1", "title": "Engineer", "company": {"display_name": "Acme"},
+        "redirect_url": "https://x/1",
+        "location": {
+            "display_name": "San Francisco, California",
+            "area": ["US", "California", "San Francisco"],
+        },
+    }]}
+    jobs = await Adzuna().fetch(FakeFetcher(page), queries=["engineer"])
+    assert len(jobs) == 1
+    assert jobs[0].state is None  # not yet resolved -- that happens in apply_filters
+    assert jobs[0].city == "San Francisco"
+
+    from jobscrape.filters import apply_filters_counted
+
+    kept, _ = apply_filters_counted(jobs, software_only=False)
+    assert kept[0].state == "CA", "must resolve to the abbreviation, not the full name"
 
 
 @pytest.mark.asyncio
@@ -683,6 +808,27 @@ def test_rippling_tolerates_an_empty_pay_band() -> None:
     assert _pay({"payRangeDetails": []}) == (None, None, None)
     assert _pay({"payRangeDetails": {"min": 1, "max": 2, "currency": "USD"}}) == \
         (1.0, 2.0, "USD")
+
+
+async def test_rippling_known_posting_sends_blank_not_the_bare_slug() -> None:
+    """`companyName` only ever comes from the per-posting DETAIL call, which
+    an already-known posting skips entirely. It used to fall back to the
+    bare board slug and send that as if it were a real update -- `""`
+    instead, so `db.upsert_jobs`'s NULLIF guard preserves whatever real
+    name was already stored rather than overwriting it with the slug."""
+    from jobscrape.sources.rippling import Rippling
+
+    listing = [{"uuid": "abc123", "name": "Backend Engineer",
+                "url": "https://acme.rippling-ats.com/abc123"}]
+    fetcher = FakeFetcher(listing)
+    jobs = await Rippling().fetch_board(fetcher, "acme", known_ids={"acme:abc123"})
+    assert jobs is not None and len(jobs) == 1
+    assert jobs[0].company == ""
+    # `known` holds the compound `source_job_id` ("acme:abc123"), not the
+    # bare uuid -- comparing against the bare uuid meant this never matched
+    # anything, so a detail request went out for every posting on every
+    # sweep regardless of `known_ids`. Only the LIST call should happen here.
+    assert len(fetcher.urls) == 1
 
 
 @pytest.mark.asyncio

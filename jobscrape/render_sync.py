@@ -26,19 +26,43 @@ log = logging.getLogger("jobscrape.render_sync")
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
-_CHANGED_SINCE_SQL = """
-    SELECT source, source_job_id, title, company, location_raw,
-           salary_min, salary_max, apply_url, job_url, description_text,
-           posted_at::date AS posted_date, first_seen_at, skills,
-           department, seniority, closed_at,
-           GREATEST(last_seen_at, COALESCE(closed_at, last_seen_at)) AS changed_at
-    FROM jobs
-    WHERE (last_seen_at > ? OR closed_at > ?) AND duplicate_of IS NULL
-    ORDER BY changed_at ASC
+_CHANGED_SINCE_CTE = """
+    WITH changed AS (
+        SELECT source, source_job_id, title, company, location_raw,
+               salary_min, salary_max, apply_url, job_url, description_text,
+               posted_at::date AS posted_date, first_seen_at, skills,
+               department, seniority, closed_at, duplicate_of,
+               GREATEST(last_seen_at, COALESCE(closed_at, last_seen_at),
+                        COALESCE(duplicate_marked_at, last_seen_at)) AS changed_at
+        FROM jobs
+        WHERE last_seen_at > ? OR closed_at > ? OR duplicate_marked_at > ?
+    )
 """
+#: Deliberately NOT `AND duplicate_of IS NULL`: a row that just became a
+#: duplicate needs exactly one more pass through here to get deleted from
+#: Render (see `sync`'s loop) -- filtering it out here would hide the one
+#: event that has to reach that DELETE. `duplicate_of IS NOT NULL` rows are
+#: still excluded from ever being freshly upserted (the loop below checks
+#: it), so a long-suppressed duplicate whose `duplicate_marked_at` predates
+#: the watermark simply never resurfaces, same as before.
+
+_CHANGED_SINCE_SQL = _CHANGED_SINCE_CTE + "SELECT * FROM changed ORDER BY changed_at ASC"
 #: Oldest-changed-first, so a `--limit`-capped run and the eventual full run
 #: behind it cover a contiguous range rather than an arbitrary, unordered
 #: slice — repeatable across several capped test runs in a row.
+
+_TIE_SPILLOVER_SQL = _CHANGED_SINCE_CTE + "SELECT * FROM changed WHERE changed_at = ?"
+#: `last_seen_at`/`closed_at`/`duplicate_marked_at` are each stamped ONCE per
+#: batch call (`upsert_jobs`, `mark_board_closures`, `dedupe._apply` each
+#: compute one timestamp and apply it across every row they touch), so many
+#: rows sharing the exact same `changed_at` is the common case, not a rare
+#: edge. A `LIMIT`-capped fetch ordered by `changed_at ASC` can land its cut
+#: in the middle of such a group -- and because the next run's watermark
+#: comparison is strict (`changed_at > ?`), any sibling left behind at that
+#: exact boundary value would never be selected again by any future run,
+#: capped or not. This query pulls in the rest of that boundary tie so the
+#: watermark this pass computes only ever advances past a value it fully
+#: consumed — see the call site in `sync`.
 
 _UPSERT_SQL = """
     INSERT INTO jobs (
@@ -158,14 +182,21 @@ def sync(
     limit: int | None = None,
 ) -> dict[str, Any]:
     """One incremental pass: push jobscrape rows changed since the last
-    successful sync into Render's `jobs` table, removing ones that closed.
+    successful sync into Render's `jobs` table, removing ones that closed
+    or that jobscrape's own dedupe just suppressed.
 
-    "Changed" watches both `last_seen_at` (bumped on every re-observation)
-    and `closed_at` (set by its own UPDATE, `db.py`'s `mark_board_closures`/
-    liveness paths — *without* touching `last_seen_at`) — watching only the
-    former would silently never notice a closure. `duplicate_of IS NULL`
-    excludes rows jobscrape's own dedupe already suppressed; a repost
-    shouldn't reach the website as a second listing.
+    "Changed" watches `last_seen_at` (bumped on every re-observation),
+    `closed_at` (set by its own UPDATE, `db.py`'s `mark_board_closures`/
+    liveness paths — *without* touching `last_seen_at`), and
+    `duplicate_marked_at` (set by `dedupe._apply`/`db.clear_duplicate`/
+    `db.delete_jobs` whenever `duplicate_of` transitions, either direction —
+    also without touching `last_seen_at`) — watching only `last_seen_at`
+    would silently never notice a closure or a dedupe suppression. A row
+    with `duplicate_of` set is deleted from Render, same as a closed one: a
+    repost shouldn't reach the website as a second listing, and unlike the
+    old `duplicate_of IS NULL` filter this still lets the transition ITSELF
+    through so the row's already-synced Render copy actually gets removed
+    instead of silently orphaned.
 
     The new watermark is the newest `changed_at` actually observed in this
     batch, not wall-clock "now" — a slow concurrent write mid-flight just
@@ -175,18 +206,34 @@ def sync(
     many rows one pass processes (e.g. to test against a handful before a
     full backfill), not a preview. The watermark advances to cover exactly
     what was actually processed, so a later uncapped run picks up right
-    after rather than redoing this batch.
+    after rather than redoing this batch. It can process a few more than
+    `limit` rows when the cut would otherwise land inside a tie of equal
+    `changed_at` values — see `_TIE_SPILLOVER_SQL`.
     """
     row = conn.execute(_WATERMARK_SQL).fetchone()
     watermark: datetime = (
         datetime.fromisoformat(row["watermark"]) if row and row["watermark"] else _EPOCH
     )
 
-    sql, params = _CHANGED_SINCE_SQL, [watermark, watermark]
+    sql, params = _CHANGED_SINCE_SQL, [watermark, watermark, watermark]
     if limit is not None:
         sql += " LIMIT ?"
         params.append(limit)
     changed = conn.execute(sql, tuple(params)).fetchall()
+
+    if limit is not None and len(changed) == limit:
+        # The batch came back exactly full, so the cut may have landed
+        # inside a tie rather than at a natural end -- pull in the rest of
+        # the boundary group so the watermark never advances past a
+        # sibling this pass left unprocessed.
+        boundary = changed[-1]["changed_at"]
+        spillover = conn.execute(
+            _TIE_SPILLOVER_SQL, (watermark, watermark, watermark, boundary)
+        ).fetchall()
+        have = {(r["source"], r["source_job_id"]) for r in changed}
+        changed = changed + [
+            r for r in spillover if (r["source"], r["source_job_id"]) not in have
+        ]
 
     upserted = deleted = 0
     # A dry run must advance nothing -- including the watermark. Recording
@@ -201,7 +248,12 @@ def sync(
         if not dry_run and changed_at and changed_at > new_watermark:
             new_watermark = changed_at
 
-        if job_row.get("closed_at"):
+        # A closed posting and a row dedupe just suppressed are both cases
+        # where Render should no longer show this row's OWN dedup_key --
+        # a suppressed row's posting may still be live under its canonical's
+        # own key, but this row is not that key, and leaving it in Render
+        # keeps a phantom duplicate on the site.
+        if job_row.get("closed_at") or job_row.get("duplicate_of"):
             deleted += 1
             if not dry_run:
                 dedup_key = _dedup_key(

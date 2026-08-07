@@ -731,6 +731,16 @@ def test_parse_us_location_rejects_a_requisition_code_as_the_city() -> None:
     assert parse_us_location("09507 - Colorado Remote") == (None, "CO")
 
 
+def test_parse_us_location_rejects_a_not_a_place_sentinel_as_the_city() -> None:
+    """"TBD, NY" left `city = "TBD"` -- `_CITY_NOISE_RE` only strips
+    workplace-word decoration (remote/hybrid/onsite/us/usa/...), not the
+    rest of `models._NOT_A_PLACE` ("TBD", "N/A", "unknown", ...), and "TBD"
+    passes the has-letters check that catches a bare requisition code. A
+    real state should still resolve; the sentinel must not become the city."""
+    assert parse_us_location("TBD, NY") == (None, "NY")
+    assert parse_us_location("N/A, California") == (None, "CA")
+
+
 def test_parse_us_location_does_not_store_a_foreign_region_code_as_a_state() -> None:
     """Same collision as `is_us_eligible`'s guard, but here the consequence
     is a wrong *value* rather than a wrongly-kept row: "Barcelona, CT,

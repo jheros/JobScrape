@@ -290,3 +290,22 @@ async def test_auto_purge_respects_this_fetchs_own_role_flags(
 
     assert await cmd_fetch(_fetch_args(include_qa=True)) == 0
     assert _ids(conn) == {"qa"}
+
+
+async def test_auto_purge_respects_this_fetchs_all_roles_flag(
+    _isolated_db, _no_op_fetch_boards,
+) -> None:
+    """`--all-roles` means "skip the software-role check entirely", not just
+    "re-admit one specific excluded category" (that's `--include-*`). Before
+    this fix, `_purge_archive` had no way to know `--all-roles` was passed at
+    all -- it always re-ran `is_software_role` unconditionally, so a fetch run
+    with `--all-roles` would keep a non-software posting through its initial
+    filter pass and then immediately delete it again in its own auto-purge
+    pass seconds later, making the flag self-defeating on its own run."""
+    from jobscrape.cli import cmd_fetch
+
+    conn = _isolated_db
+    db.upsert_jobs(conn, [_job("warehouse", "Warehouse Associate")])
+
+    assert await cmd_fetch(_fetch_args(all_roles=True)) == 0
+    assert _ids(conn) == {"warehouse"}

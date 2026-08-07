@@ -56,7 +56,14 @@ class Jobvite(BoardSource):
         known = known_ids or set()
         details: dict[str, dict[str, Any]] = {}
         if with_details:
-            needed = [j for j in job_ids if j not in known]
+            # `known` holds `source_job_id` values straight from the DB
+            # (`db.skippable_ids`), which for this adapter is `slug:jid` —
+            # comparing it against the bare `jid` here meant this filter
+            # could never actually match anything, so a detail request was
+            # (re-)sent for literally every posting on every sweep,
+            # defeating the whole point of `known_ids` (no request savings)
+            # and never once exercising the `shallow_refresh` path below.
+            needed = [j for j in job_ids if f"{slug}:{j}" not in known]
             fetched = await gather_limited(
                 [self._detail(fetcher, slug, j) for j in needed], limit=4
             )
@@ -68,11 +75,19 @@ class Jobvite(BoardSource):
         for job_id in job_ids:
             posting = details.get(job_id)
             lo, hi, currency = jsonld.salary(posting)
+            # `slug` is a reasonable first-insert fallback when there's
+            # simply no hiringOrganization in the schema.org block — but an
+            # already-known posting has no `posting` at all (`None`, never
+            # fetched), and falling back to `slug` there sent it as if it
+            # were a fresh update on every repeat sweep, overwriting the
+            # real captured name. `""` instead lets `db.upsert_jobs`'s
+            # NULLIF guard preserve whatever was already stored.
+            company = jsonld.hiring_org(posting) or (slug if posting is not None else "")
             job = Job(
                 source=self.name,
                 source_job_id=f"{slug}:{job_id}",
                 title=(posting or {}).get("title") or "",
-                company=jsonld.hiring_org(posting) or slug,
+                company=company,
                 company_slug=slug,
                 job_url=DETAIL.format(slug=slug, job_id=job_id),
                 location_raw=jsonld.location_text(posting),
@@ -86,7 +101,7 @@ class Jobvite(BoardSource):
                 description_html=jsonld.description(posting),
                 raw=posting or {},
             )
-            if job_id in known:
+            if f"{slug}:{job_id}" in known:
                 job = shallow_refresh(job)
             jobs.append(job)
         return jobs

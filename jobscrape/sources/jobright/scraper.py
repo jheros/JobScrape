@@ -368,7 +368,14 @@ def flatten(entry: dict[str, Any]) -> dict[str, Any]:
         "jobId": job.get("jobId", ""),
         "companySize": company.get("companySize", ""),
         "companyUrl": company.get("companyURL", ""),
-        "remote": job.get("isRemote", ""),
+        # No `""` default, unlike the string fields around it: `mapper.to_job`
+        # reads this one straight (`record.get("remote")`, not through the
+        # `_text()` blank-squashing every other field gets), so a missing
+        # `isRemote` must stay `None` here -- an `""` default was read as
+        # "not None" downstream and coerced to `is_remote=False`, a false
+        # "confirmed onsite" signal for a posting JobRight simply never
+        # reported a work model for.
+        "remote": job.get("isRemote"),
         "matchScore": entry.get("displayScore", ""),
         # --- the job description, already present in the list response ---
         "summary": summary,
@@ -474,7 +481,16 @@ def collect(
         want = min(page_size, limit - len(entries))
         try:
             batch = fetcher(position, want)
-        except RuntimeError as e:
+        except Exception as e:
+            # `fetch_page`/`search_page` raise `RuntimeError` for their OWN
+            # known failure modes (bad JSON, an API-level error) -- but
+            # `driver.execute_async_script` underneath them can also raise
+            # Selenium's own exceptions (a JS timeout, a disconnected
+            # driver, a stale window), none of which are `RuntimeError`
+            # subclasses. Catching only `RuntimeError` let one of those
+            # escape this function entirely, aborting the whole multi-role
+            # sweep on the first browser hiccup -- exactly what this
+            # function's own docstring promises does not happen.
             note = str(e)
             break
         if not batch:

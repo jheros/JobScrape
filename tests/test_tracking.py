@@ -3,7 +3,12 @@
 Two failure modes here are severe and silent:
 
 * Inferring closures from a *failed* board fetch would wipe a company's whole
-  listing because of one network error.
+  listing because of one network error. `mark_board_closures` trusts its
+  caller on this rather than guessing from `seen_ids` itself — an EMPTY
+  `seen_ids` is taken at face value as "this board now has zero postings",
+  not as a sign the fetch failed, so it is `cli.py`'s job (its `jobs is
+  None`/`is_complete` checks upstream of both call sites) to keep a failed
+  fetch from ever reaching this function at all.
 * Letting a re-fetch overwrite job_status would erase the record of where you
   applied.
 
@@ -75,21 +80,47 @@ def test_absent_posting_closes_once_grace_elapses(tmp_path) -> None:
         assert rows == {"a": False, "b": False, "c": True}
 
 
-def test_failed_fetch_closes_nothing(tmp_path) -> None:
-    """The guard that matters most.
+def test_empty_seen_ids_closes_everything_past_grace() -> None:
+    """A board that genuinely dropped to zero postings must actually close.
 
-    A board that errors yields no ids. Treating that as "everything closed"
-    would destroy the listing on any transient network fault.
+    `mark_board_closures` cannot tell "the fetch failed" apart from "the
+    board answered with nothing" by looking at `seen_ids` alone — that used
+    to be guessed here (an early return on an empty set), which meant a
+    board that had genuinely gone to zero could never close: every one of
+    its postings sat open forever. The guard against a *failed* fetch lives
+    at the call site instead (`cli.py` never calls this unless the fetch
+    itself succeeded) — see `test_a_failed_fetch_never_reaches_mark_board_closures`
+    below for that half of the contract.
     """
-    with db.session(tmp_path / "c.db") as conn:
+    with db.session() as conn:
         db.upsert_jobs(conn, [_job("a"), _job("b")])
         _backdate_last_seen(conn, "a", config.CLOSURE_GRACE_HOURS + 1)
         _backdate_last_seen(conn, "b", config.CLOSURE_GRACE_HOURS + 1)
-        assert db.mark_board_closures(conn, "ashby", "acme", set()) == 0
+        assert db.mark_board_closures(conn, "ashby", "acme", set()) == 2
         still_open = conn.execute(
             "SELECT COUNT(*) c FROM jobs WHERE closed_at IS NULL"
         ).fetchone()["c"]
-        assert still_open == 2
+        assert still_open == 0
+
+
+def test_a_failed_fetch_never_reaches_mark_board_closures() -> None:
+    """The other half of the contract above: `cli.py`'s dispatch must treat
+    `jobs is None` (the fetch itself failed) as never calling
+    `mark_board_closures` at all -- it is not this function's job to
+    re-derive that from an empty `seen_ids`, since a genuinely-empty
+    successful board is indistinguishable from a failure by that signal
+    alone (see the test above)."""
+    import inspect
+
+    from jobscrape import cli
+
+    source = inspect.getsource(cli._fetch_boards)
+    none_check = source.index("if jobs is None:")
+    closure_call = source.index("db.mark_board_closures(")
+    assert none_check < closure_call, (
+        "the `jobs is None` guard must appear (and therefore run, and "
+        "return) before the mark_board_closures call in the same function"
+    )
 
 
 def test_closures_are_scoped_to_one_board(tmp_path) -> None:

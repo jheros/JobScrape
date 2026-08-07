@@ -110,7 +110,18 @@ class Adzuna(GlobalSource):
                             job_url=item.get("redirect_url") or "",
                             apply_url=item.get("redirect_url"),
                             location_raw=location.get("display_name"),
-                            state=area[1] if len(area) > 1 else None,
+                            # No `state=` here: Adzuna's `area` breadcrumb is
+                            # ["US", "California", "San Francisco"] — a FULL
+                            # state name, not the two-letter abbreviation
+                            # `state` means everywhere else in this app
+                            # (`--state CA`, `_STATE_ABBRS`, the SmartRecruiters
+                            # collision guard, ...). Storing "California" there
+                            # silently failed every one of those comparisons.
+                            # `apply_filters`'s own `parse_us_location` already
+                            # resolves a full state name out of `location_raw`
+                            # text (its second pass exists for exactly this),
+                            # so leaving this blank gets the correct
+                            # abbreviation for free instead of a wrong format.
                             city=area[-1] if len(area) > 2 else None,
                             country="US",
                             employment_type=item.get("contract_time"),

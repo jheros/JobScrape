@@ -27,14 +27,21 @@ class FakeFetcher:
     def __init__(self, *payloads: Any, text: Any = None) -> None:
         self._payloads = list(payloads)
         self._text = text if isinstance(text, list) else ([text] if text else [])
+        #: Every URL asked for, queue-exhausted-or-not -- so a test can
+        #: assert a detail request was never even attempted, not just that
+        #: its (empty, queue-exhausted) result didn't change the outcome.
+        self.urls: list[str] = []
 
     async def get_json(self, url: str, **kw: Any) -> Any:
+        self.urls.append(url)
         return self._payloads.pop(0) if self._payloads else None
 
     async def post_json(self, url: str, body: Any, **kw: Any) -> Any:
+        self.urls.append(url)
         return self._payloads.pop(0) if self._payloads else None
 
     async def get_text(self, url: str, **kw: Any) -> Any:
+        self.urls.append(url)
         return self._text.pop(0) if self._text else None
 
 
@@ -144,8 +151,36 @@ async def test_teamtailor_json_feed_with_embedded_schema() -> None:
     assert job.company == "Acme Inc"
     assert job.posted_at is not None and job.posted_at.startswith("2026-07-29")
     assert job.location_raw == "Austin, TX, US"
+    assert job.country == "US"
     assert job.workplace_type == "remote"  # from TELECOMMUTE
     assert "Write services" in job.description_text
+
+
+async def test_teamtailor_country_comes_from_the_structured_field() -> None:
+    """Spain's province codes collide with real US state abbreviations, so a
+    country left to `infer_country`'s guess from raw text is less reliable
+    than the structured `addressCountry` schema.org already carries."""
+    payload = {
+        "title": "Acme Careers",
+        "items": [{
+            "id": "1",
+            "title": "Support Specialist",
+            "url": "https://acme.teamtailor.com/jobs/1-support",
+            "_jobposting": {
+                "@type": "JobPosting",
+                "jobLocation": {
+                    "address": {
+                        "addressLocality": "Madrid",
+                        "addressRegion": "MD",
+                        "addressCountry": "ES",
+                    }
+                },
+            },
+        }],
+    }
+    jobs = await Teamtailor().fetch_board(FakeFetcher(payload), "acme")
+    assert jobs is not None and len(jobs) == 1
+    assert jobs[0].country == "ES"
 
 
 # --- Personio (XML) -------------------------------------------------------
@@ -464,6 +499,30 @@ async def test_jazzhr_extracts_links_then_reads_json_ld() -> None:
     assert job.source_job_id == "acme:LgHWUlCzcA"
 
 
+async def test_jazzhr_known_posting_sends_blank_not_the_bare_slug() -> None:
+    """The real company only ever comes from the per-posting schema.org
+    block, which an already-known posting never fetches. It used to be
+    hardcoded to the bare board slug and sent as if it were a real update
+    -- `""` instead, so `db.upsert_jobs`'s NULLIF guard preserves whatever
+    real name was already stored."""
+    from jobscrape.sources.jazzhr import JazzHR
+
+    single = '''
+<html><body>
+<a href="https://acme.applytojob.com/apply/LgHWUlCzcA/Backend-Engineer">Backend Engineer</a>
+</body></html>
+'''
+    fetcher = FakeFetcher(text=[single])
+    jobs = await JazzHR().fetch_board(fetcher, "acme", known_ids={"acme:LgHWUlCzcA"})
+    known = next(j for j in jobs if j.source_job_id == "acme:LgHWUlCzcA")
+    assert known.company == ""
+    # `known` holds the compound `source_job_id` ("acme:LgHWUlCzcA"), not the
+    # bare token -- comparing against the bare token meant this never matched
+    # anything, so a detail request went out for every posting on every
+    # sweep regardless of `known_ids`. Only the LIST page should be fetched here.
+    assert len(fetcher.urls) == 1
+
+
 async def test_jazzhr_prefilter_skips_before_detail_fetch() -> None:
     """The URL slug is enough to skip an obviously irrelevant posting.
 
@@ -490,6 +549,55 @@ async def test_jazzhr_board_with_no_openings_returns_empty() -> None:
 
     empty = '<html><body>applytojob.com no openings</body></html>'
     assert await JazzHR().fetch_board(FakeFetcher(text=empty), "acme") == []
+
+
+# --- iCIMS / Jobvite: no listing payload at all ----------------------------
+#
+# Both read every field -- title included -- from a per-posting schema.org
+# block; an already-known posting has no `posting` object whatsoever
+# (`None`, never fetched), not just a missing company sub-field.
+
+_ICIMS_SITEMAP = (
+    '<?xml version="1.0"?><urlset>'
+    '<url><loc>https://acme.icims.com/jobs/123/engineer/job</loc></url>'
+    '</urlset>'
+)
+
+
+async def test_icims_known_posting_sends_blank_not_the_bare_slug() -> None:
+    from jobscrape.sources.icims import ICIMS
+
+    fetcher = FakeFetcher(text=[_ICIMS_SITEMAP])
+    jobs = await ICIMS().fetch_board(
+        fetcher, "acme.icims.com", known_ids={"acme.icims.com:123"},
+    )
+    assert jobs is not None and len(jobs) == 1
+    assert jobs[0].company == ""
+    assert jobs[0].title == ""
+    # `known` holds the compound `source_job_id` ("acme.icims.com:123"), not
+    # the bare numeric id -- comparing against the bare id meant this never
+    # matched anything, so a detail request went out for every posting on
+    # every sweep regardless of `known_ids`. Only the sitemap fetch happens here.
+    assert len(fetcher.urls) == 1
+
+
+async def test_jobvite_known_posting_sends_blank_not_the_bare_slug() -> None:
+    from jobscrape.sources.jobvite import Jobvite
+
+    listing = '<a href="/job/oABCDEF">Backend Engineer</a>'
+    fetcher = FakeFetcher(text=[listing])
+    jobs = await Jobvite().fetch_board(
+        fetcher, "acme", known_ids={"acme:oABCDEF"},
+    )
+    assert jobs is not None and len(jobs) == 1
+    assert jobs[0].company == ""
+    assert jobs[0].title == ""
+    # `known` holds the compound `source_job_id` ("acme:oABCDEF"), not the
+    # bare permalink id -- comparing against the bare id meant this never
+    # matched anything, so a detail request went out for every posting on
+    # every sweep regardless of `known_ids`. Only the LIST page should be
+    # fetched here.
+    assert len(fetcher.urls) == 1
 
 
 # --- Ashby: itemised compensation -----------------------------------------
@@ -635,3 +743,15 @@ async def test_pinpoint_without_a_frequency_settles_it_by_magnitude() -> None:
         compensation_minimum=120_000, compensation_maximum=160_000)]})
     jobs = await Pinpoint().fetch_board(annual, "acme", with_details=False)
     assert jobs[0].salary_min == 120_000
+
+
+@pytest.mark.asyncio
+async def test_pinpoint_country_comes_from_the_structured_field() -> None:
+    """Spain's province codes ("MD" for Madrid, "CT" for Cataluña) collide
+    exactly with real US state abbreviations. Pinpoint states the country
+    outright -- wiring it into `Job.country` is what stops `infer_country`
+    from misreading the province code as a US state."""
+    fetcher = FakeFetcher({"data": [_pinpoint_posting(
+        location={"city": "Madrid", "province": "MD", "country": "Spain"})]})
+    jobs = await Pinpoint().fetch_board(fetcher, "acme", with_details=False)
+    assert jobs[0].country == "ES"

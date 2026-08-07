@@ -41,6 +41,23 @@ def test_reload_is_idempotent(_isolated_db) -> None:
     assert len(scheduler.scheduler.get_jobs()) == 1
 
 
+def test_reload_skips_one_invalid_trigger_without_dropping_the_rest(_isolated_db) -> None:
+    """One row's own cron/timezone being invalid must not take every other
+    schedule down with it. `remove_all_jobs()` runs unconditionally first,
+    so a raise partway through the add loop used to leave the scheduler with
+    NO active jobs at all, valid schedules included -- and since every
+    create/update/toggle route calls `reload()` synchronously, it would also
+    fail whatever unrelated edit triggered this reload."""
+    conn = _isolated_db
+    good_id = db.create_schedule(conn, "Daily", "fetch")
+    db.create_schedule(conn, "Bad timezone", "stats", timezone="Not/A_Real_Zone")
+
+    scheduler.reload()  # must not raise
+
+    job_ids = {job.id for job in scheduler.scheduler.get_jobs()}
+    assert job_ids == {scheduler._job_id(good_id)}
+
+
 async def test_fire_starts_the_stage_and_records_the_run(_isolated_db, monkeypatch) -> None:
     conn = _isolated_db
     schedule_id = db.create_schedule(conn, "Daily", "stats", extra="")
@@ -167,3 +184,33 @@ async def test_fire_checks_render_sync_after_the_stage(_isolated_db, monkeypatch
     await scheduler._fire(schedule_id)
 
     assert seen == ["apify-pull"]
+
+
+async def test_maybe_sync_after_task_is_referenced_until_done(monkeypatch) -> None:
+    """`asyncio`'s event loop holds only a WEAK reference to a task returned
+    by `create_task()` -- with nothing else referencing it, the task is
+    eligible for garbage collection at any point during its
+    `await asyncio.sleep(15)` polling loop, silently cancelling the pending
+    render-sync with no error logged anywhere. `_pending_syncs` must hold a
+    strong reference until the task's own done-callback removes it."""
+    from jobscrape import config as cfg
+
+    monkeypatch.setattr(cfg, "RENDER_DATABASE_URL", "postgresql://fake/db")
+    monkeypatch.setattr(manager, "is_running", lambda stage: False)
+
+    started = []
+
+    async def fake_start(stage, **kw):
+        started.append(stage)
+        return {"run_id": 1, "stage": stage, "pid": 1}
+
+    monkeypatch.setattr(manager, "start", fake_start)
+
+    scheduler.maybe_sync_after("fetch")
+    assert len(scheduler._pending_syncs) == 1
+
+    task = next(iter(scheduler._pending_syncs))
+    await task
+
+    assert started == ["render-sync"]
+    assert scheduler._pending_syncs == set()

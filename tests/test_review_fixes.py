@@ -661,6 +661,19 @@ def test_a_no_restriction_sentinel_is_not_kept_as_an_unknown_country(raw: str) -
         (None, "Worldwide", None),
         (None, "Berlin, Germany", None),
         (None, None, None),
+        # SmartRecruiters copies Spain's province codes straight into `state`,
+        # which collide exactly with real US abbreviations — "MD" (Madrid),
+        # "CT" (Cataluña), "AR" (Aragón). An unverified `state` is not
+        # trustworthy here; the location text naming Spain outright is.
+        ("MD", "Madrid, MD, Spain", None),
+        ("CT", "Barcelona, CT, Spain", None),
+        ("AR", "Zaragoza, AR, Spain", None),
+        # A real US state is unaffected by the same guard when nothing in the
+        # text contradicts it.
+        ("MD", "Bethesda, MD, USA", "US"),
+        # Both a US and a non-US place named: the US signal still wins, same
+        # as `is_us_eligible`'s own "US mention anywhere wins" rule.
+        ("MD", "Madrid, Spain or Bethesda, MD, United States", "US"),
     ],
 )
 def test_country_is_inferred_only_from_evidence(

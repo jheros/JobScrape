@@ -10,7 +10,7 @@ import re
 from typing import Any
 
 from ..http import Fetcher, gather_limited
-from ..models import Job, annualise
+from ..models import Job, annualise, normalize_country
 from .base import BoardSource, Prefilter, shallow_refresh
 
 API = "https://{slug}.pinpointhq.com/postings.json"
@@ -162,6 +162,13 @@ class Pinpoint(BoardSource):
                     location_raw=location_raw,
                     city=loc.get("city"),
                     state=loc.get("province"),
+                    # Structured, not inferred: Pinpoint states the country
+                    # outright. Without this, a foreign board's province code
+                    # in `state` (e.g. "MD" for Madrid) had nothing to stop
+                    # `infer_country` from misreading it as a US state.
+                    country=normalize_country(
+                        loc.get("country") or loc.get("country_name")
+                    ),
                     # Native field: "remote" / "hybrid" / "on_site".
                     workplace_hint=item.get("workplace_type")
                     or item.get("workplace_type_text"),

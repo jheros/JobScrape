@@ -210,8 +210,19 @@ def sql_verdict(
     signals = sql_signal_count(posted_at, repost_count, mass_count, evergreen)
     return (
         f"CASE WHEN {signals} >= {CONVERGENCE} THEN '{LIKELY_EVERGREEN}'"
+        # `classify()`'s `age` is FLOORED to whole days (`_age_days`), and
+        # its fresh check is `age <= FRESH_WINDOW_DAYS` -- which is only
+        # equivalent to a continuous-time `elapsed <= N days` comparison at
+        # exact day boundaries. A `>= now() - interval 'N days'` bound here
+        # (elapsed <= N, continuous) disagreed with Python for every posting
+        # whose age fell strictly between N and N+1 days (e.g. 14.5 days
+        # old: Python floors to age=14, still fresh; that SQL called it
+        # stale) -- a whole day's worth of postings sat right on this
+        # boundary. `> now() - interval '(N+1) days'` (elapsed < N+1) is
+        # what floor(elapsed) <= N actually means, and it agrees with
+        # Python at every point, not just on whole-day-old fixtures.
         f" WHEN {posted_at} IS NOT NULL"
-        f"      AND {posted_at} >= now() - interval '{FRESH_WINDOW_DAYS} days'"
+        f"      AND {posted_at} > now() - interval '{FRESH_WINDOW_DAYS + 1} days'"
         f"      AND NOT COALESCE({evergreen}, false) THEN '{FRESH}'"
         f" ELSE '{STALE}' END"
     )

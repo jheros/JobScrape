@@ -151,22 +151,43 @@ WORKDAY_HOST_RE = re.compile(
 )
 
 
-#: Where a long sweep records the (collection, pattern, page) units it finished,
-#: so an interrupted run resumes instead of repeating hours of work.
+#: Where a long sweep records the (collection, pattern, page) units it finished
+#: AND the slugs harvested so far, so an interrupted run resumes instead of
+#: repeating hours of work.
+#:
+#: Both together, not just the done-set: `discover_all`'s caller only writes
+#: harvested slugs to the company registry once, after the WHOLE multi-hour,
+#: multi-collection sweep returns (see `cli.cmd_discover`). A page's slugs
+#: used to live only in an in-memory `set` that `harvest_ats`/`harvest_workday`
+#: returned at the very end — so a crash partway through left the checkpoint
+#: recording pages as "done" whose slugs were never persisted anywhere. On
+#: resume, those pages were skipped (correctly, per the checkpoint) but their
+#: slugs were never re-extracted either, since nothing re-visits a page once
+#: skipped — permanently and silently losing that page's companies. Rolling
+#: the accumulated slugs into the SAME checkpoint file, updated at the same
+#: point `done` is, means a resumed run recovers exactly what a finished page
+#: already found, not just the fact that it was visited.
 PROGRESS_PATH = config.DATA_DIR / "cc_progress.json"
 
 
-def _load_progress() -> set[str]:
+def _load_progress() -> tuple[set[str], dict[str, set[str]]]:
     try:
-        return set(json.loads(PROGRESS_PATH.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError, TypeError):
-        return set()
+        data = json.loads(PROGRESS_PATH.read_text(encoding="utf-8"))
+        done = set(data.get("done") or [])
+        results = {ats: set(slugs) for ats, slugs in (data.get("results") or {}).items()}
+        return done, results
+    except (OSError, json.JSONDecodeError, TypeError, AttributeError):
+        return set(), {}
 
 
-def _save_progress(done: set[str]) -> None:
+def _save_progress(done: set[str], results: dict[str, set[str]]) -> None:
     try:
         PROGRESS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PROGRESS_PATH.write_text(json.dumps(sorted(done)), encoding="utf-8")
+        payload = {
+            "done": sorted(done),
+            "results": {ats: sorted(slugs) for ats, slugs in results.items()},
+        }
+        PROGRESS_PATH.write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass
 
@@ -234,11 +255,18 @@ async def harvest_ats(
     pattern: re.Pattern[str],
     max_pages: int | None = None,
     done: set[str] | None = None,
+    results: dict[str, set[str]] | None = None,
 ) -> set[str]:
     """Pull every slug for one ATS host pattern from one crawl collection.
 
-    ``done`` is the resume ledger: page units already recorded there are skipped,
-    and each newly completed page is added and flushed to disk.
+    ``done`` is the resume ledger: page units already recorded there are
+    skipped. ``results`` (keyed by ``ats``, shared across the whole sweep) is
+    where a page's slugs are written AS SOON as they're extracted — same
+    point ``done`` gets the page added and both get flushed to disk together,
+    so a crash never leaves the checkpoint claiming a page is done while its
+    slugs exist only in memory. Pre-seeded with a resumed run's own prior
+    slugs, since a skipped page contributes nothing to the LOCAL accumulator
+    below otherwise.
     """
     pages = await _index_pages(fetcher, collection, url_pattern)
     if not pages:
@@ -246,7 +274,11 @@ async def harvest_ats(
     if max_pages:
         pages = min(pages, max_pages)
 
-    slugs: set[str] = set()
+    # Writing straight into `results[ats]` (rather than a fresh local set
+    # merged in by the caller afterward) is what lets a resumed run recover a
+    # skipped page's slugs and lets `_save_progress` checkpoint them alongside
+    # `done` at the same point, every page.
+    slugs = results.setdefault(ats, set()) if results is not None else set()
     skipped = 0
     for page in range(pages):
         unit = f"{collection}|{url_pattern}|{page}"
@@ -263,7 +295,7 @@ async def harvest_ats(
         slugs |= _extract(text.splitlines(), pattern)
         if done is not None:
             done.add(unit)
-            _save_progress(done)
+            _save_progress(done, results or {})
     note = f"{pages}p" + (f" ({skipped} cached)" if skipped else "")
     log.info("  %-28s %-16s %s: %d slugs", url_pattern, collection, note, len(slugs))
     return slugs
@@ -274,8 +306,18 @@ async def harvest_workday(
     collection: str,
     max_pages: int | None = None,
     done: set[str] | None = None,
+    results: dict[str, set[str]] | None = None,
 ) -> set[str]:
-    """Workday tenants: capture ``tenant|wd-number|site`` triples."""
+    """Workday tenants: capture ``tenant|wd-number|site`` triples.
+
+    ``results["workday"]`` (shared across the whole sweep, same as
+    :func:`harvest_ats`) is where each page's tenants are written directly,
+    checkpointed alongside ``done`` immediately after — extraction now runs
+    BEFORE the page is marked done, not after: it used to check the page off
+    right after the fetch but before parsing it at all, so a crash during
+    parsing left a page checkpointed "done" with none of its tenants ever
+    captured.
+    """
     url_pattern = "*.myworkdayjobs.com/*"
     pages = await _index_pages(fetcher, collection, url_pattern)
     if not pages:
@@ -283,7 +325,7 @@ async def harvest_workday(
     if max_pages:
         pages = min(pages, max_pages)
 
-    found: set[str] = set()
+    found = results.setdefault("workday", set()) if results is not None else set()
     for page in range(pages):
         unit = f"{collection}|{url_pattern}|{page}"
         if done is not None and unit in done:
@@ -294,9 +336,6 @@ async def harvest_workday(
         )
         if not text:
             continue
-        if done is not None:
-            done.add(unit)
-            _save_progress(done)
         for line in text.splitlines():
             line = line.strip()
             if not line:
@@ -314,10 +353,15 @@ async def harvest_workday(
                 continue
             if _clean(tenant) and site and len(site) < 80:
                 found.add(f"{tenant}|{wd}|{site}")
+        if done is not None:
+            done.add(unit)
+            _save_progress(done, results or {})
 
-    found = _dedupe_workday_case_variants(found)
-    log.info("  %-28s %-16s %s: %d tenants", "myworkdayjobs.com", collection, f"{pages}p", len(found))
-    return found
+    deduped = _dedupe_workday_case_variants(found)
+    if results is not None:
+        results["workday"] = deduped
+    log.info("  %-28s %-16s %s: %d tenants", "myworkdayjobs.com", collection, f"{pages}p", len(deduped))
+    return deduped
 
 
 def _dedupe_workday_case_variants(slugs: set[str]) -> set[str]:
@@ -362,9 +406,19 @@ async def discover_all(
     A full sweep is measured in hours, so completed pages are checkpointed to
     ``data/cc_progress.json`` and skipped on a later run. Pass ``resume=False``
     to force a clean re-read.
+
+    The slugs a resumed page already found are checkpointed alongside
+    ``done`` (see ``_save_progress``) and seeded into ``results`` here — a
+    page recorded as done is never re-visited, so without this its slugs
+    would otherwise only have existed in the crashed run's memory.
     """
     results: dict[str, set[str]] = {}
-    done = _load_progress() if resume else set()
+    if resume:
+        done, saved = _load_progress()
+        for ats, slugs in saved.items():
+            results.setdefault(ats, set()).update(slugs)
+    else:
+        done = set()
     if done:
         log.info("Resuming: %d index pages already harvested", len(done))
 
@@ -383,11 +437,11 @@ async def discover_all(
 
     for collection in ids:
         for url_pattern, ats, pattern in TARGETS:
-            slugs = await harvest_ats(
-                fetcher, collection, url_pattern, ats, pattern, max_pages, done
+            # Both functions write into `results` directly now (see their
+            # own docstrings) — no merge needed here, unlike before.
+            await harvest_ats(
+                fetcher, collection, url_pattern, ats, pattern, max_pages, done, results
             )
-            results.setdefault(ats, set()).update(slugs)
         if include_workday:
-            tenants = await harvest_workday(fetcher, collection, max_pages, done)
-            results.setdefault("workday", set()).update(tenants)
+            await harvest_workday(fetcher, collection, max_pages, done, results)
     return results

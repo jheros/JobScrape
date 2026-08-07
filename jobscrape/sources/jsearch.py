@@ -26,7 +26,7 @@ from typing import Any
 
 from .. import config
 from ..http import Fetcher
-from ..models import Job
+from ..models import Job, annualise
 from .base import DEFAULT_QUERIES, GlobalSource, JobBatch
 
 log = logging.getLogger("jobscrape.jsearch")
@@ -161,11 +161,14 @@ class JSearch(GlobalSource):
         is_remote = _first(item, "job_is_remote")
         publisher = _first(item, "job_publisher", "employer_name")
 
-        def _num(value: Any) -> float | None:
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
+        # `job_salary_period` ("YEAR" / "HOUR" / "DAY" / "WEEK" / "MONTH") was
+        # never read, so an hourly `job_min_salary`/`job_max_salary` was
+        # stored as if it were an annual figure. `annualise` scales it (a
+        # no-op for "YEAR") and returns `None` for a period it doesn't
+        # recognise rather than guessing.
+        period = _first(item, "job_salary_period")
+        salary_min = annualise(_first(item, "job_min_salary"), period)
+        salary_max = annualise(_first(item, "job_max_salary"), period)
 
         return Job(
             source=self.name,
@@ -186,9 +189,10 @@ class JSearch(GlobalSource):
             posted_at=_first(
                 item, "job_posted_at_datetime_utc", "job_posted_at_timestamp"
             ),
-            salary_min=_num(_first(item, "job_min_salary")),
-            salary_max=_num(_first(item, "job_max_salary")),
-            salary_currency=_first(item, "job_salary_currency"),
+            salary_min=salary_min,
+            salary_max=salary_max,
+            salary_currency=_first(item, "job_salary_currency")
+            if (salary_min is not None or salary_max is not None) else None,
             description_html=_first(item, "job_description"),
             raw=item,
         )

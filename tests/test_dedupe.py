@@ -117,6 +117,43 @@ def test_chain_compression_no_duplicate_points_at_a_duplicate() -> None:
     assert not (targets & set(assignments.keys()))
 
 
+def test_avature_counts_as_a_direct_board_not_an_aggregator() -> None:
+    """`restricted_board_sources()` (Avature) is opt-in and imported lazily,
+    but its rows are a genuine per-company board, same trust level as
+    Greenhouse or Lever once collected -- excluding it from tier 2's
+    "known board" check read an Avature row as aggregator-provenance and let
+    it be silently suppressed by another board's canonical, exactly the
+    outcome tier 2's "never merge two ATS requisitions into each other"
+    guarantee exists to prevent."""
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-gh", "role_key": "rk-shared"},
+        {"id": 2, "source": "avature", "company_slug": "acme", "posted_at": "2026-07-02",
+         "first_seen_at": "2026-07-02", "role_fingerprint": "fp-av", "role_key": "rk-shared"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows)
+    # Two DIRECT boards sharing a role_key must never merge via tier 2 --
+    # same invariant `test_two_ats_rows_never_merge_via_tier2` proves for
+    # greenhouse/lever.
+    assert assignments == {}
+    assert counts["tier2_clusters"] == 0
+
+
+def test_avature_can_still_be_the_tier2_canonical_for_a_real_aggregator() -> None:
+    """The other half: an aggregator copy of an Avature-listed role must
+    still collapse into the Avature row, the same as it would for any other
+    real ATS board."""
+    rows = [
+        {"id": 1, "source": "avature", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-av", "role_key": "rk-shared"},
+        {"id": 2, "source": "adzuna", "company_slug": "acme", "posted_at": "2026-07-10",
+         "first_seen_at": "2026-07-10", "role_fingerprint": "fp-agg", "role_key": "rk-shared"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows)
+    assert assignments == {2: 1}
+    assert counts["tier2_clusters"] == 1
+
+
 def test_rows_without_a_fingerprint_never_cluster() -> None:
     rows = [
         {"id": 1, "source": "adzuna", "company_slug": "", "posted_at": "2026-07-01",
@@ -145,9 +182,13 @@ def test_resolve_all_writes_duplicate_of_and_preserves_triage() -> None:
         assert result["collapsed"] == 1
 
         q0 = conn.execute(
-            "SELECT id, duplicate_of FROM jobs WHERE source_job_id = 'q0'"
+            "SELECT id, duplicate_of, duplicate_marked_at FROM jobs WHERE source_job_id = 'q0'"
         ).fetchone()
         assert q0["duplicate_of"] is not None
+        # `render_sync` reads this to notice a row just became suppressed —
+        # without it, a row already synced to Render before this clustering
+        # ran would never get its stale Render copy deleted.
+        assert q0["duplicate_marked_at"] is not None
 
         status = conn.execute(
             "SELECT status, notes FROM job_status WHERE source_job_id = 'q0'"
@@ -156,9 +197,13 @@ def test_resolve_all_writes_duplicate_of_and_preserves_triage() -> None:
 
         db.clear_duplicate(conn, q0["id"])
         restored = conn.execute(
-            "SELECT duplicate_of FROM jobs WHERE source_job_id = 'q0'"
+            "SELECT duplicate_of, duplicate_marked_at FROM jobs WHERE source_job_id = 'q0'"
         ).fetchone()
         assert restored["duplicate_of"] is None
+        # Bumped again on the reversal too -- `render_sync` needs to notice
+        # this transition just as much as the original suppression, so the
+        # row gets re-published instead of staying excluded.
+        assert restored["duplicate_marked_at"] is not None
 
 
 def test_resolve_all_dry_run_writes_nothing() -> None:

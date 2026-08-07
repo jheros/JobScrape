@@ -86,6 +86,19 @@ _NOT_A_SLUG = frozenset({
 _SLUG_CLEAN = re.compile(r"[^a-z0-9]+")
 
 
+def _host_matches(host: str, suffix: str) -> bool:
+    """Whether ``host`` is ``suffix`` itself or a genuine subdomain of it.
+
+    A plain ``host.endswith(suffix)`` has no domain-boundary check: a host
+    like ``notgreenhouse.io`` or ``mycsod.com`` ends with ``greenhouse.io``/
+    ``csod.com`` as a bare string without being a subdomain of either at
+    all, and would wrongly resolve to that ATS — precisely the
+    "wrong slug clusters two unrelated companies' postings together" outcome
+    this module's own docstring calls out as worse than no slug at all.
+    """
+    return host == suffix or host.endswith(f".{suffix}")
+
+
 def board_slug(url: str | None) -> tuple[str, str] | None:
     """``(ats, slug)`` for an apply URL that points at a known board.
 
@@ -104,14 +117,14 @@ def board_slug(url: str | None) -> tuple[str, str] | None:
         return None
 
     for suffix, ats in _HOST_SLUG_SUFFIXES:
-        if host.endswith(suffix):
+        if _host_matches(host, suffix):
             label = host[: -len(suffix)].strip(".").split(".")[0]
             if label and label not in _NOT_A_SLUG:
                 return ats, label
             return None
 
     for suffix, ats in _PATH_SLUG_HOSTS:
-        if host.endswith(suffix):
+        if _host_matches(host, suffix):
             parts = [p for p in (parsed.path or "").split("/") if p]
             # Greenhouse embeds an "embed/job_board?for=slug" form as well as
             # the plain path one; the query carries the slug there.

@@ -309,12 +309,26 @@ def test_a_board_url_yields_its_slug(url: str, expected: tuple[str, str]) -> Non
         "https://www.myworkdayjobs.com/careers",     # no tenant label
         "https://jobs.lever.co/",                    # no slug in the path
         "not a url", "", None,
+        # A bare string suffix match with no domain boundary would read
+        # these as Greenhouse/csod hosts -- they merely end with the same
+        # characters and are unrelated domains.
+        "https://notgreenhouse.io/careers/engineer",
+        "https://mycsod.com/careers/engineer",
     ],
 )
 def test_a_non_board_url_yields_nothing(url: str | None) -> None:
     """Returning None is the honest answer; a guessed slug would cluster two
     unrelated employers' postings together."""
     assert ats_link.board_slug(url) is None
+
+
+def test_a_suffix_lookalike_host_is_not_mistaken_for_a_subdomain() -> None:
+    """`host.endswith(suffix)` with no domain-boundary check would read
+    `evil-lever.co` as a Lever subdomain -- it merely ends with the same
+    string, and is not `*.lever.co` at all."""
+    assert ats_link.board_slug("https://evil-lever.co/acme/apply") is None
+    # The genuine subdomain form must still resolve correctly.
+    assert ats_link.board_slug("https://jobs.lever.co/acme/9f2c") == ("lever", "acme")
 
 
 def test_slug_normalisation_collapses_punctuation() -> None:
@@ -881,17 +895,12 @@ def test_apify_pull_forwards_the_role_and_workplace_flags(monkeypatch, _isolated
 
     captured: dict[str, Any] = {}
 
-    async def fake_ingest_and_record(conn, run_id, *, command, **kw):
+    async def fake_ingest_run(fetcher, conn, run_id, **kw):
         captured.update(kw)
-
-        class _Result:
-            error = None
-            funnel = None
-
-        return _Result()
+        return _FakeIngestResult()
 
     monkeypatch.setattr(
-        "jobscrape.sources.apify.ingest.ingest_and_record", fake_ingest_and_record
+        "jobscrape.sources.apify.ingest.ingest_run", fake_ingest_run
     )
     from jobscrape import config as cfg
     monkeypatch.setattr(cfg, "APIFY_TOKEN", "fake-token-for-this-test")
@@ -903,3 +912,66 @@ def test_apify_pull_forwards_the_role_and_workplace_flags(monkeypatch, _isolated
     assert captured["software_only"] is False
     assert captured["us_only"] is False
     assert captured["remote_only"] is False
+
+
+class _FakeIngestResult:
+    """Stands in for `ingest.IngestResult` in tests that stub `ingest_run` --
+    `cmd_apify_pull` reads `.error`/`.funnel`/`.actor`/`.summary()`/
+    `.as_dict()` plus the four count fields to log and aggregate each run."""
+
+    error = None
+    funnel = None
+    actor = "test-actor"
+    items = mapped = kept = inserted = updated = 0
+
+    def summary(self) -> str:
+        return "fake result"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"run_id": "fake"}
+
+
+# --- multi-run bookkeeping: one `runs` row per invocation, not per run_id --
+
+
+def test_apify_pull_writes_one_run_row_for_multiple_run_ids(
+    monkeypatch, _isolated_db,
+) -> None:
+    """A dashboard-launched pull covering several Apify runs used to overwrite
+    its own `runs` row's `stats` on every iteration -- only the LAST run_id's
+    counts survived in the row, the rest silently gone even though each one
+    was individually logged to `run_events`. One combined `finish_run` at the
+    end fixes that regardless of how many run_ids this invocation covers."""
+    from jobscrape import cli
+
+    results = [
+        _FakeIngestResult(), _FakeIngestResult(), _FakeIngestResult(),
+    ]
+    for i, r in enumerate(results):
+        r.inserted = i + 1  # 1, 2, 3 -- distinguishable per call
+
+    calls = iter(results)
+
+    async def fake_ingest_run(fetcher, conn, run_id, **kw):
+        return next(calls)
+
+    monkeypatch.setattr(
+        "jobscrape.sources.apify.ingest.ingest_run", fake_ingest_run
+    )
+    from jobscrape import config as cfg
+    monkeypatch.setattr(cfg, "APIFY_TOKEN", "fake-token-for-this-test")
+
+    rc = asyncio.run(cli.cmd_apify_pull(_pull_args(run=["R1", "R2", "R3"])))
+    assert rc == 0
+
+    from jobscrape.dashboard.analytics import _stats_dict
+
+    conn = _isolated_db
+    rows = conn.execute("SELECT stats FROM runs WHERE command = 'apify-pull'").fetchall()
+    assert len(rows) == 1, "one invocation, one runs row -- not one per run_id"
+    stats = _stats_dict(rows[0]["stats"])
+    assert stats["inserted"] == 1 + 2 + 3, "all three runs' counts must survive, not just the last"
+    assert len(stats["runs"]) == 3
+
+    logged = conn.execute("SELECT count(*) AS n FROM run_events").fetchone()["n"]
+    assert logged == 3, "each run_id's own log_event must still be recorded individually"

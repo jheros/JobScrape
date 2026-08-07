@@ -13,7 +13,7 @@ from datetime import date, datetime
 from typing import Any, Iterable
 
 from . import config, seniority
-from .models import Job, infer_country, slugify
+from .models import Job, clean_place, infer_country, slugify
 
 # --- Software role classification ----------------------------------------
 
@@ -1231,11 +1231,22 @@ def _city_before(text: str, cut: int) -> str | None:
     Remote" leaves "09507" (an internal requisition code), which
     `_CITY_NOISE_RE` doesn't catch since it only strips specific words, not
     arbitrary numbers. A number is never a city name either way.
+
+    Finally run through `clean_place` — `_CITY_NOISE_RE` only strips
+    workplace-word decoration (remote/hybrid/onsite/us/usa/...), not the rest
+    of `_NOT_A_PLACE` ("TBD", "N/A", "unknown", ...). "TBD, NY" left the
+    leading chunk as the literal word "TBD", which passed the letters check
+    above and would otherwise be stored as if it were a real city — the same
+    guard `Job.__post_init__` already applies to whatever an adapter sets
+    directly, applied here too so this function keeps its own documented
+    promise ("a bare 'Remote' or an unlisted city yields nothing rather than
+    a guess") for every sentinel that guard knows about, not just the ones
+    `_CITY_NOISE_RE` happens to strip.
     """
     candidate = _CITY_NOISE_RE.sub("", text[:cut].strip().strip(",")).strip(" ,-–—")
     if not candidate or not any(ch.isalpha() for ch in candidate):
         return None
-    return candidate
+    return clean_place(candidate)
 
 
 def parse_us_location(

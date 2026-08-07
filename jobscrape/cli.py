@@ -549,6 +549,7 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
                 conn,
                 allow_roles=_allowed_roles(args),
                 remote_only=not getattr(args, "all_workplaces", False),
+                software_only=not getattr(args, "all_roles", False),
             )
             if purge_summary["deleted"]:
                 log.info(
@@ -652,7 +653,8 @@ def cmd_migrate_from_sqlite(args: argparse.Namespace) -> int:
 
 
 def _purge_archive(
-    conn: db.Connection, *, allow_roles: set[str], remote_only: bool, dry_run: bool = False,
+    conn: db.Connection, *, allow_roles: set[str], remote_only: bool,
+    software_only: bool = True, dry_run: bool = False,
 ) -> dict[str, Any]:
     """Re-apply the current role/company/workplace rules to stored postings
     and delete the ones that no longer pass. Shared by `cmd_purge` (explicit,
@@ -669,6 +671,14 @@ def _purge_archive(
     it. Region and date are per-RUN parameters, so re-applying those here
     would delete rows a past run legitimately kept for a window you asked for
     at the time.
+
+    `software_only` is the one exception to "always archive-wide": `cmd_fetch`
+    passes `not args.all_roles` through here, because otherwise `--all-roles`
+    would be self-defeating on its own run — the initial `apply_filters_counted`
+    call keeps a non-software posting the flag asked to keep, and this
+    function, called seconds later by that same `cmd_fetch` invocation, would
+    turn straight around and delete it again, since it had no way to know the
+    role check should be skipped for a role the very same run was told to keep.
 
     Returns `{"total", "doomed", "by_reason", "deleted", "released"}` —
     `"doomed"` is the full list of rows that failed, so a caller that wants a
@@ -691,7 +701,7 @@ def _purge_archive(
         if (apply_filters_mod.is_blocked_company(row["company_slug"])
                 or apply_filters_mod.is_blocked_company(row["company"])):
             return f"blocked employer ({row['company']})"
-        if not apply_filters_mod.is_software_role(
+        if software_only and not apply_filters_mod.is_software_role(
             row["title"], row["department"], allow_roles=allow_roles,
         ):
             # The category, so the report says WHICH preference removed it.
@@ -1011,22 +1021,66 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
         log.error("Nothing to ingest — no runs matched.")
         return 1
 
-    failures = 0
+    # One `runs` row for this whole invocation, not one per Apify run_id.
+    # `ingest_and_record` (used by the webhook, which only ever handles one
+    # run per call) does its own start/finish bookkeeping keyed off
+    # `JOBSCRAPE_RUN_ID` when the dashboard launched this — reusing THAT
+    # per-run_id, inside a loop that can process several, meant every
+    # `finish_run` after the first overwrote the row's `stats` with only its
+    # own results: a dashboard-launched pull covering N Apify runs ended up
+    # showing just the LAST one's counts, the rest silently gone from the
+    # row even though `run_events` (insert-only) still had every one of
+    # them logged. Calling the unrecorded `ingest_run` core directly and
+    # doing one combined start/finish here fixes that regardless of how
+    # many run_ids this invocation covers, dashboard-launched or not.
+    inherited = os.environ.get("JOBSCRAPE_RUN_ID")
+    results: list[Any] = []
     with db.session(args.db) as conn:
-        for run_id in run_ids:
-            result = await ingest_module.ingest_and_record(
-                conn, run_id, command="apify-pull",
-                max_items=args.max_results,
-                allow_roles=_allowed_roles(args),
-                software_only=not args.all_roles,
-                us_only=not args.worldwide,
-                remote_only=not getattr(args, "all_workplaces", False),
-                since=since, until=until,
-            )
-            if result.error:
-                failures += 1
-            if result.funnel:
-                log.info("   funnel: %s", result.funnel)
+        db_run = int(inherited) if inherited else db.start_run(
+            conn, command="apify-pull", stage="apify")
+        try:
+            async with Fetcher() as fetcher:
+                for run_id in run_ids:
+                    result = await ingest_module.ingest_run(
+                        fetcher, conn, run_id,
+                        max_items=args.max_results,
+                        allow_roles=_allowed_roles(args),
+                        software_only=not args.all_roles,
+                        us_only=not args.worldwide,
+                        remote_only=not getattr(args, "all_workplaces", False),
+                        since=since, until=until,
+                    )
+                    results.append(result)
+                    db.log_event(
+                        conn, db_run, result.summary(), stage="apify",
+                        source=result.actor or "apify",
+                        level="error" if result.error else "info",
+                        counters=result.as_dict(),
+                    )
+                    if result.funnel:
+                        log.info("   funnel: %s", result.funnel)
+        except Exception as exc:                  # noqa: BLE001 - reported, then re-raised
+            conn.rollback()
+            db.log_event(conn, db_run, f"apify-pull failed: {exc}",
+                         stage="apify", source="apify", level="error")
+            db.finish_run(conn, db_run, status="error", error=str(exc))
+            raise
+
+        failures = sum(1 for r in results if r.error)
+        combined = {
+            "runs": [r.as_dict() for r in results],
+            "items": sum(r.items for r in results),
+            "mapped": sum(r.mapped for r in results),
+            "kept": sum(r.kept for r in results),
+            "inserted": sum(r.inserted for r in results),
+            "updated": sum(r.updated for r in results),
+        }
+        all_failed = failures and failures == len(results)
+        db.finish_run(
+            conn, db_run, status="error" if all_failed else "ok",
+            stats_payload=combined,
+            error=f"{failures}/{len(results)} run(s) failed" if failures else None,
+        )
 
     if failures and failures == len(run_ids):
         return 1
@@ -1075,7 +1129,16 @@ def cmd_jobright_ingest(args: argparse.Namespace) -> int:
         )
     if result.funnel:
         log.info("   funnel: %s", result.funnel)
-    return 1 if result.error else 0
+    if result.error:
+        return 1
+    # `jobright-fetch` and `apify-pull` both chain this after ingesting —
+    # without it, a hand-ingested batch (the recovery/backfill path this
+    # command exists for) never gets deduped against the rest of the
+    # archive, unlike every other ingestion route.
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+    return cmd_stats(_step_args("stats", [], args.db))
 
 
 def cmd_jobright_fetch(args: argparse.Namespace) -> int:
@@ -1334,16 +1397,37 @@ async def cmd_run(args: argparse.Namespace) -> int:
             "SELECT COUNT(*) c FROM companies WHERE status='unchecked'"
         ).fetchone()["c"]
     if unchecked and not args.skip_validate:
-        log.info("Validating %d unchecked boards...", unchecked)
-        # `run`'s --limit belongs to export; validation has its own cap so the
-        # two cannot interfere.
-        validate_args = argparse.Namespace(**vars(args))
-        validate_args.limit = args.validate_limit
         # Don't probe boards this run will never fetch from.
+        #
+        # `scoped or None` used to fall back to validating EVERY ATS whenever
+        # `--sources` named only global/aggregator sources (adzuna, usajobs,
+        # ...) with no board source at all — `cmd_validate` itself treats an
+        # empty `--ats` list the same as unset (`args.ats or
+        # list(BOARD_SOURCES)`), so passing `None` OR `[]` through both landed
+        # on "validate everything". A run scoped to global sources alone
+        # fetches no per-company ATS board whatsoever, so that full sweep was
+        # pure waste — skip validation outright in that case instead.
+        scoped_ats = None
+        skip_reason = None
         if not args.ats and args.sources:
-            scoped = [a for a in BOARD_SOURCES if a in set(args.sources)]
-            validate_args.ats = scoped or None
-        await cmd_validate(validate_args)
+            scoped_ats = [a for a in BOARD_SOURCES if a in set(args.sources)]
+            if not scoped_ats:
+                skip_reason = (
+                    "--sources names no board/ATS source (global sources "
+                    "fetch no per-company board) — skipping validation"
+                )
+
+        if skip_reason:
+            log.info(skip_reason)
+        else:
+            log.info("Validating %d unchecked boards...", unchecked)
+            # `run`'s --limit belongs to export; validation has its own cap
+            # so the two cannot interfere.
+            validate_args = argparse.Namespace(**vars(args))
+            validate_args.limit = args.validate_limit
+            if scoped_ats:
+                validate_args.ats = scoped_ats
+            await cmd_validate(validate_args)
 
     rc = await cmd_fetch(args)
     if rc:

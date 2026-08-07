@@ -7,7 +7,6 @@ URL path rather than a header.
 from __future__ import annotations
 
 import logging
-import re
 from datetime import date
 
 from .. import config
@@ -23,8 +22,6 @@ API = "https://jooble.org/api/{key}"
 #: JOOBLE_MAX_PAGES; this runs once per search term, so raising it multiplies
 #: request count across the whole term list.
 MAX_PAGES = config.JOOBLE_MAX_PAGES
-
-_SALARY_RE = re.compile(r"([\d,]+)\s*(?:-|–|to)\s*([\d,]+)")
 
 
 class Jooble(GlobalSource):
@@ -86,14 +83,6 @@ class Jooble(GlobalSource):
                     if not job_id or job_id in seen:
                         continue
                     seen.add(job_id)
-                    lo = hi = None
-                    match = _SALARY_RE.search(str(item.get("salary") or ""))
-                    if match:
-                        try:
-                            lo = float(match.group(1).replace(",", ""))
-                            hi = float(match.group(2).replace(",", ""))
-                        except ValueError:
-                            lo = hi = None
                     jobs.append(
                         Job(
                             source=self.name,
@@ -106,8 +95,19 @@ class Jooble(GlobalSource):
                             country="US",
                             employment_type=item.get("type"),
                             posted_at=item.get("updated"),
-                            salary_min=lo,
-                            salary_max=hi,
+                            # No `salary_min`/`salary_max` here: Jooble's
+                            # `salary` is free prose ("$25 - $35 per hour",
+                            # "$90,000 - $120,000 a year") with no separate
+                            # period field. A hand-rolled `[\d,]+\s*-\s*[\d,]+`
+                            # regex used to pull the two numbers out and store
+                            # them verbatim regardless of period, filing an
+                            # hourly rate as if it were an annual salary.
+                            # `Job.__post_init__` already runs `salary_raw`
+                            # through `models.parse_salary` when `salary_min`
+                            # is left blank, which both extracts the range AND
+                            # annualises it correctly — the same parser every
+                            # HTML-sourced board already relies on for exactly
+                            # this shape of text.
                             salary_raw=item.get("salary") or None,
                             description_html=item.get("snippet") or None,
                             raw=item,

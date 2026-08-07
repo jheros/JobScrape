@@ -40,6 +40,12 @@ def _isolated_db(monkeypatch):
     shared.execute(db.SCHEMA)
     for statement in filter(None, (s.strip() for s in db._strip_sql_comments(db.INDEXES).split(";"))):
         shared.execute(statement)
+    # `jobscrape_test` is a persistent database, not recreated per run — a
+    # column added to `SCHEMA` after that database's `jobs` table already
+    # existed needs the same ALTER `ensure_schema` runs against a real
+    # deployment. This fixture applies `SCHEMA`/`INDEXES` directly rather
+    # than going through `ensure_schema`, so it has to call this too.
+    db._migrate(shared)
 
     monkeypatch.setattr(shared, "commit", lambda: None)
     monkeypatch.setattr(shared, "close", lambda: None)

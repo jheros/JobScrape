@@ -28,6 +28,17 @@ SEEKER_TITLE = re.compile(r"wants?\s+to\s+be\s+hired", re.I)
 _TITLE_RE = re.compile(r"^\s*([^|\n]{3,120}?)\s*[|｜]\s*(.+)$")
 _URL_RE = re.compile(r"https?://[^\s<>\"')]+")
 
+#: A US state code (real ones are always uppercase — "NY", "CA") or a
+#: workplace word. `re.search(..., re.I)` on `[A-Z]{2}\b|remote|onsite|hybrid`
+#: used to apply case-insensitivity to the WHOLE pattern, including the state
+#: code alternative — turning "match an uppercase two-letter code" into
+#: "match any two-letter word", which fires on ordinary lowercase words like
+#: "in", "to", "on" or "is" and picks the wrong `parts[1:]` entry as the
+#: location. The `(?i:...)` group scopes case-insensitivity to just the
+#: workplace words, so the state-code alternative stays case-sensitive without
+#: a second, separately-run pattern.
+_LOCATION_HINT = re.compile(r"[A-Z]{2}\b|(?i:remote|onsite|hybrid)")
+
 # Comments often contain several links — a blog post, the company home page,
 # and the actual application link. Prefer URLs that clearly point at a job.
 _JOB_URL_HINT = re.compile(
@@ -126,7 +137,7 @@ class HackerNews(GlobalSource):
         parts = [p.strip() for p in remainder.split("|") if p.strip()]
         title = parts[0] if parts else first_line[:120]
         location = next(
-            (p for p in parts[1:] if re.search(r"[A-Z]{2}\b|remote|onsite|hybrid", p, re.I)),
+            (p for p in parts[1:] if _LOCATION_HINT.search(p)),
             None,
         )
 

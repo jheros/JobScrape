@@ -26,7 +26,22 @@ from collections import defaultdict
 from typing import Any, Iterable
 
 from . import db
-from .sources import BOARD_SOURCES
+from .sources import BOARD_SOURCES, restricted_board_sources
+
+
+def _known_board_sources() -> frozenset[str]:
+    """ATS names tier 2 must trust as "a direct board", not an aggregator.
+
+    `BOARD_SOURCES` alone excludes `restricted_board_sources()` (Avature) --
+    that registry is opt-in and imported lazily so a breakage there can never
+    affect a normal run, but it is still a genuine per-company board, same
+    trust level as Greenhouse or Lever once collected. Tier 2's entire safety
+    guarantee is "never merge two ATS requisitions into each other" — missing
+    Avature here read its rows as aggregator-provenance instead, so an
+    Avature posting could be silently suppressed by another board's
+    canonical, exactly the outcome that guarantee exists to prevent.
+    """
+    return frozenset(BOARD_SOURCES) | frozenset(restricted_board_sources())
 
 log = logging.getLogger("jobscrape.dedupe")
 
@@ -129,9 +144,10 @@ def compute_clusters(rows: list[dict[str, Any]]) -> tuple[dict[int, int], dict[s
         if key:
             by_key[(_slug_key(r.get("company_slug")), key)].append(r)
 
+    known_boards = _known_board_sources()
     for group in by_key.values():
-        ats_rows = [r for r in group if r["source"] in BOARD_SOURCES]
-        agg_rows = [r for r in group if r["source"] not in BOARD_SOURCES]
+        ats_rows = [r for r in group if r["source"] in known_boards]
+        agg_rows = [r for r in group if r["source"] not in known_boards]
         if not ats_rows or not agg_rows:
             continue
         canon = _canonical(ats_rows)
@@ -173,9 +189,16 @@ def _compress_chains(assignments: dict[int, int]) -> dict[int, int]:
 def _apply(conn: db.Connection, rows: list[dict[str, Any]], *, dry_run: bool) -> dict[str, Any]:
     assignments, counts = compute_clusters(rows)
     if not dry_run and assignments:
+        # `duplicate_marked_at` records the transition, not just the current
+        # value -- it's what lets `render_sync` notice a row just became
+        # suppressed. `last_seen_at`/`closed_at` don't change here, so
+        # without this a row already synced to Render before this clustering
+        # ran would stay there forever: `duplicate_of IS NOT NULL` excludes
+        # it from every later render-sync pass's "what changed" query.
+        now = db.now_iso()
         conn.executemany(
-            "UPDATE jobs SET duplicate_of = ? WHERE id = ?",
-            [(canon_id, dup_id) for dup_id, canon_id in assignments.items()],
+            "UPDATE jobs SET duplicate_of = ?, duplicate_marked_at = ? WHERE id = ?",
+            [(canon_id, now, dup_id) for dup_id, canon_id in assignments.items()],
         )
         conn.commit()
     return {"candidates": len(rows), "collapsed": len(assignments), **counts}

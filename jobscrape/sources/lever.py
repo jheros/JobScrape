@@ -14,6 +14,16 @@ from .base import BoardSource
 
 API = "https://api.lever.co/v0/postings/{slug}?mode=json"
 
+#: Lever's own vocabulary for `workplaceType` is `remote` / `hybrid` / `onsite`
+#: / `unspecified` — the last one means "not stated", not "confirmed onsite".
+#: `workplace == "remote" if workplace else None` read `unspecified` as a
+#: truthy string and set `is_remote=False`, which fed straight into
+#: `classify_workplace`'s last-resort tier ("an explicit False flag is still
+#: evidence") and filed the posting as onsite -- which `keeps_workplace`
+#: drops outright. Only the three real answers get a boolean; `unspecified`
+#: falls through to `None`, same as no field at all.
+_REMOTE_BY_WORKPLACE_TYPE = {"remote": True, "hybrid": False, "onsite": False}
+
 
 def _full_description(item: dict[str, Any]) -> tuple[str, str]:
     """Reassemble Lever's split description into complete HTML and text.
@@ -77,7 +87,7 @@ class Lever(BoardSource):
                     apply_url=item.get("applyUrl") or item.get("hostedUrl"),
                     location_raw=location,
                     country=item.get("country"),
-                    is_remote=workplace == "remote" if workplace else None,
+                    is_remote=_REMOTE_BY_WORKPLACE_TYPE.get(workplace),
                     # Lever states this outright: remote / hybrid / on-site.
                     workplace_hint=item.get("workplaceType"),
                     employment_type=categories.get("commitment"),

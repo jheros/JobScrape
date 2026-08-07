@@ -262,6 +262,20 @@ async def test_paycom_annual_pay_is_left_alone() -> None:
 
 
 @pytest.mark.asyncio
+async def test_paycom_known_posting_sends_blank_not_the_bare_token() -> None:
+    """`hiringOrganization`/`clientName` only ever exist on the per-posting
+    DETAIL call, which an already-known posting skips entirely (no `gets`
+    queued here — a detail fetch would raise on the empty queue). Falling
+    back to the opaque 32-hex portal token used to send that as if it were
+    a real update on every repeat sweep, overwriting the real captured
+    name -- `""` instead lets `db.upsert_jobs`'s NULLIF guard preserve it."""
+    fetcher = FakeFetcher(texts=[_paycom_page()], posts=[_previews(1)])
+    jobs = await Paycom().fetch_board(fetcher, TOKEN, known_ids={f"{TOKEN}:100"})
+    assert jobs is not None and len(jobs) == 1
+    assert jobs[0].company == ""
+
+
+@pytest.mark.asyncio
 async def test_paycom_an_unnamed_period_is_settled_by_magnitude() -> None:
     """Some tenants write just "Salary". The two populations don't overlap."""
     annual = FakeFetcher(texts=[_paycom_page()], posts=[_previews(1)],

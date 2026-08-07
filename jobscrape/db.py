@@ -101,6 +101,15 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- NULL = canonical. Points at the row this one duplicates; suppressed rows
     -- keep their data and their job_status so a mis-cluster is reversible.
     duplicate_of      BIGINT REFERENCES jobs(id),
+    -- When `duplicate_of` last changed, either direction (set by dedupe.py's
+    -- `_apply`, cleared by `clear_duplicate`/`delete_jobs`'s release step).
+    -- NULL for a row that has never had a `duplicate_of` transition. This is
+    -- what lets `render_sync` notice a row just became suppressed (or just
+    -- stopped being) — `last_seen_at`/`closed_at` alone don't change on
+    -- either transition, so without this a row that turned into a duplicate
+    -- after already being synced to Render stayed there forever, an orphaned
+    -- copy `duplicate_of IS NULL` filtered out of every later sync pass.
+    duplicate_marked_at TIMESTAMPTZ,
     UNIQUE (source, source_job_id)
 );
 
@@ -400,12 +409,21 @@ def _get_engine(database_url: str) -> Engine:
     return engine
 
 
+#: Columns `_schema_is_current` must check for beyond `JOB_COLUMNS` — that
+#: list is specifically the `Job`-dataclass-derived columns `upsert_jobs`
+#: writes, not the whole `jobs` table, so a column added only for bookkeeping
+#: (never part of a `Job`) needs its own entry here or a deployed database
+#: missing it would never trip the "add this column" branch below.
+_MIGRATED_COLUMNS = {"duplicate_marked_at"}
+
+
 def _migrate(conn: Connection) -> None:
     # Postgres backfill of role_fingerprint/role_key for rows that predate
     # dedup is handled by `python -m jobscrape dedupe --backfill`, not here —
     # unlike the SQLite ALTER-COLUMN hook this replaces, adding a column is no
     # longer entangled with populating it.
-    pass
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_marked_at TIMESTAMPTZ")
+    conn.commit()
 
 
 def _strip_sql_comments(script: str) -> str:
@@ -469,7 +487,8 @@ def _schema_is_current(conn: Connection) -> bool:
         "SELECT column_name FROM information_schema.columns "
         "WHERE table_schema = current_schema() AND table_name = 'jobs'"
     )}
-    return set(JOB_COLUMNS).issubset(have) and int(row["n_idx"]) >= _EXPECTED_INDEX_COUNT
+    required = set(JOB_COLUMNS) | _MIGRATED_COLUMNS
+    return required.issubset(have) and int(row["n_idx"]) >= _EXPECTED_INDEX_COUNT
 
 
 #: How many indexes `INDEXES` creates. Recounted rather than hard-coded, so
@@ -560,7 +579,19 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
                 # every row on the very next sweep of its board. It describes
                 # the employer, not the opening, so a stale value cannot be
                 # wrong in the way a stale salary could.
-                "industry"}
+                "industry",
+                # Rippling/Paycom only carry these on the per-posting DETAIL
+                # call, same as description/salary above — a shallow refresh
+                # of an already-known posting fetches no detail at all, so an
+                # unpreserved assignment wiped `employment_type`/`country`
+                # back to NULL on every second-or-later sweep.
+                "employment_type", "country",
+                # iCIMS/Jobvite have no separate listing payload at all —
+                # every field comes from the per-posting schema.org block,
+                # which is unavailable (`None`) for an already-known posting.
+                # Same failure as the two lines above, just three more
+                # fields wide.
+                "location_raw", "department", "is_remote"}
     #: Columns where a *value* means "I could not tell", so it must be treated
     #: like NULL rather than like an answer.
     #:
@@ -573,10 +604,23 @@ def upsert_jobs(conn: Connection, jobs: Iterable[Job]) -> tuple[int, int]:
     #: `unknown`, and migration 0006 had already fixed those same rows once
     #: before a later sweep ate them again.
     #:
+    #: `company` is never NULL — it's a required field, so an adapter with no
+    #: real company name for this pass sends `""` rather than `None` — but the
+    #: failure mode is identical: Rippling/JazzHR/Paycom only know the real
+    #: company from a per-posting DETAIL call, so a shallow refresh of an
+    #: already-known posting (no detail fetched) sent `""`, and an unpreserved
+    #: assignment overwrote a real captured name with blank/a bare slug on
+    #: every second-or-later sweep — the same class of "second sweep destroys
+    #: the archive" bug this whole preserve/NULLIF mechanism exists to prevent.
+    #:
     #: Same class of bug as `evergreen_text`, `scam_signals` and `skills`, each of
     #: which carries a guard further down this statement. This one is expressed
     #: as NULLIF because the sentinel is a value, not a NULL.
-    unknown_is_not_an_answer = {"workplace_type": "unknown"}
+    #: `title`, like `company` above, is required and never NULL — iCIMS/
+    #: Jobvite send `""` for an already-known posting for the same reason
+    #: `company` does, and an unpreserved assignment would blank a real
+    #: title on every second-or-later sweep the same way.
+    unknown_is_not_an_answer = {"workplace_type": "unknown", "company": "", "title": ""}
     def _assign(c: str) -> str:
         if c in preserve:
             return f"{c}=COALESCE(excluded.{c}, jobs.{c})"
@@ -720,10 +764,13 @@ def delete_jobs(conn: Connection, keys: list[tuple[str, str]]) -> tuple[int, int
         for source, job_id in batch:
             params.extend([source, job_id])
 
+        # `duplicate_marked_at` records the transition, the same reason
+        # `clear_duplicate` bumps it -- a released row needs to be re-synced
+        # to Render, not left excluded as if it were still suppressed.
         released += conn.execute(
-            f"UPDATE jobs SET duplicate_of = NULL WHERE duplicate_of IN "
+            f"UPDATE jobs SET duplicate_of = NULL, duplicate_marked_at = ? WHERE duplicate_of IN "
             f"(SELECT id FROM jobs WHERE (source, source_job_id) IN ({placeholders}))",
-            list(params),
+            [now_iso(), *params],
         ).rowcount
         deleted += conn.execute(
             f"DELETE FROM jobs WHERE (source, source_job_id) IN ({placeholders})",
@@ -1189,9 +1236,18 @@ def mark_board_closures(
 ) -> int:
     """Close postings absent from a **successful** fetch, after a grace period.
 
-    The caller must only invoke this when the fetch genuinely succeeded. A
-    failed or partial fetch returns no ids, and calling this on that basis would
-    mark an entire company's jobs closed because of one network error.
+    The caller must only invoke this when the fetch genuinely succeeded — an
+    empty ``seen_ids`` is trusted at face value as "this board has zero
+    postings now", not treated as a sign the fetch itself failed. A failed or
+    partial fetch must never reach here at all; that is the caller's job to
+    filter out before calling (see ``cli.py``'s ``jobs is None``/
+    ``is_complete`` checks upstream of both call sites), not something this
+    function can infer from ``seen_ids`` alone. It used to: an earlier
+    version returned early on an empty ``seen_ids``, treating "the board
+    answered with nothing" as indistinguishable from "the fetch failed" —
+    which meant a board that had genuinely gone to zero (the employer closed
+    every requisition at once) could never actually close here, silently
+    forever.
 
     Closure is not immediate: a posting must have been unseen for
     ``config.CLOSURE_GRACE_HOURS`` (default 48h) before it is marked closed.
@@ -1207,8 +1263,6 @@ def mark_board_closures(
     adzuna or jooble rows — scoping on nullness there would close almost
     nothing.
     """
-    if not seen_ids:
-        return 0
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=config.CLOSURE_GRACE_HOURS)).isoformat()
     slug_clause = "company_slug = ?" if company_slug is not None else "1=1"
     slug_param = [company_slug] if company_slug is not None else []
@@ -1316,7 +1370,14 @@ def record_liveness(conn: Connection, job_id: int, strikes: int, close: bool) ->
 
 def clear_duplicate(conn: Connection, job_id: int) -> None:
     """Reverse a mis-cluster: the row returns to the queue with its triage intact."""
-    conn.execute("UPDATE jobs SET duplicate_of = NULL WHERE id = ?", (job_id,))
+    # `duplicate_marked_at` records the transition (not just the current
+    # value) so `render_sync` notices this row should be re-published —
+    # it was excluded from Render while suppressed, and without this bump
+    # nothing signals that it needs to go back.
+    conn.execute(
+        "UPDATE jobs SET duplicate_of = NULL, duplicate_marked_at = ? WHERE id = ?",
+        (now_iso(), job_id),
+    )
     conn.commit()
 
 

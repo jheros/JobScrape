@@ -358,17 +358,25 @@ class Paycom(BoardSource):
             body = detail.get("jobDescription") or google.get("description") \
                 or item.get("description")
             remote = str(item.get("remoteType") or detail.get("remoteType") or "")
+            real_company = (google.get("hiringOrganization") or {}).get("name") \
+                or detail.get("clientName")
+            # The portal token is opaque, so without a hiringOrganization the
+            # company would be a 32-hex string. Falling back to the token
+            # keeps a brand-new row addressable; the name usually arrives
+            # from the tenant list at import time. But an already-known
+            # posting fetches no detail at all (`detail`/`google` are `{}`),
+            # so this fallback used to get sent as if it were fresh data on
+            # every repeat sweep, overwriting a real captured name with the
+            # token — only applied here when there's no prior row to corrupt.
+            company = str(real_company) if real_company else (
+                "" if f"{token}:{job_id}" in known else token
+            )
             job = Job(
                 source=self.name,
                 source_job_id=f"{token}:{job_id}",
                 title=(item.get("jobTitle") or detail.get("jobTitle")
                        or google.get("title") or ""),
-                # The portal token is opaque, so without a hiringOrganization
-                # the company would be a 32-hex string. Falling back to the
-                # token keeps the row addressable; the name usually arrives
-                # from the tenant list at import time.
-                company=str((google.get("hiringOrganization") or {}).get("name")
-                            or detail.get("clientName") or token),
+                company=company,
                 company_slug=token,
                 job_url=JOB_PAGE.format(token=token, job_id=job_id),
                 apply_url=JOB_PAGE.format(token=token, job_id=job_id),

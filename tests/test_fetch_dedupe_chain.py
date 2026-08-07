@@ -11,6 +11,7 @@ uses, not a new subprocess), not about what dedupe/stats do internally.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from jobscrape import cli
@@ -83,5 +84,75 @@ async def test_a_dedupe_failure_stops_before_stats(
     monkeypatch.setattr(cli, "cmd_stats", fake_stats)
 
     rc = await cli.cmd_fetch(_fetch_args())
+    assert rc == 1
+    assert calls == ["dedupe"]
+
+
+# --- jobright-ingest: the one hand-ingestion route that used to skip this ---
+#
+# `cmd_apify_pull` and `cmd_jobright_fetch` both chain dedupe+stats after
+# ingesting; `cmd_jobright_ingest` (the low-level "ingest a JSON array by
+# hand" primitive, also the backfill route for an old export) did not — a
+# hand-ingested batch never got deduped against the rest of the archive,
+# unlike every other ingestion path.
+
+
+def _jobright_ingest_args(tmp_path, records, **kw: Any):
+    import argparse
+
+    payload = tmp_path / "records.json"
+    payload.write_text(json.dumps(records), encoding="utf-8")
+    defaults = dict(
+        db=None, file=str(payload), max_results=None,
+        all_roles=True, worldwide=True, all_workplaces=True,
+    )
+    return argparse.Namespace(**{**defaults, **kw})
+
+
+_JOBRIGHT_RECORD = {
+    "jobId": "1", "positionName": "Backend Engineer", "companyName": "Acme",
+    "url": "https://acme.com/careers/1",
+}
+
+
+def test_jobright_ingest_chains_dedupe_then_stats(
+    _isolated_db, tmp_path, monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def fake_dedupe(args):
+        calls.append("dedupe")
+        assert args.backfill is True
+        return 0
+
+    def fake_stats(args):
+        calls.append("stats")
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_dedupe", fake_dedupe)
+    monkeypatch.setattr(cli, "cmd_stats", fake_stats)
+
+    rc = cli.cmd_jobright_ingest(_jobright_ingest_args(tmp_path, [_JOBRIGHT_RECORD]))
+    assert rc == 0
+    assert calls == ["dedupe", "stats"]
+
+
+def test_jobright_ingest_dedupe_failure_stops_before_stats(
+    _isolated_db, tmp_path, monkeypatch,
+) -> None:
+    calls: list[str] = []
+
+    def failing_dedupe(args):
+        calls.append("dedupe")
+        return 1
+
+    def fake_stats(args):
+        calls.append("stats")
+        return 0
+
+    monkeypatch.setattr(cli, "cmd_dedupe", failing_dedupe)
+    monkeypatch.setattr(cli, "cmd_stats", fake_stats)
+
+    rc = cli.cmd_jobright_ingest(_jobright_ingest_args(tmp_path, [_JOBRIGHT_RECORD]))
     assert rc == 1
     assert calls == ["dedupe"]
