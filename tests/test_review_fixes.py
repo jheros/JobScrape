@@ -674,6 +674,12 @@ def test_a_no_restriction_sentinel_is_not_kept_as_an_unknown_country(raw: str) -
         # Both a US and a non-US place named: the US signal still wins, same
         # as `is_us_eligible`'s own "US mention anywhere wins" rule.
         ("MD", "Madrid, Spain or Bethesda, MD, United States", "US"),
+        # "New Mexico" is a real US state whose full name literally contains
+        # the country name "Mexico" as a substring -- found live in the
+        # archive (a Workday multi-state remote listing naming "New Mexico"
+        # among many other real US states, all correctly abbreviated). Must
+        # not be misread the same way the Spain collision is.
+        ("NM", "Remote - New Mexico", "US"),
     ],
 )
 def test_country_is_inferred_only_from_evidence(

@@ -443,8 +443,15 @@ def normalize_country(value: str | None) -> str | None:
 #: accepted outright before location text is even considered. When the
 #: location string itself names a non-US country with nothing countervailing,
 #: that is stronger evidence than an unverified `state` and wins.
+#:
+#: `(?<!new )` guards "mexico" specifically: "New Mexico" is a real US state
+#: whose full name contains the country name as a literal substring — found
+#: live in the archive (a Workday multi-state remote listing naming "New
+#: Mexico" among many other real US states) matching this pattern with no
+#: guard, which would have made `infer_country` doubt a posting that named
+#: nothing but real US states.
 _NON_US_COUNTRY_NAMES = re.compile(
-    r"\b(" + "|".join(
+    r"\b(?<!new )(" + "|".join(
         re.escape(name) for name, code in _COUNTRY_ALIASES.items()
         if code not in ("US", "GB")
     ) + r")\b",
