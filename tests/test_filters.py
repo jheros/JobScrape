@@ -92,11 +92,14 @@ def test_a_software_department_cannot_rescue_a_bare_title() -> None:
 def test_genuinely_ambiguous_words_still_take_department_confirmation() -> None:
     """What the department fallback is actually for.
 
-    "Scientist" and "Architect" are ambiguous rather than generic — a research
-    biologist and a building architect are the competing readings, and neither
-    appears in the hardware titles above. So the department still decides these.
+    "Architect" is ambiguous rather than generic — a building architect is the
+    competing reading, and the word does not appear in the hardware titles
+    above. So the department still decides it.
     """
-    assert is_software_role("Scientist", "Machine Learning") is True
+    # "Scientist" used to be in this same fallback (a research biologist was
+    # the competing reading) until it was excluded outright, on request, at
+    # every layer — no department can confirm it back in anymore.
+    assert is_software_role("Scientist", "Machine Learning") is False
     assert is_software_role("Scientist", None) is False
     # "Architect" is now an excluded PREFERENCE, checked before the department
     # fallback ever runs — so the department can no longer confirm it, and the
@@ -531,11 +534,13 @@ def test_salesforce_engineers_are_blocked_from_either_side(title: str) -> None:
 def test_salesforce_as_an_employer_is_not_salesforce_as_a_platform() -> None:
     """The ambiguity in the rule above, and where the line falls.
 
-    "Research Scientist - Salesforce AI Research" is AI research *at* Salesforce
-    — no engineer or developer in the title, so the two-lookahead form leaves it
-    alone. That is the intended behaviour, not an oversight.
+    "Machine Learning Researcher - Salesforce AI Research" is ML research *at*
+    Salesforce — no engineer or developer in the title, so the two-lookahead
+    form leaves it alone. That is the intended behaviour, not an oversight.
     """
-    assert is_software_role("Research Scientist - Salesforce AI Research") is True
+    assert is_software_role(
+        "Machine Learning Researcher - Salesforce AI Research",
+    ) is True
 
 
 @pytest.mark.parametrize(
@@ -1079,7 +1084,6 @@ def test_each_flag_re_admits_only_its_own_category() -> None:
         "mainframe": "Mainframe Developer",
         "vendor_platform": "Palantir Data Engineer",
         "industrial": "SCADA Programmer",
-        "domain_data_science": "Marketing Data Scientist",
     }
     assert set(sample) == set(EXCLUDED_ROLE_NAMES), "a category has no test case"
     for category, title in sample.items():
@@ -1101,7 +1105,7 @@ def test_the_analyst_rule_is_not_a_bare_analyst_match() -> None:
 @pytest.mark.parametrize(
     "title",
     ["Software Engineer", "Senior Backend Engineer", "Data Engineer",
-     "Data Scientist", "Machine Learning Engineer", "Platform Engineer",
+     "Machine Learning Engineer", "Platform Engineer",
      "Site Reliability Engineer", "DevOps Engineer", "Infrastructure Engineer",
      "Cloud Engineer", "Full Stack Developer", "iOS Developer"],
 )
@@ -1278,12 +1282,6 @@ def test_wet_lab_science_is_not_software(title: str) -> None:
         # never the industry of the employer.
         "Robotics Software Engineer - Cell Therapy Automation",
         "Software Engineer, Genomics Platform",
-        # A bare "Research Scientist" at an AI lab is exactly the posting this
-        # archive wants, and it is spelled identically to the pharma one. Only
-        # a named laboratory technique separates them.
-        "Research Scientist",
-        "Machine Learning Research Scientist",
-        "Principal Research Scientist",
         # Titles inside suspect wording that are nonetheless real software.
         "Frontend Engineer (Civil Aviation)",
         "Staff Software Engineer - Payroll AI",
@@ -1331,7 +1329,6 @@ def test_the_software_word_survives_all_of_it(title: str) -> None:
         # Software roles in life sciences are named after their own discipline,
         # so the word "software" is not there to rescue them.
         "Senior Data Engineer - Digital Pathology (Hybrid)",
-        "AI Scientist - Image Analysis & Digital Pathology",
     ],
 )
 def test_real_postings_the_first_draft_wrongly_dropped(title: str) -> None:
@@ -1695,7 +1692,6 @@ def test_the_leaks_the_audit_found(title: str) -> None:
         "Senior Radar Software Engineer",
         "Electron Optics Devices Software Engineer",
         # Bare research roles are AI research until a discipline says otherwise.
-        "Research Scientist",
         "Research Engineer",
         "AI Research Engineer",
         "Research Engineer - Post-Training",
@@ -1734,44 +1730,35 @@ def test_brackets_are_no_longer_load_bearing() -> None:
     assert is_software_role("Product Engineer (Chemicals)") is False
 
 
-DOMAIN_DATA_SCIENCE = [
-    "Marketing Data Scientist",
-    "Sr. Data Scientist, Performance Marketing",
-    "Chemical Data Scientist",
-    "Senior Clinical Data Scientist",
-    "Data Scientist, Supply Chain",
-    "Data Scientist Senior (Population Health)",
-    "Senior Data Scientist / Risk Modeling Analyst",
-    "Data Scientist, Finance",
-]
-
-
-@pytest.mark.parametrize("title", DOMAIN_DATA_SCIENCE)
-def test_domain_qualified_data_science_is_excluded(title: str) -> None:
-    """A deliberate choice that costs real software work, recorded as such.
-
-    "Staff Data Scientist, Marketing Inference" is ordinary ML whose qualifier
-    names the industry served, exactly as "Data Engineer, Payments" does. The
-    domain list is fixed and short so the blast radius stays the 59 measured.
-    """
-    from jobscrape.filters import is_excluded_role
-
-    assert is_excluded_role(title) == "domain_data_science", title
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Data Scientist",
+        "Senior Data Scientist",
+        "Staff Data Scientist",
+        "Data Scientist, Trust & Safety",
+        "Marketing Data Scientist",
+        "Chemical Data Scientist",
+        "Research Scientist",
+        "Machine Learning Research Scientist",
+        "AI Scientist",
+        "Computer Scientist",
+        "Principal Scientist",
+    ],
+)
+def test_scientist_titles_are_excluded_outright(title: str) -> None:
+    """Excluded unconditionally, on request — not a preference reversible via
+    `--include-roles`, and not conditional on whether the title also names a
+    business domain (the old `domain_data_science` distinction is gone: a
+    domain qualifier was never what made these excluded)."""
     assert is_software_role(title) is False, title
 
 
-@pytest.mark.parametrize("title", DOMAIN_DATA_SCIENCE)
-def test_domain_data_science_round_trips(title: str) -> None:
-    assert is_software_role(title, allow_roles={"domain_data_science"}) is True, title
-
-
-@pytest.mark.parametrize(
-    "title",
-    ["Data Scientist", "Senior Data Scientist", "Staff Data Scientist",
-     "Data Scientist, Trust & Safety", "Data Engineer, Payments"],
-)
-def test_undomained_data_science_is_untouched(title: str) -> None:
-    assert is_software_role(title) is True, title
+def test_a_domain_qualifier_alone_does_not_exclude_a_non_scientist_title() -> None:
+    """"Data Engineer, Payments" was never about `domain_data_science` -- the
+    domain qualifier alone was never grounds for exclusion, only "Scientist"
+    is."""
+    assert is_software_role("Data Engineer, Payments") is True
 
 
 # --- four ways a title dodged the discipline rules --------------------------

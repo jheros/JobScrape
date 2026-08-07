@@ -62,13 +62,15 @@ _SOFTWARE_TERMS = [
     r"\bmobile\s+(engineer|developer)", r"\b(ios|android)\s+(engineer|developer)",
     r"\b(devops|sre|site\s+reliability)\b",
     r"\bplatform\s+engineer", r"\binfrastructure\s+engineer", r"\bcloud\s+engineer",
-    # "science" as well as "scientist": "Data Science Intern" and "Data Science
+    # "science", not "scientist": "Data Science Intern" and "Data Science
     # Manager" name the field rather than the person, and without it
     # `--include-roles early_career` could not restore the intern postings it
-    # excludes — the half-working-flag shape.
-    r"\bdata\s+(engineer|scientist|science)", r"\banalytics\s+engineer",
-    r"\b(machine\s+learning|ml|ai|deep\s+learning)\s+(engineer|scientist|researcher)",
-    r"\bresearch\s+(engineer|scientist)\b",
+    # excludes — the half-working-flag shape. "Scientist" itself is excluded
+    # outright, not just deprioritized: Data/Research/ML/AI Scientist titles
+    # are not collected at all, on request.
+    r"\bdata\s+(engineer|science)", r"\banalytics\s+engineer",
+    r"\b(machine\s+learning|ml|ai|deep\s+learning)\s+(engineer|researcher)",
+    r"\bresearch\s+engineer\b",
     r"\bsecurity\s+engineer", r"\bapplication\s+security", r"\bappsec\b",
     r"\b(qa|quality\s+assurance|test)\s+(engineer|automation)",
     r"\bautomation\s+engineer",
@@ -100,9 +102,8 @@ _SOFTWARE_TERMS = [
     # these two carried the same work in on a different word. "Forward Deployed
     # Engineer" stays: that one does write code, against a customer deployment.
     r"\bforward\s+deployed\s+engineer",
-    r"\bcomputer\s+(scientist|vision)",
     # --- explicitly requested titles ---
-    r"\bai\s*/?\s*ml\s+(engineer|developer|scientist)",
+    r"\bai\s*/?\s*ml\s+(engineer|developer)",
     r"\ba\.?i\.?\s+(engineer|developer|architect)",
     r"\bfounding\s+(engineer|developer)",
     r"\bproduction\s+engineer", r"\bproduct\s+engineer",
@@ -117,7 +118,7 @@ _SOFTWARE_TERMS = [
     r"\bcomputer\s+vision\b", r"\bdeep\s+learning\b",
     r"\bdata\s+(platform|infrastructure|architect)",
     r"\b(analytics|bi|business\s+intelligence)\s+(engineer|developer)",
-    r"\b(search|ranking|recommendation|personalization)\s+(engineer|scientist)",
+    r"\b(search|ranking|recommendation|personalization)\s+engineer",
     # --- systems / infra breadth ---
     r"\bdistributed\s+systems?\b", r"\bkernel\s+(engineer|developer)",
     r"\bsystems?\s+programmer\b", r"\bobservability\s+engineer",
@@ -127,7 +128,7 @@ _SOFTWARE_TERMS = [
     r"\b(sre|site\s+reliability)\b",
     # --- seniority / program variants that imply engineering ---
     r"\bmember\s+of\s+technical\s+staff\b", r"\bmts\b",
-    r"\b(staff|principal|distinguished|senior\s+staff)\s+(engineer|developer|scientist)",
+    r"\b(staff|principal|distinguished|senior\s+staff)\s+(engineer|developer)",
     r"\btech(nical)?\s+lead\b", r"\bengineering\s+lead\b",
     r"\b(software|engineering)\s+(intern|internship|apprentice|new\s+grad)",
     r"\b(new\s+grad|early\s+career|university\s+grad)\s+(engineer|developer|software)",
@@ -333,11 +334,13 @@ _SOFTWARE_DEPTS = re.compile(
 # evidence that an engineer is a *software* engineer.
 #
 # What is left is the set the docstring below always meant: words that are
-# genuinely ambiguous rather than merely generic. A "Scientist" or "Architect"
-# under an Engineering department really is more likely to be technical, and
-# neither word appears in the hardware titles this change exists to remove.
+# genuinely ambiguous rather than merely generic. An "Architect" under an
+# Engineering department really is more likely to be technical, and the word
+# does not appear in the hardware titles this change exists to remove.
+# "Scientist" was here too until it was excluded outright — see
+# `_SOFTWARE_TERMS`'s own note on it.
 _GENERIC_TECH = re.compile(
-    r"\b(architect|scientist|technical\s+lead|tech\s+lead|intern|co-?op)\b",
+    r"\b(architect|technical\s+lead|tech\s+lead|intern|co-?op)\b",
     re.I,
 )
 
@@ -645,13 +648,15 @@ _UNAMBIGUOUS_SOFTWARE_RE = re.compile(
     r"[\s-]*(engineer|developer)\b"
     r"|\b(back|front)[\s-]end\s+(engineer|developer)\b"
     r"|\b(devops|sre|site\s+reliability)\b"
-    # "AI Scientist - Image Analysis & Digital Pathology" is a machine-learning
+    # "AI Researcher - Image Analysis & Digital Pathology" is a machine-learning
     # role at a pharmaceutical company, which is exactly the shape this whole
-    # rule risks losing.
-    r"|\b(ai|ml|machine\s+learning|computer\s+vision)[\s-]+(scientist|researcher)\b"
+    # rule risks losing. "Scientist" no longer needs a place here — that role
+    # noun is excluded outright now, so a hardware/life-science false-rejection
+    # on it changes nothing; it was staying excluded either way.
+    r"|\b(ai|ml|machine\s+learning|computer\s+vision)[\s-]+researcher\b"
     r"|\bforward[\s-]?deployed\s+engineer\b"
     r"|\bui\b(\s*/\s*ux)?\s+(engineer|developer)\b"
-    r"|\bdata\s+scien(tist|ce)\b"
+    r"|\bdata\s+science\b"
     r"|\bsoftware\s+(engineer|developer|architect)\b",
     re.I,
 )
@@ -855,27 +860,6 @@ _VENDOR_PLATFORM_RE = re.compile(
 #: and "CNC/PLC Production Engineer" is not one a title match can draw.
 _INDUSTRIAL_RE = re.compile(r"\b(scada|flexsort|sortation)\b", re.I)
 
-#: Data science named for the industry it serves rather than the work.
-#:
-#: "Marketing Data Scientist", "Chemical Data Scientist", "Senior Clinical Data
-#: Scientist", "Data Scientist, Supply Chain" — 59 postings. The role is data
-#: science and the qualifier is the domain, which is why this is a preference
-#: rather than a not-software judgement, and why it is reversible.
-#:
-#: **This one demonstrably costs genuine software work** and was chosen with
-#: that stated: "Staff Data Scientist, Marketing Inference" and "Senior Data
-#: Scientist / Risk Modeling" are ordinary ML jobs whose qualifier names the
-#: industry, exactly as "Data Engineer, Payments" does. The domain list is
-#: fixed and deliberately short rather than open-ended, so the blast radius
-#: stays the 59 that were measured.
-_DOMAIN_DATA_SCIENCE_RE = re.compile(
-    r"\bdata\s+scien(tist|ce)\b(?=.*\b(?:marketing|chemical|clinical|epidemiolog\w*|"
-    r"biolog\w*|pharma\w*|health|financ(?:e|ial)|risk|insurance|supply\s+chain|retail|sports)\b)"
-    r"|\b(?:marketing|chemical|clinical|epidemiolog\w*|biolog\w*|pharma\w*|health|"
-    r"financ(?:e|ial)|risk|insurance|supply\s+chain|retail|sports)\b.*\bdata\s+scien(tist|ce)\b",
-    re.I,
-)
-
 #: Category name -> matcher. A registry rather than one boolean parameter per
 #: category: with six of them, separate flags would mean six booleans threaded
 #: through five function signatures and the CLI, and wiring one to only half the
@@ -900,7 +884,6 @@ EXCLUDED_ROLES: dict[str, Any] = {
     "mainframe": lambda text: bool(_MAINFRAME_RE.search(text)),
     "vendor_platform": lambda text: bool(_VENDOR_PLATFORM_RE.search(text)),
     "industrial": lambda text: bool(_INDUSTRIAL_RE.search(text)),
-    "domain_data_science": lambda text: bool(_DOMAIN_DATA_SCIENCE_RE.search(text)),
 }
 
 #: Stable order for the CLI's `choices` and for anything that reports by
@@ -973,12 +956,10 @@ def is_software_role(
     # Engineer" while dropping "Optical Design Engineer".
     #
     # All three discipline rules (this, the reversed shape below, and life
-    # science) now share the WIDER exemption. They used to differ: this one
-    # asked only for the literal word "software", which was fine while its role
-    # nouns were engineer and developer. Adding `scientist` broke that — a
-    # "Chemical Data Scientist" is a data scientist, and holding it here meant
-    # `--include-roles domain_data_science` could not give it back, which makes
-    # the flag a promise the filter does not keep.
+    # science) share this WIDER exemption rather than testing only for the
+    # literal word "software" — "Chemical Data Engineer" names its discipline
+    # by role noun, not by the word "software", and the narrower test would
+    # lose it to the word "chemical".
     if _HARDWARE_NEAR_RE.search(text) and not (
         _names_software(text) or _UNAMBIGUOUS_SOFTWARE_RE.search(text)
     ):
