@@ -332,6 +332,64 @@ def test_an_interrupted_fetch_also_closes_its_row(monkeypatch, _isolated_db) -> 
     assert row["error"]
 
 
+# --- --exclude-sources: the fetch-fast/fetch-workday split relies on this --
+
+async def test_exclude_sources_drops_the_named_source(monkeypatch, _isolated_db) -> None:
+    """`--exclude-sources` is what `runner.STAGES["fetch-fast"]` uses to run
+    every source except Workday — confirm it actually removes just the
+    named one(s) and leaves the rest selected."""
+    from jobscrape import cli
+
+    swept: list[str] = []
+
+    async def fake_fetch_boards(conn, fetcher, ats, since, until, args, boards=None):
+        swept.append(ats)
+        empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0,
+                 "closed": 0, "cooled_down": 0, "quiet": 0}
+        return empty, FilterFunnel()
+
+    monkeypatch.setattr(cli, "_fetch_boards", fake_fetch_boards)
+
+    rc = await cli.cmd_fetch(_fetch_args(
+        sources=["greenhouse", "lever", "workday"],
+        exclude_sources=["workday"],
+    ))
+    assert rc == 0
+    assert set(swept) == {"greenhouse", "lever"}
+
+
+async def test_exclude_sources_with_no_sources_filter_still_excludes(
+    monkeypatch, _isolated_db,
+) -> None:
+    """`--exclude-sources workday` alone (no `--sources` allowlist) is what
+    `fetch-fast` actually runs as — every source except Workday, not just
+    every source in some other explicit list."""
+    from jobscrape import cli
+
+    swept: list[str] = []
+
+    async def fake_fetch_boards(conn, fetcher, ats, since, until, args, boards=None):
+        swept.append(ats)
+        empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0,
+                 "closed": 0, "cooled_down": 0, "quiet": 0}
+        return empty, FilterFunnel()
+
+    async def fake_fetch_one_global_source(name, source, since, until, args, fetcher):
+        # `sources=None` also pulls in every keyless global source (hackernews,
+        # remoteok, ...) — mock this path too so the test doesn't make real
+        # outbound HTTP requests.
+        swept.append(name)
+        return name, {}, 0
+
+    monkeypatch.setattr(cli, "_fetch_boards", fake_fetch_boards)
+    monkeypatch.setattr(cli, "_fetch_one_global_source", fake_fetch_one_global_source)
+
+    rc = await cli.cmd_fetch(_fetch_args(sources=None, exclude_sources=["workday"]))
+    assert rc == 0
+    assert "workday" not in swept
+    assert "greenhouse" in swept  # every other board ATS is still covered
+
+
 # --- cmd_fetch sweeps ATSes concurrently, each on its own connection --------
 #
 # `_fetch_one_ats`/`_fetch_one_global_source` (cli.py) replaced a sequential

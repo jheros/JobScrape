@@ -43,6 +43,20 @@ STAGES: dict[str, list[str]] = {
     # the same safety net, not just a composite. That's also why each is
     # listed in `STAGE_GROUPS` below reserving `dedupe`/`stats` too.
     "fetch": ["fetch"],
+    # Split for near-real-time coverage: `fetch` now sweeps every ATS/global
+    # source concurrently (one connection each, see `cli.cmd_fetch`), so wall
+    # -clock time for the whole registry is bounded by the SLOWEST single
+    # source — measured on the live archive, that's Workday alone at ~2h
+    # while every other source finishes in 2-31 minutes (Workday has no
+    # "list everything" endpoint, unlike the rest, and pages up to
+    # `config.WORKDAY_MAX_PER_BOARD` per tenant). Scheduling "fetch" itself
+    # tighter than ~2h would just make every tick after the first skip
+    # (RunManager's one-active-run-per-stage) without buying anything, since
+    # Workday would still be mid-sweep. These two run independently instead
+    # — everything except Workday on a tight interval, Workday on its own
+    # much longer one — so the fast sources actually get to be fast.
+    "fetch-fast": ["fetch", "--exclude-sources", "workday"],
+    "fetch-workday": ["fetch", "--sources", "workday"],
     "export": ["export", "--format", "csv", "--format", "xlsx"],
     "apify-pull": ["apify-pull", "--last", "3"],
     "dedupe": ["dedupe", "--backfill"],
@@ -94,9 +108,18 @@ STAGES: dict[str, list[str]] = {
 #: step is touching — precisely what `flock` in `scripts/schedule.sh` exists
 #: to prevent, just between a different pair of callers.
 STAGE_GROUPS: dict[str, tuple[str, ...]] = {
-    "daily-schedule": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
-    "weekly-schedule": ("discover", "validate", "fetch", "dedupe", "stats"),
-    "full-sweep": ("discover", "validate", "fetch", "apify-pull", "dedupe", "stats"),
+    "daily-schedule": (
+        "discover", "validate", "fetch", "fetch-fast", "fetch-workday",
+        "apify-pull", "dedupe", "stats",
+    ),
+    "weekly-schedule": (
+        "discover", "validate", "fetch", "fetch-fast", "fetch-workday",
+        "dedupe", "stats",
+    ),
+    "full-sweep": (
+        "discover", "validate", "fetch", "fetch-fast", "fetch-workday",
+        "apify-pull", "dedupe", "stats",
+    ),
     # `fetch`/`apify-pull`/`jobright-fetch` each chain their own dedupe+stats
     # internally now (see `cli.py`), but deliberately have NO entry here —
     # unlike the composites above, nothing stops them running side by side.
@@ -105,6 +128,29 @@ STAGE_GROUPS: dict[str, tuple[str, ...]] = {
     # is protected by a Postgres advisory lock in `cmd_dedupe` instead —
     # whichever of them reaches its own dedupe step second just waits for
     # the lock, invisible to RunManager, rather than being rejected here.
+    #
+    # `fetch-fast`/`fetch-workday` are the one exception: both are scoped
+    # SLICES of plain `fetch` (all sources except Workday / Workday only),
+    # so unlike `apify-pull`/`jobright-fetch` (genuinely unrelated sources)
+    # they overlap heavily with `fetch` itself and must not race it — the
+    # same "two concurrent fetches race the same `board_health`/
+    # `zero_yield` rows" hazard `scripts/schedule.sh` guards daily-vs-weekly
+    # against, just between plain `fetch` and a slice of it. `fetch` lists
+    # BOTH as reserved keys, which is enough on its own for BOTH
+    # directions: while `fetch` runs, its own reservation marks
+    # `fetch-fast`/`fetch-workday` active too, so THEIR start-checks (which
+    # always include their own name) see the conflict — and while either
+    # of them runs, `fetch`'s start-check (which always checks for both by
+    # name, regardless of which is active) sees it too. Neither
+    # `fetch-fast` nor `fetch-workday` needs — or has — an entry of its
+    # own; giving one back to `fetch` would make them ALSO conflict with
+    # EACH OTHER (both would reserve the shared "fetch" key), which is
+    # wrong: their source sets are disjoint (Workday excluded from one,
+    # Workday only in the other), so nothing stops them running side by
+    # side, and the composites above must list them directly (not rely on
+    # recursing through `fetch`'s entry — see `_reserved_keys`'s docstring
+    # and `test_stage_groups_are_pre_flattened`).
+    "fetch": ("fetch-fast", "fetch-workday"),
 }
 
 

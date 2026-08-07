@@ -560,6 +560,9 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
         if not args.sources:
             selected |= set(extra_globals) | set(extra_boards)
 
+    if getattr(args, "exclude_sources", None):
+        selected -= set(args.exclude_sources)
+
     grand_total = 0
     # Per-source stats persisted with the run so the dashboard can chart them.
     per_source: dict[str, dict[str, Any]] = {}
@@ -1750,6 +1753,11 @@ def build_parser() -> argparse.ArgumentParser:
     add_common(p_fetch)
     p_fetch.add_argument("--sources", action="append",
                          help="restrict to named sources (repeatable)")
+    p_fetch.add_argument("--exclude-sources", action="append",
+                         help="run every source EXCEPT these (repeatable) — e.g. to "
+                              "split a fast, frequent sweep from a slow one "
+                              "(Workday's own per-board pagination cost makes it the "
+                              "one source that sets a much longer floor than the rest)")
     p_fetch.add_argument("--companies", type=int, default=None,
                          help="max boards per ATS")
     p_fetch.add_argument("--unchecked", type=int, default=UNCHECKED_PER_ATS,

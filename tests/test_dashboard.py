@@ -240,7 +240,7 @@ def test_chart_escapes_untrusted_labels() -> None:
 def test_stage_allowlist_prevents_arbitrary_commands() -> None:
     """The web layer must never be able to assemble its own command line."""
     assert set(STAGES) == {
-        "discover", "discover-fast", "validate", "fetch",
+        "discover", "discover-fast", "validate", "fetch", "fetch-fast", "fetch-workday",
         "export", "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
         "daily-schedule", "weekly-schedule", "full-sweep", "jobright-fetch",
         "render-sync",
@@ -359,6 +359,83 @@ async def test_fetch_type_stages_can_run_concurrently(tmp_path, monkeypatch) -> 
     await manager.start("dedupe")
     await manager.start("stats")
     assert len(manager.active()) == 5
+
+
+async def test_fetch_fast_and_fetch_workday_each_conflict_with_plain_fetch(
+    tmp_path, monkeypatch,
+) -> None:
+    """`fetch-fast`/`fetch-workday` are scoped SLICES of plain `fetch` (all
+    sources minus Workday / Workday only) — unlike `apify-pull`/
+    `jobright-fetch` (genuinely unrelated sources), they overlap heavily
+    with `fetch` and must not race it: the same `board_health`/`zero_yield`
+    hazard `scripts/schedule.sh` guards daily-vs-weekly against, just
+    between plain `fetch` and a slice of it. Each direction must be
+    blocked, and the run finishing must free the other to start."""
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeStdout:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+    class _FakeProcess:
+        pid = 4245
+        stdout = _FakeStdout()
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("fetch")
+    with pytest.raises(RuntimeError):
+        await manager.start("fetch-fast")
+    with pytest.raises(RuntimeError):
+        await manager.start("fetch-workday")
+
+    # Let it finish for real (the actual cleanup path, not an explicit
+    # stop()) — that's what frees "fetch" for fetch-fast to reserve next.
+    run = manager._active["fetch"]
+    await RunManager._consume(manager, run)
+    assert not manager.is_running("fetch")
+
+    await manager.start("fetch-fast")
+    with pytest.raises(RuntimeError):
+        await manager.start("fetch")
+
+
+async def test_fetch_fast_and_fetch_workday_can_run_concurrently(
+    tmp_path, monkeypatch,
+) -> None:
+    """Disjoint source sets (Workday excluded from one, Workday only in the
+    other) -- nothing stops these two running side by side, which is the
+    whole point of splitting them."""
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    class _FakeProcess:
+        pid = 4246
+        stdout = None
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("fetch-fast")
+    await manager.start("fetch-workday")
+    assert manager.is_running("fetch-fast")
+    assert manager.is_running("fetch-workday")
+    assert len(manager.active()) == 2
 
 
 async def test_stopping_a_composite_frees_its_whole_group(tmp_path, monkeypatch) -> None:
