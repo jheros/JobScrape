@@ -62,9 +62,13 @@ DATABASE_URL = _env_str(
 TEST_DATABASE_URL = _env_str(
     "JOBSCRAPE_TEST_DATABASE_URL", "postgresql+psycopg2:///jobscrape_test"
 )
-#: A wide sweep runs ~16 concurrent workers that all reach the same connection.
-DB_POOL_SIZE = _env_int("JOBSCRAPE_DB_POOL_SIZE", 5)
-DB_MAX_OVERFLOW = _env_int("JOBSCRAPE_DB_MAX_OVERFLOW", 10)
+#: `cmd_fetch` runs one connection per ATS/global source concurrently (see
+#: `_fetch_one_ats`/`_fetch_one_global_source`, jobscrape/cli.py) rather than
+#: sharing one connection across all of them — roughly 16 board ATSes plus a
+#: dozen query-style sources, so the pool needs to comfortably hold one each
+#: plus headroom for the dashboard app's own connections.
+DB_POOL_SIZE = _env_int("JOBSCRAPE_DB_POOL_SIZE", 20)
+DB_MAX_OVERFLOW = _env_int("JOBSCRAPE_DB_MAX_OVERFLOW", 20)
 DB_POOL_TIMEOUT = _env_float("JOBSCRAPE_DB_POOL_TIMEOUT", 30.0)
 DB_ECHO = os.environ.get("JOBSCRAPE_DB_ECHO", "") in ("1", "true", "yes")
 
@@ -113,7 +117,16 @@ CONTACT_EMAIL = _env_str("JOBSCRAPE_CONTACT", "jobscrape@example.com")
 USER_AGENT = _env_str("JOBSCRAPE_UA", f"jobscrape/1.0 (+{CONTACT_EMAIL})")
 
 # --- HTTP tunables --------------------------------------------------------
-GLOBAL_CONCURRENCY = _env_int("JOBSCRAPE_CONCURRENCY", 16)
+#: A process-wide ceiling on top of every per-host limit below. Since
+#: `cmd_fetch` now sweeps every ATS/global source concurrently (one host each,
+#: each already independently rate-limited by `HOST_LIMITS`/`PER_HOST_*`), this
+#: only needs to stay at or above the SUM of the per-host limits actually in
+#: play (measured: ~60 across the 16 board ATSes, ~35 more across the global
+#: sources) — otherwise it becomes a tighter, purely artificial bottleneck that
+#: defeats the point of sweeping hosts in parallel. The per-host limits remain
+#: the real safety ceiling per host; this one just has to stop being smaller
+#: than their sum.
+GLOBAL_CONCURRENCY = _env_int("JOBSCRAPE_CONCURRENCY", 100)
 PER_HOST_CONCURRENCY = _env_int("JOBSCRAPE_PER_HOST_CONCURRENCY", 4)
 PER_HOST_DELAY = _env_float("JOBSCRAPE_PER_HOST_DELAY", 0.25)
 

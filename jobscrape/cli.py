@@ -376,6 +376,15 @@ async def _fetch_boards(
                 # Scoped to this one company, so it's an index range scan, not
                 # a table scan — see dedupe.resolve_scoped.
                 dedupe.resolve_scoped(conn, slug)
+            # Committed here, per board, rather than left to whatever commits
+            # this connection eventually — `conn` is now this ATS's own
+            # connection (see `cmd_fetch`), not shared with every other ATS's
+            # sweep, so a newly-inserted job is durable and query-visible the
+            # moment its own board finishes, not only once the entire
+            # (parallel, multi-ATS) fetch invocation exits. Also means a
+            # crash/timeout partway through only loses boards not yet swept,
+            # not everything already found.
+            conn.commit()
             if totals["boards"] % 100 == 0:
                 log.info(
                     "  %s: %d boards, %d raw, %d new",
@@ -397,6 +406,127 @@ async def _fetch_boards(
             funnel.dropped_workplace, funnel.kept,
         )
     return totals, funnel
+
+
+async def _fetch_one_ats(
+    ats: str,
+    since: date | None,
+    until: date | None,
+    args: argparse.Namespace,
+    boards_map: dict[str, Any],
+    fetcher: Fetcher,
+) -> tuple[dict[str, int], FilterFunnel]:
+    """One ATS's full board sweep, on its own DB connection.
+
+    Concurrent ATS sweeps must not share one `Connection` — a single
+    Postgres connection cannot safely serve statements from multiple
+    coroutines interleaved on the event loop the way `_fetch_boards`'s own
+    per-board fan-out does *within* one ATS. Each ATS gets its own
+    connection checked out from the shared pool instead
+    (`config.DB_POOL_SIZE`/`DB_MAX_OVERFLOW`); `_fetch_boards` already
+    commits per board on whatever connection it's given.
+    """
+    conn = db.connect(args.db)
+    try:
+        return await _fetch_boards(conn, fetcher, ats, since, until, args, boards_map)
+    finally:
+        conn.close()
+
+
+async def _fetch_one_global_source(
+    name: str,
+    source: Any,
+    since: date | None,
+    until: date | None,
+    args: argparse.Namespace,
+    fetcher: Fetcher,
+) -> tuple[str, dict[str, Any], int]:
+    """One query-style source's full fetch, on its own DB connection — see
+    `_fetch_one_ats`'s docstring for why concurrently-running sources can't
+    share one.
+
+    Returns ``(name, stats, rows_touched)``; ``stats`` is empty when the
+    source was skipped or failed outright, so the caller knows not to
+    record it under `per_source`.
+    """
+    conn = db.connect(args.db)
+    try:
+        ok, reason = source.available()
+        if not ok:
+            log.info("%-16s skipped — %s", name, reason)
+            return name, {}, 0
+
+        log.info("%-16s fetching...", name)
+        try:
+            jobs = await source.fetch(
+                fetcher, since=since, until=until, max_results=args.max_results
+            )
+        except Exception as exc:
+            log.warning("%-16s failed: %s", name, exc)
+            return name, {}, 0
+
+        kept_jobs, gfunnel = apply_filters_counted(
+            jobs, since=since, until=until,
+            software_only=not args.all_roles, us_only=not args.worldwide,
+            remote_only=not getattr(args, "all_workplaces", False),
+            allow_roles=_allowed_roles(args),
+        )
+        stats = gfunnel.as_dict()
+        touched = 0
+        if kept_jobs:
+            inserted, updated = db.upsert_jobs(conn, kept_jobs)
+            touched = inserted + updated
+            stats.update(new=inserted, refreshed=updated)
+            log.info(
+                "%-16s %d seen, %d matched (%d new, %d updated)",
+                name, len(jobs), len(kept_jobs), inserted, updated,
+            )
+            dedupe.resolve_many(conn, (j.company_slug for j in kept_jobs))
+            # Committed here, per source, same reasoning as `_fetch_boards`'s
+            # own per-board commit: durable and query-visible as soon as
+            # THIS source's own fetch finishes, not only once every other
+            # concurrently-running source also finishes.
+            conn.commit()
+        else:
+            log.info("%-16s %d seen, 0 matched filters", name, len(jobs))
+
+        # Source-wide closure: a global source's jobs are otherwise
+        # unreachable by the per-board sweep, so without this they never
+        # close. It is only sound against a crawl that walked its WHOLE
+        # result set.
+        #
+        # Every one of these adapters stops early and returns what it
+        # has when a page fails, when a page budget runs out, or when
+        # --max-results caps it — so a rate-limited run is
+        # indistinguishable from a genuinely shrunken catalogue unless
+        # the adapter says which it was. Closing against a truncated
+        # "seen" set retires postings the run simply never reached, and
+        # the 48h grace hides it until failures repeat, which is exactly
+        # when rate-limiting happens. `is_complete` reads a plain list
+        # as incomplete, so an adapter that forgets to say under-closes
+        # rather than deleting live jobs.
+        if not is_complete(jobs):
+            log.info(
+                "%-16s closure skipped — crawl was incomplete "
+                "(capped, budget-limited, or a page failed)", name,
+            )
+        elif not jobs:
+            # A run that returned nothing proves the crawl failed, not
+            # that the source is empty.
+            log.info("%-16s closure skipped — returned no postings", name)
+        else:
+            closed = db.mark_board_closures(
+                conn, name, None, {j.source_job_id for j in jobs}
+            )
+            if closed:
+                stats["closed"] = closed
+                log.info("%-16s %d postings closed (unseen > %dh)",
+                          name, closed, config.CLOSURE_GRACE_HOURS)
+            conn.commit()
+
+        return name, stats, touched
+    finally:
+        conn.close()
 
 
 async def cmd_fetch(args: argparse.Namespace) -> int:
@@ -455,84 +585,68 @@ async def cmd_fetch(args: argparse.Namespace) -> int:
         # CLI still exits non-zero and cron still notices.
         try:
             async with Fetcher(use_cache=not args.no_cache) as fetcher:
-                # ATS boards: the coverage backbone.
-                for ats in boards_map:
-                    if ats not in selected:
-                        continue
-                    board_totals, board_funnel = await _fetch_boards(
-                        conn, fetcher, ats, since, until, args, boards_map
-                    )
+                ats_names = [ats for ats in boards_map if ats in selected]
+                global_names = [name for name in globals_map if name in selected]
+
+                # Every ATS lives on its own host with its own independent
+                # rate limiter (`config.HOST_LIMITS`/`Fetcher`'s per-host
+                # gate) — sweeping them one after another, as this used to,
+                # left that parallelism completely unused: Greenhouse's
+                # entire sweep finished before BambooHR's even started,
+                # though nothing about either host requires waiting on the
+                # other. Running them concurrently (bounded by the shared
+                # `Fetcher`, so the GLOBAL concurrency cap and every
+                # per-host limit still apply exactly as before — only the
+                # artificial serialization ACROSS hosts is removed) turns
+                # total wall-clock time from the SUM of every source's sweep
+                # into roughly the slowest single source's sweep. Query-style
+                # sources run alongside them for the same reason.
+                #
+                # Deliberately NOT `return_exceptions=True`: every EXPECTED
+                # per-source failure (a dead board, an unavailable API, a
+                # malformed response) is already caught and handled inside
+                # `_fetch_one_ats`/`_fetch_one_global_source` — anything that
+                # still escapes from here is a genuine bug, and this run's
+                # own contract (see the `try`/`except BaseException` around
+                # this whole block) is to record it as a failed run and
+                # re-raise so the CLI exits non-zero and cron notices, not to
+                # quietly log-and-continue as if nothing happened.
+                #
+                # One asyncio wrinkle worth knowing here: `gather()` wraps
+                # each coroutine in a `Task`, and a `Task` cannot cleanly
+                # propagate a `BaseException` that isn't a plain `Exception`
+                # (`KeyboardInterrupt`/`SystemExit`) the way the old
+                # sequential, ungathered `await` could — it surfaces as
+                # `CancelledError` to the `except` below instead. The run
+                # still ends up correctly marked `failed` (not left stuck at
+                # `running`) and the original interrupt still reaches the
+                # process via `asyncio.run`'s own top-level handling, so this
+                # doesn't change any actual behavior — only the exception
+                # class name recorded in that one row's `error` text (see
+                # `tests/test_tracking.py::test_an_interrupted_fetch_also_closes_its_row`).
+                all_results = await asyncio.gather(
+                    *(
+                        _fetch_one_ats(ats, since, until, args, boards_map, fetcher)
+                        for ats in ats_names
+                    ),
+                    *(
+                        _fetch_one_global_source(
+                            name, globals_map[name], since, until, args, fetcher
+                        )
+                        for name in global_names
+                    ),
+                )
+                ats_results = all_results[:len(ats_names)]
+                global_results = all_results[len(ats_names):]
+
+                for ats, (board_totals, board_funnel) in zip(ats_names, ats_results):
                     grand_total += board_totals["new"] + board_totals["refreshed"]
                     per_source[ats] = {**board_totals, **board_funnel.as_dict()}
 
-                # Query-style sources.
-                for name, source in globals_map.items():
-                    if name not in selected:
-                        continue
-                    ok, reason = source.available()
-                    if not ok:
-                        log.info("%-16s skipped — %s", name, reason)
-                        continue
-                    log.info("%-16s fetching...", name)
-                    try:
-                        jobs = await source.fetch(
-                            fetcher, since=since, until=until, max_results=args.max_results
-                        )
-                    except Exception as exc:
-                        log.warning("%-16s failed: %s", name, exc)
-                        continue
-                    kept_jobs, gfunnel = apply_filters_counted(
-                        jobs, since=since, until=until,
-                        software_only=not args.all_roles, us_only=not args.worldwide,
-                        remote_only=not getattr(args, "all_workplaces", False),
-                        allow_roles=_allowed_roles(args),
-                    )
-                    per_source[name] = gfunnel.as_dict()
-                    if kept_jobs:
-                        inserted, updated = db.upsert_jobs(conn, kept_jobs)
-                        grand_total += inserted + updated
-                        per_source[name].update(new=inserted, refreshed=updated)
-                        log.info(
-                            "%-16s %d seen, %d matched (%d new, %d updated)",
-                            name, len(jobs), len(kept_jobs), inserted, updated,
-                        )
-                        dedupe.resolve_many(conn, (j.company_slug for j in kept_jobs))
-                    else:
-                        log.info("%-16s %d seen, 0 matched filters", name, len(jobs))
-
-                    # Source-wide closure: a global source's jobs are otherwise
-                    # unreachable by the per-board sweep, so without this they never
-                    # close. It is only sound against a crawl that walked its WHOLE
-                    # result set.
-                    #
-                    # Every one of these adapters stops early and returns what it
-                    # has when a page fails, when a page budget runs out, or when
-                    # --max-results caps it — so a rate-limited run is
-                    # indistinguishable from a genuinely shrunken catalogue unless
-                    # the adapter says which it was. Closing against a truncated
-                    # "seen" set retires postings the run simply never reached, and
-                    # the 48h grace hides it until failures repeat, which is exactly
-                    # when rate-limiting happens. `is_complete` reads a plain list
-                    # as incomplete, so an adapter that forgets to say under-closes
-                    # rather than deleting live jobs.
-                    if not is_complete(jobs):
-                        log.info(
-                            "%-16s closure skipped — crawl was incomplete "
-                            "(capped, budget-limited, or a page failed)", name,
-                        )
-                    elif not jobs:
-                        # A run that returned nothing proves the crawl failed, not
-                        # that the source is empty.
-                        log.info("%-16s closure skipped — returned no postings", name)
-                    else:
-                        closed = db.mark_board_closures(
-                            conn, name, None, {j.source_job_id for j in jobs}
-                        )
-                        if closed:
-                            per_source[name]["closed"] = closed
-                            log.info("%-16s %d postings closed (unseen > %dh)",
-                                      name, closed, config.CLOSURE_GRACE_HOURS)
-                        conn.commit()
+                for name, stats, touched in global_results:
+                    if stats:
+                        per_source[name] = stats
+                    grand_total += touched
 
                 log.info("HTTP: %s", dict(fetcher.stats))
                 http_stats = dict(fetcher.stats)

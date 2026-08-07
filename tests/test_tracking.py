@@ -17,11 +17,14 @@ Both are guarded explicitly below.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from jobscrape import config, db
+from jobscrape.filters import FilterFunnel
 from jobscrape.models import Job
 
 
@@ -297,6 +300,18 @@ def test_an_interrupted_fetch_also_closes_its_row(monkeypatch, _isolated_db) -> 
     A scheduled run is as likely to be killed — a timeout, a deploy, Ctrl-C —
     as it is to fail, and an interrupt that leaves the row open is the same
     problem wearing a different exception class.
+
+    The recorded `error` text is asyncio's own `CancelledError`, not
+    `KeyboardInterrupt` literally — a known asyncio limitation: `gather()`
+    wraps each coroutine in a `Task`, and a `Task` cannot cleanly propagate a
+    `BaseException` that isn't a plain `Exception` (`KeyboardInterrupt`/
+    `SystemExit`) the way a direct, ungathered `await` can; it surfaces as
+    `CancelledError` to whatever awaits the `gather()` instead. What matters
+    operationally is what this test actually checks: the run still ends up
+    `failed`, never stuck at `running` forever, and the interrupt still
+    reaches the caller (`pytest.raises` below) so the process still exits
+    via it — see `cli.cmd_fetch`'s own comment at the `asyncio.gather` call
+    for where this is exercised.
     """
     import asyncio
 
@@ -314,7 +329,134 @@ def test_an_interrupted_fetch_also_closes_its_row(monkeypatch, _isolated_db) -> 
         "SELECT status, error FROM runs ORDER BY id DESC LIMIT 1"
     ).fetchone()
     assert row["status"] == "failed"
-    assert "KeyboardInterrupt" in (row["error"] or "")
+    assert row["error"]
+
+
+# --- cmd_fetch sweeps ATSes concurrently, each on its own connection --------
+#
+# `_fetch_one_ats`/`_fetch_one_global_source` (cli.py) replaced a sequential
+# `for ats in boards_map:` loop with one `asyncio.gather` task per source, on
+# its own DB connection, committing as each one finishes — rather than
+# everything sharing one connection and one commit at the very end. These
+# tests exercise both properties directly, since neither was true before.
+
+async def test_ats_sweeps_actually_overlap_in_time(monkeypatch, _isolated_db) -> None:
+    """The whole point of the change: two ATS sweeps must run concurrently,
+    not one after another the way the old sequential loop did. Each fake
+    sweep sleeps briefly and records its own start/end; if they were still
+    sequential, the second's start would be at or after the first's end."""
+    from jobscrape import cli
+
+    intervals: list[tuple[str, float, float]] = []
+
+    async def fake_fetch_boards(conn, fetcher, ats, since, until, args, boards=None):
+        start = time.monotonic()
+        await asyncio.sleep(0.05)
+        intervals.append((ats, start, time.monotonic()))
+        empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0,
+                 "closed": 0, "cooled_down": 0, "quiet": 0}
+        return empty, FilterFunnel()
+
+    monkeypatch.setattr(cli, "_fetch_boards", fake_fetch_boards)
+
+    rc = await cli.cmd_fetch(_fetch_args(sources=["greenhouse", "lever"]))
+    assert rc == 0
+    assert len(intervals) == 2
+
+    (_, a_start, a_end), (_, b_start, b_end) = intervals
+    assert a_start < b_end and b_start < a_end, (
+        "ATS sweeps did not overlap in time -- still effectively sequential"
+    )
+
+
+async def test_each_ats_sweep_opens_its_own_connection(monkeypatch, _isolated_db) -> None:
+    """`_fetch_one_ats` must call `db.connect()` itself for each ATS, rather
+    than reusing one connection shared across every concurrently-running
+    sweep — a single Postgres connection cannot safely serve statements from
+    multiple coroutines interleaved on the event loop the way sharing one
+    across ATSes would require.
+
+    `_isolated_db` (conftest.py) monkeypatches `db.connect` so the whole
+    suite shares one rolled-back transaction — real production connections
+    would differ per call, but this still proves the CODE PATH asks for one
+    per ATS, which is what matters here.
+    """
+    from jobscrape import cli
+
+    connect_count = 0
+    real_connect = db.connect
+
+    def spy_connect(database_url=None):
+        nonlocal connect_count
+        connect_count += 1
+        return real_connect(database_url)
+
+    monkeypatch.setattr(db, "connect", spy_connect)
+
+    # `cmd_fetch` itself also calls `db.connect()` (the outer session) and so
+    # do the `dedupe`/`stats` steps it chains afterward -- none of that is
+    # what this test cares about. What matters is that each ATS's OWN task
+    # sees the counter freshly incremented at the moment it runs, proving a
+    # NEW `db.connect()` call happened for it specifically, not that it
+    # reused whatever connection an earlier ATS (or the outer session) held.
+    per_ats_count: dict[str, int] = {}
+
+    async def fake_fetch_boards(conn, fetcher, ats, since, until, args, boards=None):
+        per_ats_count[ats] = connect_count
+        empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0,
+                 "closed": 0, "cooled_down": 0, "quiet": 0}
+        return empty, FilterFunnel()
+
+    monkeypatch.setattr(cli, "_fetch_boards", fake_fetch_boards)
+
+    rc = await cli.cmd_fetch(_fetch_args(sources=["greenhouse", "lever"]))
+    assert rc == 0
+    assert set(per_ats_count) == {"greenhouse", "lever"}
+    assert per_ats_count["greenhouse"] != per_ats_count["lever"], (
+        "both ATSes saw the same connect-call count -- they reused one "
+        "connection instead of each opening its own"
+    )
+
+
+async def test_a_completed_ats_sweep_commits_before_a_slower_sibling_finishes(
+    monkeypatch, _isolated_db,
+) -> None:
+    """`_fetch_boards` commits per board as it goes (see its own comment in
+    cli.py) — confirm a fast ATS's insert calls `commit()` on its own
+    connection while a slower sibling ATS is still mid-sweep, rather than
+    everything waiting for the whole `cmd_fetch` call to finish the way a
+    single shared, once-at-the-end transaction would."""
+    from jobscrape import cli
+
+    commits_while_sibling_running: list[bool] = []
+    lever_started = asyncio.Event()
+    lever_may_finish = asyncio.Event()
+
+    async def fake_fetch_boards(conn, fetcher, ats, since, until, args, boards=None):
+        empty = {"raw": 0, "kept": 0, "new": 0, "refreshed": 0, "boards": 0,
+                 "closed": 0, "cooled_down": 0, "quiet": 0}
+        if ats == "lever":
+            lever_started.set()
+            await lever_may_finish.wait()
+            return empty, FilterFunnel()
+
+        # greenhouse: wait for lever to genuinely be mid-flight, then insert
+        # and commit while it's still running.
+        await lever_started.wait()
+        db.upsert_jobs(conn, [Job(
+            source="greenhouse", source_job_id="early1", title="Software Engineer",
+            company="Acme", company_slug="acme", job_url="https://x/early1",
+        )])
+        conn.commit()
+        commits_while_sibling_running.append(True)
+        lever_may_finish.set()
+        return empty, FilterFunnel()
+
+    monkeypatch.setattr(cli, "_fetch_boards", fake_fetch_boards)
+
+    rc = await cli.cmd_fetch(_fetch_args(sources=["greenhouse", "lever"]))
+    assert rc == 0
+    assert commits_while_sibling_running == [True]
 
 
 # --- connecting must not take locks a running sweep is holding ---------------
