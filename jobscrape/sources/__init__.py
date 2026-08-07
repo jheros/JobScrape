@@ -21,13 +21,11 @@ from . import (
     employers,
     greenhouse,
     hackernews,
-    himalayas,
     icims,
     jazzhr,
     jobicy,
     jsearch,
     jobvite,
-    jooble,
     lever,
     oracle,
     paycom,
@@ -88,14 +86,21 @@ GLOBAL_SOURCES: dict[str, GlobalSource] = {
         remoteok.RemoteOK(),
         arbeitnow.Arbeitnow(),
         hackernews.HackerNews(),
-        himalayas.Himalayas(),
+        # Himalayas and Jooble were here until both were dropped: Jooble's
+        # own outbound links are session/search-scoped click-trackers
+        # (`jooble.org/away/...?pos=...&scr=...&aq=...`), not stable job
+        # permalinks, so a listing jobscrape still sees as open in Jooble's
+        # API can already 404 or show "no longer available" by the time a
+        # candidate clicks through — a mismatch jobscrape has no way to
+        # detect from the API alone. Himalayas was dropped alongside it by
+        # the same call. The adapter modules stay (still covered by their
+        # own tests) in case this is revisited later.
         remotive.Remotive(),
         jobicy.Jobicy(),
         weworkremotely.WeWorkRemotely(),
         # Need a free API key; skipped with a message when absent.
         usajobs.USAJobs(),
         adzuna.Adzuna(),
-        jooble.Jooble(),
         jsearch.JSearch(),
         # A direct employer career site: a fixed employer running its own API
         # rather than an ATS, so no other adapter can see its openings. Amazon
