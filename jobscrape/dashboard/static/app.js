@@ -287,6 +287,26 @@
     }, 5000);
   }
 
+  // --- live Duration on Runs/History's still-running rows ------------------
+  // Mirrors analytics.py's _duration() bucketing exactly, so the live-ticked
+  // text and the eventual server-rendered final value never visibly jump.
+  function formatDuration(seconds) {
+    seconds = Math.max(0, Math.floor(seconds));
+    if (seconds < 60) return seconds + "s";
+    if (seconds < 3600) return Math.floor(seconds / 60) + "m " + (seconds % 60) + "s";
+    return Math.floor(seconds / 3600) + "h " + (Math.floor(seconds % 3600 / 60)) + "m";
+  }
+  var runningRows = document.querySelectorAll("tr.is-running[data-started-at]");
+  if (runningRows.length) {
+    setInterval(function () {
+      runningRows.forEach(function (row) {
+        var started = new Date(row.getAttribute("data-started-at")).getTime();
+        var el = row.querySelector(".duration-live");
+        if (el) el.textContent = formatDuration((Date.now() - started) / 1000);
+      });
+    }, 1000);
+  }
+
   // --- settings: reveal-on-click secrets, save, restart --------------------
   document.querySelectorAll(".reveal-toggle").forEach(function (btn) {
     btn.addEventListener("click", function () {
@@ -307,6 +327,65 @@
       });
     });
   }
+  // --- settings: blocked-companies chip list --------------------------------
+  var chipList = document.getElementById("blocked-companies-chips");
+  var chipHidden = document.getElementById("blocked-companies-hidden");
+  var chipAddInput = document.getElementById("blocked-company-add");
+  var chipAddBtn = document.getElementById("blocked-company-add-btn");
+  if (chipList && chipHidden) {
+    function syncBlockedCompaniesHidden() {
+      var names = Array.prototype.slice
+        .call(chipList.querySelectorAll(".chip"))
+        .map(function (c) { return c.getAttribute("data-company"); });
+      chipHidden.value = names.join(",");
+    }
+    function addChip(name) {
+      name = name.trim();
+      if (!name) return;
+      var existing = Array.prototype.slice.call(chipList.querySelectorAll(".chip"))
+        .map(function (c) { return c.getAttribute("data-company").toLowerCase(); });
+      if (existing.indexOf(name.toLowerCase()) !== -1) return;
+      var chip = document.createElement("span");
+      chip.className = "chip removable";
+      chip.setAttribute("data-company", name);
+      chip.textContent = name + " ";
+      var removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.className = "chip-remove";
+      removeBtn.setAttribute("aria-label", "Remove");
+      removeBtn.textContent = "×";
+      removeBtn.addEventListener("click", function () {
+        chip.remove();
+        syncBlockedCompaniesHidden();
+      });
+      chip.appendChild(removeBtn);
+      chipList.appendChild(chip);
+      syncBlockedCompaniesHidden();
+    }
+    chipList.querySelectorAll(".chip-remove").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        btn.closest(".chip").remove();
+        syncBlockedCompaniesHidden();
+      });
+    });
+    if (chipAddBtn) {
+      chipAddBtn.addEventListener("click", function () {
+        addChip(chipAddInput.value);
+        chipAddInput.value = "";
+        chipAddInput.focus();
+      });
+    }
+    if (chipAddInput) {
+      chipAddInput.addEventListener("keydown", function (event) {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          addChip(chipAddInput.value);
+          chipAddInput.value = "";
+        }
+      });
+    }
+  }
+
   var restartBtn = document.getElementById("settings-restart");
   if (restartBtn) {
     restartBtn.addEventListener("click", function () {
@@ -326,6 +405,39 @@
     var cancelBtn = document.getElementById("schedule-form-cancel");
     var title = document.getElementById("schedule-form-title");
     var editIdField = scheduleForm.elements["edit_id"];
+    var frequencyMode = scheduleForm.elements["frequency_mode"];
+    var minuteIntervalField = scheduleForm.elements["minute_interval"];
+    var intervalDaysField = scheduleForm.elements["interval_days"];
+    var stageField = scheduleForm.elements["stage"];
+    var jobrightHint = document.getElementById("jobright-hint");
+    var fieldMinuteInterval = document.getElementById("field-minute-interval");
+    var fieldIntervalDays = document.getElementById("field-interval-days");
+    var fieldHour = document.getElementById("field-hour");
+    var fieldMinute = document.getElementById("field-minute");
+    var fieldDays = document.getElementById("field-days");
+
+    // "cron" — daily/weekly at a fixed HH:MM, optionally on specific days.
+    // "minutes" — every N minutes, all day (cron_minute becomes "*/N",
+    // cron_hour/day_of_week become "*").
+    // "days" — every N days at a fixed HH:MM, via IntervalTrigger
+    // (interval_days set; cron_day_of_week is irrelevant to it).
+    function applyFrequencyMode(mode) {
+      fieldMinuteInterval.classList.toggle("hidden", mode !== "minutes");
+      fieldIntervalDays.classList.toggle("hidden", mode !== "days");
+      fieldHour.classList.toggle("hidden", mode === "minutes");
+      fieldMinute.classList.toggle("hidden", mode === "minutes");
+      fieldDays.classList.toggle("hidden", mode !== "cron");
+    }
+    frequencyMode.addEventListener("change", function () {
+      applyFrequencyMode(frequencyMode.value);
+    });
+    applyFrequencyMode(frequencyMode.value);
+
+    function updateJobrightHint() {
+      jobrightHint.classList.toggle("hidden", stageField.value !== "jobright-fetch");
+    }
+    stageField.addEventListener("change", updateJobrightHint);
+    updateJobrightHint();
 
     function resetForm() {
       scheduleForm.reset();
@@ -333,6 +445,9 @@
       submitBtn.textContent = "Add schedule";
       title.textContent = "Add a schedule";
       cancelBtn.style.display = "none";
+      frequencyMode.value = "cron";
+      applyFrequencyMode("cron");
+      updateJobrightHint();
     }
 
     cancelBtn.addEventListener("click", resetForm);
@@ -343,10 +458,29 @@
         scheduleForm.elements["name"].value = btn.getAttribute("data-name");
         scheduleForm.elements["stage"].value = btn.getAttribute("data-stage");
         scheduleForm.elements["extra"].value = btn.getAttribute("data-extra");
-        scheduleForm.elements["cron_hour"].value = btn.getAttribute("data-hour");
-        scheduleForm.elements["cron_minute"].value = btn.getAttribute("data-minute");
-        scheduleForm.elements["cron_day_of_week"].value = btn.getAttribute("data-days");
         scheduleForm.elements["timezone"].value = btn.getAttribute("data-timezone");
+        var hour = btn.getAttribute("data-hour");
+        var minute = btn.getAttribute("data-minute");
+        var days = btn.getAttribute("data-days");
+        var intervalDays = btn.getAttribute("data-interval-days");
+        var minuteStep = /^\*\/(\d+)$/.exec(minute || "");
+        var mode = "cron";
+        if (intervalDays) {
+          mode = "days";
+          intervalDaysField.value = intervalDays;
+          scheduleForm.elements["cron_hour"].value = hour;
+          scheduleForm.elements["cron_minute"].value = minute;
+        } else if (minuteStep && hour === "*") {
+          mode = "minutes";
+          minuteIntervalField.value = minuteStep[1];
+        } else {
+          scheduleForm.elements["cron_hour"].value = hour;
+          scheduleForm.elements["cron_minute"].value = minute;
+          scheduleForm.elements["cron_day_of_week"].value = days;
+        }
+        frequencyMode.value = mode;
+        applyFrequencyMode(mode);
+        updateJobrightHint();
         submitBtn.textContent = "Save changes";
         title.textContent = "Edit schedule";
         cancelBtn.style.display = "inline-flex";
@@ -356,6 +490,22 @@
 
     scheduleForm.addEventListener("submit", function (event) {
       event.preventDefault();
+      // Translate the friendly frequency-mode UI into the raw cron_minute/
+      // cron_hour/cron_day_of_week/interval_days fields the backend actually
+      // stores, right before serializing — the visible "Every N minutes"/
+      // "Every N days" controls aren't real schedule columns themselves.
+      var mode = frequencyMode.value;
+      if (mode === "minutes") {
+        var n = parseInt(minuteIntervalField.value, 10) || 1;
+        scheduleForm.elements["cron_minute"].value = "*/" + n;
+        scheduleForm.elements["cron_hour"].value = "*";
+        scheduleForm.elements["cron_day_of_week"].value = "*";
+        intervalDaysField.value = "";
+      } else if (mode === "days") {
+        scheduleForm.elements["cron_day_of_week"].value = "*";
+      } else {
+        intervalDaysField.value = "";
+      }
       var editId = editIdField.value;
       var body = new URLSearchParams(new FormData(scheduleForm)).toString();
       var url = editId ? "/api/schedule/" + editId : "/api/schedule";

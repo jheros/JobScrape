@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from .. import config, db
 from .runner import manager, resolve_stage
@@ -130,12 +133,34 @@ def reload() -> None:
         if not row["enabled"]:
             continue
         try:
-            scheduler.add_job(
-                _fire,
-                trigger=CronTrigger(
+            if row["interval_days"]:
+                # "Every N days" — cron has no native rolling N-day concept
+                # (day-of-month `*/N` resets at each month boundary, the
+                # wrong semantics). Anchored on this row's own `created_at`
+                # date, not "now": `reload()` runs on every schedule
+                # create/update/toggle/delete, not just this row's own, so
+                # an anchor recomputed from "now" each time would silently
+                # reset the N-day counter whenever an unrelated schedule was
+                # touched. cron_hour/cron_minute are still plain integers
+                # here (the UI only offers */N-step minute values in cron
+                # mode) — they fix the time-of-day within that day-cycle.
+                tz = ZoneInfo(row["timezone"])
+                anchor = row["created_at"]
+                start = datetime.combine(
+                    anchor.astimezone(tz).date(),
+                    time(int(row["cron_hour"]), int(row["cron_minute"])),
+                ).replace(tzinfo=tz)
+                trigger = IntervalTrigger(
+                    days=int(row["interval_days"]), start_date=start, timezone=tz,
+                )
+            else:
+                trigger = CronTrigger(
                     minute=row["cron_minute"], hour=row["cron_hour"],
                     day_of_week=row["cron_day_of_week"], timezone=row["timezone"],
-                ),
+                )
+            scheduler.add_job(
+                _fire,
+                trigger=trigger,
                 args=[row["id"]],
                 id=_job_id(row["id"]),
                 replace_existing=True,

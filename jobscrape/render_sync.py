@@ -296,19 +296,40 @@ def sync(
     # ordering hazard in flushing these independently.
     pending_deletes: list[str] = []
     pending_upserts: list[tuple[Any, ...]] = []
+    # Index-aligned with the two lists above -- appended at the exact same
+    # call sites, drained together -- so the Jobs dashboard can show whether
+    # a row actually reached Render, not just render_sync's own run-level
+    # watermark. Local writes only, batched once per flush (never per row on
+    # the success path), so this adds no round-trips to the hot path.
+    pending_delete_local_keys: list[tuple[str, str]] = []
+    pending_upsert_local_keys: list[tuple[str, str]] = []
+
+    def stamp_local_sync(keys: list[tuple[str, str]], sync_status: str) -> None:
+        if not keys or dry_run:
+            return
+        placeholders = ", ".join(["(?, ?)"] * len(keys))
+        conn.execute(
+            f"UPDATE jobs SET render_synced_at = ?, render_sync_status = ? "
+            f"WHERE (source, source_job_id) IN ({placeholders})",
+            (datetime.now(timezone.utc), sync_status, *[v for pair in keys for v in pair]),
+        )
+        conn.commit()
 
     def flush_deletes() -> None:
         nonlocal deleted, skipped
         if not pending_deletes:
             return
         keys, pending_deletes[:] = pending_deletes[:], []
+        local_keys, pending_delete_local_keys[:] = pending_delete_local_keys[:], []
         if len(keys) == 1:
             try:
                 render_conn.execute(_DELETE_SQL, (keys[0],))
                 deleted += 1
+                stamp_local_sync(local_keys, "synced")
             except IntegrityError:
                 render_conn.rollback()
                 skipped += 1
+                stamp_local_sync(local_keys, "blocked")
                 log.warning(
                     "render-sync: %s has a dependent review — leaving it "
                     "in Render rather than deleting", keys[0],
@@ -317,6 +338,7 @@ def sync(
         try:
             render_conn.execute(_batch_delete_sql(len(keys)), keys)
             deleted += len(keys)
+            stamp_local_sync(local_keys, "synced")
         except IntegrityError:
             # Render's own schema, not jobscrape's to manage (see this
             # module's docstring) — a row a site visitor has reviewed is
@@ -326,13 +348,15 @@ def sync(
             # entire batch -- fall back to one row at a time, just for this
             # batch, to isolate exactly which key(s) are blocked.
             render_conn.rollback()
-            for key in keys:
+            for key, local_key in zip(keys, local_keys):
                 try:
                     render_conn.execute(_DELETE_SQL, (key,))
                     deleted += 1
+                    stamp_local_sync([local_key], "synced")
                 except IntegrityError:
                     render_conn.rollback()
                     skipped += 1
+                    stamp_local_sync([local_key], "blocked")
                     log.warning(
                         "render-sync: %s has a dependent review — leaving "
                         "it in Render rather than deleting", key,
@@ -344,6 +368,7 @@ def sync(
         if not pending_upserts:
             return
         rows, pending_upserts[:] = pending_upserts[:], []
+        local_keys, pending_upsert_local_keys[:] = pending_upsert_local_keys[:], []
         if len(rows) == 1:
             render_conn.execute(_UPSERT_SQL, rows[0])
         else:
@@ -353,6 +378,7 @@ def sync(
             )
         upserted += len(rows)
         render_conn.commit()
+        stamp_local_sync(local_keys, "synced")
 
     def flush_pending() -> None:
         # Deletes first: a row that closed makes room for whatever comes
@@ -381,6 +407,9 @@ def sync(
                 job_row.get("title") or "", job_row.get("company") or "",
             )
             pending_deletes.append(dedup_key)
+            pending_delete_local_keys.append(
+                (job_row.get("source") or "", job_row.get("source_job_id") or "")
+            )
             if len(pending_deletes) >= _BATCH_SIZE or len(pending_upserts) >= _BATCH_SIZE:
                 flush_pending()
             continue
@@ -397,6 +426,9 @@ def sync(
             values["created_at"], values["skills"], values["domain"],
             values["level"],
         ))
+        pending_upsert_local_keys.append(
+            (job_row.get("source") or "", job_row.get("source_job_id") or "")
+        )
         if len(pending_upserts) >= _BATCH_SIZE or len(pending_deletes) >= _BATCH_SIZE:
             flush_pending()
 

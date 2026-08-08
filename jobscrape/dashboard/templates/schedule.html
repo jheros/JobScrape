@@ -27,13 +27,27 @@
     <label>Extra flags
       <input type="text" name="extra" placeholder="--recheck (space-separated)">
     </label>
-    <label>Hour (0-23)
+    <label>Frequency
+      <select name="frequency_mode" id="schedule-frequency-mode">
+        <option value="cron">Daily/weekly at a set time</option>
+        <option value="minutes">Every N minutes</option>
+        <option value="days">Every N days</option>
+      </select>
+    </label>
+    <label id="field-minute-interval" class="hidden">Every N minutes (1-59)
+      <input type="number" name="minute_interval" min="1" max="59" value="15">
+    </label>
+    <label id="field-interval-days">Every N days
+      <input type="number" name="interval_days" min="1" value="2">
+      <span class="hint">only used in "Every N days" mode</span>
+    </label>
+    <label id="field-hour">Hour (0-23)
       <input type="number" name="cron_hour" min="0" max="23" value="7" required>
     </label>
-    <label>Minute (0-59)
+    <label id="field-minute">Minute (0-59)
       <input type="number" name="cron_minute" min="0" max="59" value="0" required>
     </label>
-    <label>Days
+    <label id="field-days">Days
       <select name="cron_day_of_week">
         <option value="*">Every day</option>
         <option value="mon-sat">Monday–Saturday</option>
@@ -45,6 +59,11 @@
     <label>Timezone
       <input type="text" name="timezone" value="Asia/Bangkok" required>
     </label>
+    <p class="hint hidden" id="jobright-hint">
+      Jobright is a real Chrome/Selenium session that can take 20-45+ minutes —
+      a tight schedule will often find the previous run still active. That's
+      handled safely (the tick is skipped, logged, no error), just worth knowing.
+    </p>
     <div class="form-actions">
       <button class="btn" type="submit" id="schedule-form-submit">{{ icons.icon('clock') }} Add schedule</button>
       <a class="btn ghost hidden" id="schedule-form-cancel">Cancel edit</a>
@@ -68,7 +87,7 @@
         <td>{{ s.name }}</td>
         <td><code>{{ s.stage }}</code></td>
         <td><code class="text-sm">{{ s.extra or "—" }}</code></td>
-        <td>{{ "%02d:%02d"|format(s.cron_hour|int, s.cron_minute|int) }} · {{ s.cron_day_of_week }}</td>
+        <td>{{ describe_cron(s.cron_hour, s.cron_minute, s.cron_day_of_week, s.interval_days) }}</td>
         <td>{{ s.timezone }}</td>
         <td>
           {% if s.last_fired_at %}
@@ -86,7 +105,8 @@
           <button class="btn ghost btn-sm" data-schedule-edit="{{ s.id }}"
                   data-name="{{ s.name }}" data-stage="{{ s.stage }}" data-extra="{{ s.extra or '' }}"
                   data-hour="{{ s.cron_hour }}" data-minute="{{ s.cron_minute }}"
-                  data-days="{{ s.cron_day_of_week }}" data-timezone="{{ s.timezone }}">{{ icons.icon('edit', 14) }} Edit</button>
+                  data-days="{{ s.cron_day_of_week }}" data-timezone="{{ s.timezone }}"
+                  data-interval-days="{{ s.interval_days or '' }}">{{ icons.icon('edit', 14) }} Edit</button>
           <button class="btn danger btn-sm" data-schedule-delete="{{ s.id }}">{{ icons.icon('trash', 14) }} Delete</button>
         </td>
       </tr>

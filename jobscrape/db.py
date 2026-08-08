@@ -110,6 +110,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- after already being synced to Render stayed there forever, an orphaned
     -- copy `duplicate_of IS NULL` filtered out of every later sync pass.
     duplicate_marked_at TIMESTAMPTZ,
+    -- Bookkeeping for render_sync.py, not part of the Job dataclass -- no
+    -- adapter ever sets these. `render_synced_at` is stamped by sync()'s
+    -- flush_upserts()/flush_deletes() the moment this row's current state
+    -- (whatever it was at flush time) is confirmed pushed to Render, whether
+    -- that push was an upsert or a delete. `render_sync_status` distinguishes
+    -- a genuinely confirmed push ('synced') from one that Render's own
+    -- reviews.job_id foreign key blocked ('blocked') -- without this a
+    -- blocked row and a never-yet-attempted row would look identical.
+    render_synced_at   TIMESTAMPTZ,
+    render_sync_status TEXT,
     UNIQUE (source, source_job_id)
 );
 
@@ -175,6 +185,14 @@ CREATE TABLE IF NOT EXISTS schedules (
     cron_minute      TEXT NOT NULL DEFAULT '0',
     cron_hour        TEXT NOT NULL DEFAULT '7',
     cron_day_of_week TEXT NOT NULL DEFAULT '*',
+    -- Set (positive integer) for an "every N days" schedule instead of the
+    -- cron fields above -- cron has no native rolling N-day concept (day-of-
+    -- month `*/N` resets at each month boundary, the wrong semantics). When
+    -- set, scheduler.reload() builds an IntervalTrigger anchored on this
+    -- row's own `created_at` date, with cron_hour/cron_minute still used as
+    -- the fixed time-of-day it fires. NULL means "use the cron fields as
+    -- normal", the existing/default behavior.
+    interval_days    INTEGER,
     timezone         TEXT NOT NULL DEFAULT 'Asia/Bangkok',
     enabled          BOOLEAN NOT NULL DEFAULT TRUE,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -414,7 +432,7 @@ def _get_engine(database_url: str) -> Engine:
 #: writes, not the whole `jobs` table, so a column added only for bookkeeping
 #: (never part of a `Job`) needs its own entry here or a deployed database
 #: missing it would never trip the "add this column" branch below.
-_MIGRATED_COLUMNS = {"duplicate_marked_at"}
+_MIGRATED_COLUMNS = {"duplicate_marked_at", "render_synced_at", "render_sync_status"}
 
 
 def _migrate(conn: Connection) -> None:
@@ -423,6 +441,8 @@ def _migrate(conn: Connection) -> None:
     # unlike the SQLite ALTER-COLUMN hook this replaces, adding a column is no
     # longer entangled with populating it.
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_marked_at TIMESTAMPTZ")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS render_synced_at TIMESTAMPTZ")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS render_sync_status TEXT")
     conn.commit()
 
 
@@ -1143,6 +1163,24 @@ def run_events(
     ).fetchall()
 
 
+def recent_error_events(
+    conn: Connection, run_id: int, limit: int = 5
+) -> list[dict[str, Any]]:
+    """The last `limit` error-level lines logged for a run, oldest first.
+
+    Used to populate `runs.error` once a run finishes failed — `_flush()`
+    already classifies any line containing literal " ERROR " as
+    `level='error'` and writes it here as the run streams, so the reason a
+    run failed is already captured; this is just reading it back.
+    """
+    rows = conn.execute(
+        "SELECT message FROM run_events WHERE run_id = ? AND level = 'error' "
+        "ORDER BY id DESC LIMIT ?",
+        (run_id, limit),
+    ).fetchall()
+    return list(reversed(rows))
+
+
 def mark_stale_runs(conn: Connection) -> int:
     """Close out runs left 'running' by a crash or a kill.
 
@@ -1170,14 +1208,15 @@ def create_schedule(
     cron_day_of_week: str = "*",
     timezone: str = "Asia/Bangkok",
     enabled: bool = True,
+    interval_days: int | None = None,
 ) -> int:
     result = conn.execute(
         "INSERT INTO schedules "
         "(name, stage, extra, cron_minute, cron_hour, cron_day_of_week, "
-        " timezone, enabled, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        " timezone, enabled, interval_days, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
         (name, stage, extra, cron_minute, cron_hour, cron_day_of_week,
-         timezone, enabled, now_iso(), now_iso()),
+         timezone, enabled, interval_days, now_iso(), now_iso()),
     )
     conn.commit()
     return int(result.fetchone()["id"])
@@ -1203,7 +1242,7 @@ def update_schedule(conn: Connection, schedule_id: int, **fields: Any) -> None:
         return
     columns = (
         "name", "stage", "extra", "cron_minute", "cron_hour",
-        "cron_day_of_week", "timezone", "enabled",
+        "cron_day_of_week", "timezone", "enabled", "interval_days",
     )
     updates = {k: v for k, v in fields.items() if k in columns}
     if not updates:

@@ -398,6 +398,30 @@ JOB_SORTS = {
 }
 
 
+#: Mirrors `render_sync.py`'s own `_CHANGED_SINCE_CTE` `changed_at` expression
+#: exactly, so this page can never disagree with render_sync about what
+#: "changed" means. 'blocked' beats 'synced' when both could apply (a row
+#: last blocked, then never subsequently re-attempted, stays 'blocked' — its
+#: `render_synced_at` IS the timestamp of that blocked attempt, so the
+#: `>=` check in the 'synced' branch would also be true; ordering the WHEN
+#: clauses blocked-first is what makes 'blocked' win).
+_RENDER_SYNC_STATE_SQL = """
+    CASE
+        WHEN j.render_sync_status = 'blocked'
+             AND j.render_synced_at >= GREATEST(
+                 j.last_seen_at, COALESCE(j.closed_at, j.last_seen_at),
+                 COALESCE(j.duplicate_marked_at, j.last_seen_at))
+            THEN 'blocked'
+        WHEN j.render_synced_at IS NOT NULL
+             AND j.render_synced_at >= GREATEST(
+                 j.last_seen_at, COALESCE(j.closed_at, j.last_seen_at),
+                 COALESCE(j.duplicate_marked_at, j.last_seen_at))
+            THEN 'synced'
+        ELSE 'pending'
+    END
+"""
+
+
 def search_jobs(
     conn: db.Connection,
     *,
@@ -408,7 +432,17 @@ def search_jobs(
     seniority: str | None = None,
     skill: str | None = None,
     query: str | None = None,
+    company: str | None = None,
+    employment_type: str | None = None,
+    department: str | None = None,
+    industry: str | None = None,
+    is_remote: bool | None = None,
     min_salary: float | None = None,
+    max_salary: float | None = None,
+    posted_since: date | None = None,
+    posted_until: date | None = None,
+    scam_signals: bool | None = None,
+    sync_state: str | None = None,
     stale: str | None = None,
     include_closed: bool = False,
     include_duplicates: bool = False,
@@ -451,9 +485,50 @@ def search_jobs(
         # long enough to hang a page load; indexed, it is 0.03s.
         where.append("string_to_array(j.skills, ',') @> ARRAY[?]")
         params.append(skill)
+    if company:
+        where.append("j.company ILIKE ?")
+        params.append(f"%{company}%")
+    if employment_type:
+        where.append("j.employment_type = ?")
+        params.append(employment_type)
+    if department:
+        where.append("j.department = ?")
+        params.append(department)
+    if industry:
+        where.append("j.industry = ?")
+        params.append(industry)
+    if is_remote is not None:
+        where.append("j.is_remote = ?")
+        params.append(is_remote)
     if min_salary:
+        # Deliberately `salary_max >= ?`, not `salary_min >= ?`: "does this
+        # job's range reach at least this floor" rather than "does its own
+        # minimum start there" — a wide range that could pay what you want
+        # shouldn't be hidden just because its own stated floor is lower.
+        # `max_salary` below is the new, additive paired filter; this
+        # existing field's own meaning is intentionally left alone.
         where.append("j.salary_max >= ?")
         params.append(min_salary)
+    if max_salary:
+        where.append("j.salary_min <= ?")
+        params.append(max_salary)
+    if posted_since:
+        # Cast explicitly to UTC before taking the date, not a bare
+        # `posted_at >= ?` — the session timezone here is NOT UTC (observed
+        # Asia/Vientiane, UTC+7), and comparing a TIMESTAMPTZ against a bare
+        # DATE literal implicitly interprets that literal at session-local
+        # midnight, silently shifting the boundary by a full session-UTC
+        # offset from what `posted_at`'s own UTC-stored values mean.
+        where.append("(j.posted_at AT TIME ZONE 'UTC')::date >= ?")
+        params.append(posted_since)
+    if posted_until:
+        where.append("(j.posted_at AT TIME ZONE 'UTC')::date <= ?")
+        params.append(posted_until)
+    if scam_signals:
+        where.append("j.scam_signals <> ''")
+    if sync_state:
+        where.append(f"{_RENDER_SYNC_STATE_SQL} = ?")
+        params.append(sync_state)
     if query:
         where.append("(j.title ILIKE ? OR j.company ILIKE ? OR j.description_text ILIKE ?)")
         like = f"%{query}%"
@@ -481,7 +556,8 @@ def search_jobs(
     rows = _rows(
         conn,
         f"SELECT j.*, COALESCE(s.status,'new') AS status, s.notes, "
-        f"       {verdict_sql} AS staleness {base} "
+        f"       {verdict_sql} AS staleness, "
+        f"       {_RENDER_SYNC_STATE_SQL} AS render_sync_state {base} "
         f"ORDER BY {order} LIMIT ? OFFSET ?",
         tuple(params) + (limit, offset),
     )
@@ -511,5 +587,14 @@ def filter_options(conn: db.Connection) -> dict[str, list[Any]]:
             "  SELECT unnest(string_to_array(skills, ',')) skill FROM jobs"
             f"  WHERE {_OPEN} AND skills <> ''"
             ") t WHERE skill <> '' GROUP BY skill ORDER BY n DESC, skill LIMIT 60")],
+        "employment_types": [r["v"] for r in conn.execute(
+            "SELECT DISTINCT employment_type v FROM jobs "
+            "WHERE employment_type IS NOT NULL ORDER BY v")],
+        "departments": [r["v"] for r in conn.execute(
+            "SELECT DISTINCT department v FROM jobs "
+            "WHERE department IS NOT NULL ORDER BY v")],
+        "industries": [r["v"] for r in conn.execute(
+            "SELECT DISTINCT industry v FROM jobs "
+            "WHERE industry IS NOT NULL ORDER BY v")],
         "statuses": list(db.JOB_STATUSES) + ["all"],
     }

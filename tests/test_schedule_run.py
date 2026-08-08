@@ -120,6 +120,21 @@ async def test_full_mode_is_bounded_to_60_days(recorder) -> None:
     assert apify_args.since == expected_since
 
 
+async def test_sources_mode_runs_only_discover_and_validate(recorder) -> None:
+    """`discover-validate`'s whole point: keep the board registry fresh
+    without also fetching or pulling Apify."""
+    rc = await cli.cmd_schedule_run(_mode_args("sources"))
+    assert rc == 0
+    stages = [name for name, _ in recorder]
+    assert stages == ["discover", "validate"]
+
+    discover_args = dict(recorder)["discover"]
+    assert discover_args.vector is None  # every vector, same breadth as weekly
+
+    validate_args = dict(recorder)["validate"]
+    assert validate_args.limit == 6000
+
+
 async def test_a_failing_step_stops_the_sequence(recorder, monkeypatch) -> None:
     async def failing_validate(args):
         return 2

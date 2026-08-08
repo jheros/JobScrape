@@ -58,6 +58,80 @@ def test_reload_skips_one_invalid_trigger_without_dropping_the_rest(_isolated_db
     assert job_ids == {scheduler._job_id(good_id)}
 
 
+def test_reload_builds_interval_trigger_for_a_days_schedule(_isolated_db) -> None:
+    """`interval_days` set means "every N days", via APScheduler's
+    IntervalTrigger rather than CronTrigger -- cron has no native rolling
+    N-day concept."""
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    conn = _isolated_db
+    schedule_id = db.create_schedule(
+        conn, "Every 2 days", "discover-validate", cron_hour="7", cron_minute="30",
+        interval_days=2,
+    )
+    scheduler.reload()
+
+    job = scheduler.scheduler.get_job(scheduler._job_id(schedule_id))
+    assert isinstance(job.trigger, IntervalTrigger)
+    assert job.trigger.interval.days == 2
+
+
+def test_reload_anchors_the_interval_on_created_at_not_now(_isolated_db) -> None:
+    """`reload()` fires on every schedule create/update/toggle/delete, not
+    just this row's own -- an anchor recomputed from "now" each time would
+    silently reset the N-day counter whenever an unrelated schedule was
+    touched. `created_at` is immutable, so it has to be the anchor."""
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    conn = _isolated_db
+    schedule_id = db.create_schedule(
+        conn, "Every 3 days", "discover-validate", cron_hour="9", cron_minute="15",
+        interval_days=3,
+    )
+    created_at = db.get_schedule(conn, schedule_id)["created_at"]
+    scheduler.reload()
+
+    job = scheduler.scheduler.get_job(scheduler._job_id(schedule_id))
+    assert isinstance(job.trigger, IntervalTrigger)
+    assert job.trigger.start_date.date() == created_at.date()
+    assert job.trigger.start_date.hour == 9
+    assert job.trigger.start_date.minute == 15
+
+
+def test_reload_handles_a_mix_of_cron_and_interval_schedules(_isolated_db) -> None:
+    from apscheduler.triggers.cron import CronTrigger
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    conn = _isolated_db
+    cron_id = db.create_schedule(conn, "Daily", "fetch")
+    interval_id = db.create_schedule(
+        conn, "Every 2 days", "discover-validate", interval_days=2,
+    )
+    scheduler.reload()
+
+    cron_job = scheduler.scheduler.get_job(scheduler._job_id(cron_id))
+    interval_job = scheduler.scheduler.get_job(scheduler._job_id(interval_id))
+    assert isinstance(cron_job.trigger, CronTrigger)
+    assert isinstance(interval_job.trigger, IntervalTrigger)
+
+
+def test_reload_skips_an_invalid_interval_without_dropping_the_rest(_isolated_db) -> None:
+    """An out-of-range hour/minute on an interval schedule raises building
+    the anchor `datetime.combine(...)` -- same "one bad row must not take
+    the rest down with it" contract `reload()` already has for a bad cron
+    field/timezone."""
+    conn = _isolated_db
+    good_id = db.create_schedule(conn, "Daily", "fetch")
+    db.create_schedule(
+        conn, "Bad hour", "discover-validate", cron_hour="99", interval_days=2,
+    )
+
+    scheduler.reload()  # must not raise
+
+    job_ids = {job.id for job in scheduler.scheduler.get_jobs()}
+    assert job_ids == {scheduler._job_id(good_id)}
+
+
 async def test_fire_starts_the_stage_and_records_the_run(_isolated_db, monkeypatch) -> None:
     conn = _isolated_db
     schedule_id = db.create_schedule(conn, "Daily", "stats", extra="")

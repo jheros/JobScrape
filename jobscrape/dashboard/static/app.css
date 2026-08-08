@@ -339,7 +339,37 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .banner .btn.ghost:hover { background: rgba(255,255,255,.24); }
 
 .pager { display: flex; gap: 8px; align-items: center; margin-top: 16px;
-         color: var(--text-secondary); font-size: 13px; }
+         color: var(--text-secondary); font-size: 13px; flex-wrap: wrap; }
+.pager-range { color: var(--text-muted); }
+.pager-jump { display: flex; gap: 6px; align-items: center; }
+.pager-jump-input { width: 72px; min-width: 0; }
+.per-page-label { display: flex; align-items: center; gap: 6px;
+                   font-size: 11px; color: var(--text-secondary);
+                   text-transform: uppercase; letter-spacing: .04em; }
+.per-page-label select { min-width: 64px; }
+
+.filters-more { margin: 4px 0 0; flex-basis: 100%; }
+.filters-more summary { cursor: pointer; font-size: 12px; color: var(--text-secondary); }
+.filters-more-grid { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-top: 10px; }
+.filters-more-grid label { display: flex; flex-direction: column; gap: 4px;
+                            font-size: 11px; color: var(--text-secondary);
+                            text-transform: uppercase; letter-spacing: .04em; }
+.checkbox-label { flex-direction: row !important; align-items: center; gap: 6px !important;
+                   text-transform: none !important; font-size: 13px !important; }
+.checkbox-label input { min-width: 0; }
+
+/* Truncated by default (the row would otherwise be as tall as the longest
+   description/JSON blob on the page) -- <details> already handles the
+   collapse/expand, this just caps the open state's own height. */
+.smart-view { max-width: 42ch; max-height: 220px; overflow: auto; margin-top: 4px; }
+
+.chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip.removable { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; }
+.chip-remove {
+  border: none; background: none; color: inherit; cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0; opacity: .6;
+}
+.chip-remove:hover { opacity: 1; }
 
 /* --- responsive: sidebar becomes a slide-out drawer --------------------- */
 

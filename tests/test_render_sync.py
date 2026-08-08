@@ -315,6 +315,67 @@ def test_sync_batch_delete_falls_back_to_one_row_when_one_is_blocked() -> None:
         # One rollback for the failed 2-row batch, one more for d0's own
         # failed single-row retry in the fallback.
         assert render.rollback_calls == 2
+
+
+# --- sync(): stamps local render_synced_at/render_sync_status ---------------
+
+
+def _local_sync_state(conn, source_job_id: str) -> tuple:
+    row = conn.execute(
+        "SELECT render_synced_at, render_sync_status FROM jobs WHERE source_job_id = ?",
+        (source_job_id,),
+    ).fetchone()
+    return row["render_synced_at"], row["render_sync_status"]
+
+
+def test_sync_marks_local_rows_synced_after_a_successful_batch_upsert(monkeypatch) -> None:
+    """The Jobs dashboard needs to know whether a row actually reached
+    Render, not just render_sync's own run-level watermark -- a successful
+    batch flush must stamp every row in it, in the same batch (one extra
+    local UPDATE, not one per row)."""
+    monkeypatch.setattr(render_sync, "_BATCH_SIZE", 2)
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="s0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="s1", posted_at="2026-07-02"),
+            _dup_job(source_job_id="s2", posted_at="2026-07-03"),
+        ])
+
+        render = _FakeRenderConn()
+        stats = sync(conn, render)
+        assert stats["upserted"] == 3
+
+        for sid in ("s0", "s1", "s2"):
+            synced_at, status = _local_sync_state(conn, sid)
+            assert synced_at is not None
+            assert status == "synced"
+
+
+def test_sync_marks_a_blocked_row_distinctly_from_pending() -> None:
+    """A row Render's `reviews.job_id` foreign key blocked must read as
+    'blocked' locally, not indistinguishable from a row never attempted."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="k0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="k1", posted_at="2026-07-02",
+                     title="Backend Engineer -Remote"),
+        ])
+        for sid in ("k0", "k1"):
+            conn.execute(
+                "UPDATE jobs SET closed_at = now() WHERE source_job_id = ?", (sid,)
+            )
+        conn.commit()
+
+        blocked_key = _dedup_key("adzuna", "k0", "https://x/q0",
+                                  "iOS Engineer -Remote", "Quora")
+        render = _FakeRenderConn(fail_deletes_for={blocked_key})
+        stats = sync(conn, render)
+        assert stats["skipped"] == 1 and stats["deleted"] == 1
+
+        k0_synced_at, k0_status = _local_sync_state(conn, "k0")
+        k1_synced_at, k1_status = _local_sync_state(conn, "k1")
+        assert k0_status == "blocked" and k0_synced_at is not None
+        assert k1_status == "synced" and k1_synced_at is not None
         deletes = [c for c in render.calls if c[0].strip().startswith("DELETE")]
         # The failed 2-row batch, then the fallback's two single-row retries.
         assert len(deletes) == 3

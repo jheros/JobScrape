@@ -17,6 +17,9 @@
   <label>Search
     <input type="search" name="q" value="{{ filters.q }}" placeholder="title, company, text">
   </label>
+  <label>Company
+    <input type="search" name="company" value="{{ filters.company }}" placeholder="e.g. Acme">
+  </label>
   <label>Source
     <select name="source">
       <option value="">any</option>
@@ -76,6 +79,75 @@
       <option value="company" {% if filters.sort=='company' %}selected{% endif %}>Company</option>
     </select>
   </label>
+
+  <details class="filters-more">
+    <summary>More filters</summary>
+    <div class="filters-more-grid">
+      <label>Employment type
+        <select name="employment_type">
+          <option value="">any</option>
+          {% for v in options.employment_types %}
+            <option value="{{ v }}" {% if filters.employment_type == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Department
+        <select name="department">
+          <option value="">any</option>
+          {% for v in options.departments %}
+            <option value="{{ v }}" {% if filters.department == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Industry
+        <select name="industry">
+          <option value="">any</option>
+          {% for v in options.industries %}
+            <option value="{{ v }}" {% if filters.industry == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Remote
+        <select name="is_remote">
+          <option value="">any</option>
+          <option value="true" {% if filters.is_remote == 'true' %}selected{% endif %}>remote only</option>
+          <option value="false" {% if filters.is_remote == 'false' %}selected{% endif %}>not remote</option>
+        </select>
+      </label>
+      <label>Max salary
+        <input type="number" name="max_salary" value="{{ filters.max_salary }}" step="10000" placeholder="e.g. 250000">
+      </label>
+      <label>Posted since
+        <input type="date" name="posted_since" value="{{ filters.posted_since }}">
+      </label>
+      <label>Posted until
+        <input type="date" name="posted_until" value="{{ filters.posted_until }}">
+      </label>
+      {% if render_sync_configured %}
+      <label>Render sync
+        <select name="sync_state">
+          <option value="">any</option>
+          <option value="synced" {% if filters.sync_state == 'synced' %}selected{% endif %}>synced</option>
+          <option value="pending" {% if filters.sync_state == 'pending' %}selected{% endif %}>pending</option>
+          <option value="blocked" {% if filters.sync_state == 'blocked' %}selected{% endif %}>blocked</option>
+        </select>
+      </label>
+      {% endif %}
+      <label class="checkbox-label">
+        <input type="checkbox" name="scam_signals" value="true" {% if filters.scam_signals %}checked{% endif %}>
+        Has a scam signal
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="include_closed" value="true" {% if filters.include_closed %}checked{% endif %}>
+        Include closed
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="include_duplicates" value="true" {% if filters.include_duplicates %}checked{% endif %}>
+        Include duplicates
+      </label>
+    </div>
+  </details>
+
   <button class="btn" type="submit">Apply</button>
   <a class="btn ghost" href="/jobs">Reset</a>
 </form>
@@ -93,11 +165,26 @@
     <thead>
       <tr>
         <th class="col-check"><input type="checkbox" id="check-all" aria-label="Select all"></th>
-        <th>Role</th>
+        <th class="col-status">Status</th>
+        <th>Source</th>
+        <th>Title</th>
+        <th>Company</th>
+        <th>Job URL</th>
+        <th>Apply URL</th>
         <th>Location</th>
+        <th>Workplace</th>
+        <th>Department</th>
+        <th>Level</th>
         <th class="num">Salary</th>
         <th>Posted</th>
-        <th class="col-status">Status</th>
+        <th>Updated</th>
+        <th>First seen</th>
+        <th>Last seen</th>
+        <th>Duplicate of</th>
+        <th>Skills</th>
+        <th>Description</th>
+        <th>Raw JSON</th>
+        {% if render_sync_configured %}<th>Render</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -107,33 +194,6 @@
                    data-token="{{ row.source }}|{{ row.source_job_id }}"
                    aria-label="Select job"></td>
         <td>
-          <a class="job-title" href="{{ row.job_url }}" target="_blank" rel="noopener">{{ row.title }}</a>
-          <div class="job-meta">
-            <span>{{ row.company }}</span>
-            <span class="tag">{{ row.source }}</span>
-            {% if row.workplace_type and row.workplace_type != 'unknown' %}<span class="tag">{{ row.workplace_type }}</span>{% endif %}
-            {% if row.seniority and row.seniority != 'unknown' %}<span class="tag level">{{ row.seniority }}</span>{% endif %}
-            {% if row.staleness == 'likely_evergreen' %}<span class="tag warn"
-              title="Old, mass-posted, or worded as a standing advert — probably not a live opening">likely evergreen</span>
-            {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
-            {% if row.scam_signals %}<span class="tag critical"
-              title="{{ row.scam_signals | scamreasons }}">possible scam</span>{% endif %}
-            {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
-          </div>
-          {% if row.skills %}
-          <div class="job-skills">
-            {% for skill in row.skills.split(',')[:8] %}<span class="chip">{{ skill }}</span>{% endfor %}
-            {% if row.skills.split(',')|length > 8 %}<span class="chip more">+{{ row.skills.split(',')|length - 8 }}</span>{% endif %}
-          </div>
-          {% endif %}
-        </td>
-        <td>{{ row.location_raw or "—" }}</td>
-        <td class="num">
-          {% if row.salary_min %}${{ (row.salary_min // 1000)|int }}k{% if row.salary_max %}–${{ (row.salary_max // 1000)|int }}k{% endif %}
-          {% else %}—{% endif %}
-        </td>
-        <td>{{ row.posted_at|datefmt(10) }}</td>
-        <td>
           <select class="status-select" data-source="{{ row.source }}"
                   data-job-id="{{ row.source_job_id }}" aria-label="Set status">
             {% for s in statuses %}
@@ -141,9 +201,71 @@
             {% endfor %}
           </select>
         </td>
+        <td class="nowrap"><span class="tag">{{ row.source }}</span></td>
+        <td class="job-title">
+          {{ row.title }}
+          <div class="job-meta">
+            {% if row.staleness == 'likely_evergreen' %}<span class="tag warn"
+              title="Old, mass-posted, or worded as a standing advert — probably not a live opening">likely evergreen</span>
+            {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
+            {% if row.scam_signals %}<span class="tag critical"
+              title="{{ row.scam_signals | scamreasons }}">possible scam</span>{% endif %}
+            {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
+          </div>
+        </td>
+        <td>{{ row.company or "—" }}</td>
+        <td class="nowrap">
+          {% if row.job_url %}<a href="{{ row.job_url }}" target="_blank" rel="noopener" title="{{ row.job_url }}">↗</a>{% else %}—{% endif %}
+        </td>
+        <td class="nowrap">
+          {% if row.apply_url and row.apply_url != row.job_url %}
+            <a href="{{ row.apply_url }}" target="_blank" rel="noopener" title="{{ row.apply_url }}">↗</a>
+          {% else %}—{% endif %}
+        </td>
+        <td>{{ row.location_raw or "—" }}</td>
+        <td>{{ row.workplace_type or "—" }}</td>
+        <td>{{ row.department or "—" }}</td>
+        <td>{{ row.seniority or "—" }}</td>
+        <td class="num">
+          {{ row.salary_raw or "—" }}
+        </td>
+        <td class="nowrap">{{ row.posted_at|datefmt(10) }}</td>
+        <td class="nowrap">{{ row.updated_at|datefmt(10) }}</td>
+        <td class="nowrap">{{ row.first_seen_at|datefmt(10) }}</td>
+        <td class="nowrap">{{ row.last_seen_at|datefmt(10) }}</td>
+        <td>{{ row.duplicate_of or "—" }}</td>
+        <td>
+          {% if row.skills %}
+          <div class="job-skills">
+            {% for skill in row.skills.split(',')[:8] %}<span class="chip">{{ skill }}</span>{% endfor %}
+            {% if row.skills.split(',')|length > 8 %}<span class="chip more">+{{ row.skills.split(',')|length - 8 }}</span>{% endif %}
+          </div>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if row.description_text %}
+          <details><summary class="text-sm">description</summary>
+            <div class="text-sm smart-view">{{ row.description_text }}</div>
+          </details>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if row.raw_json %}
+          <details><summary class="text-sm">raw_json</summary>
+            <pre class="text-sm smart-view">{{ row.raw_json | tojson(indent=2) }}</pre>
+          </details>
+          {% else %}—{% endif %}
+        </td>
+        {% if render_sync_configured %}
+        <td>
+          {% if row.render_sync_state == 'synced' %}<span class="tag">synced</span>
+          {% elif row.render_sync_state == 'blocked' %}<span class="tag critical">blocked</span>
+          {% else %}<span class="tag warn">pending</span>{% endif %}
+        </td>
+        {% endif %}
       </tr>
       {% else %}
-      <tr class="empty-row"><td colspan="6">
+      <tr class="empty-row"><td colspan="20">
         Nothing matches these filters.
       </td></tr>
       {% endfor %}
@@ -151,19 +273,48 @@
   </table>
   </div>
 
-  {% if pages > 1 %}
   <div class="pager">
+    <label class="per-page-label">Per page
+      <select name="per_page" form="jobs-per-page-form" onchange="this.form.submit()">
+        {% for size in page_sizes %}
+          <option value="{{ size }}" {% if per_page == size %}selected{% endif %}>{{ size }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <form id="jobs-per-page-form" method="get">
+      {% for key, value in filters.items() %}
+        {% if key not in ('scam_signals', 'include_closed', 'include_duplicates') or value %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endif %}
+      {% endfor %}
+    </form>
+    <span class="pager-range">
+      Showing {{ ((page - 1) * per_page + 1)|comma }}–{{ [page * per_page, total]|min|comma }} of {{ total|comma }}
+    </span>
     {% if page > 1 %}
       {# Starlette rebuilds the query properly. The old string replace left a
          stray "&&" and would have mangled any filter value containing "page=". #}
-      <a class="btn ghost" href="{{ request.url.include_query_params(page=page - 1) }}">Previous</a>
+      <a class="btn ghost btn-sm" href="{{ request.url.include_query_params(page=1) }}">First</a>
+      <a class="btn ghost btn-sm" href="{{ request.url.include_query_params(page=page - 1) }}">Previous</a>
     {% endif %}
     <span>Page {{ page }} of {{ pages }}</span>
     {% if page < pages %}
-      <a class="btn ghost" href="{{ request.url.include_query_params(page=page + 1) }}">Next</a>
+      <a class="btn ghost btn-sm" href="{{ request.url.include_query_params(page=page + 1) }}">Next</a>
+      <a class="btn ghost btn-sm" href="{{ request.url.include_query_params(page=pages) }}">Last</a>
+    {% endif %}
+    {% if pages > 1 %}
+    <form class="pager-jump" method="get">
+      {% for key, value in filters.items() %}
+        {% if key not in ('scam_signals', 'include_closed', 'include_duplicates') or value %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endif %}
+      {% endfor %}
+      <input type="hidden" name="per_page" value="{{ per_page }}">
+      <input type="number" name="page" min="1" max="{{ pages }}" placeholder="page #" class="pager-jump-input">
+      <button class="btn ghost btn-sm" type="submit">Go</button>
+    </form>
     {% endif %}
   </div>
-  {% endif %}
 </div>
 
 {% endblock %}

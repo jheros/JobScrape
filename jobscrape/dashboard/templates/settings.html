@@ -26,7 +26,21 @@
       {% for f in keys %}
       <label>
         <span>{{ f.key }}</span>
-        {% if f.secret %}
+        {% if f.key == "JOBSCRAPE_BLOCKED_COMPANIES" %}
+        <div id="blocked-companies-chips" class="chip-list">
+          {% for company in f.value.split(',') %}
+            {% if company.strip() %}
+            <span class="chip removable" data-company="{{ company.strip() }}">{{ company.strip() }}
+              <button type="button" class="chip-remove" aria-label="Remove">×</button></span>
+            {% endif %}
+          {% endfor %}
+        </div>
+        <div class="flex mt-8">
+          <input type="text" id="blocked-company-add" placeholder="Add a company name" class="flex-1" autocomplete="off">
+          <button class="btn ghost" type="button" id="blocked-company-add-btn">Add</button>
+        </div>
+        <input type="hidden" name="{{ f.key }}" id="blocked-companies-hidden" value="{{ f.value }}">
+        {% elif f.secret %}
         <span class="flex">
           <input type="password" name="{{ f.key }}" value="{{ f.value }}" autocomplete="off" class="flex-1">
           <button class="btn ghost reveal-toggle" type="button" aria-label="Reveal">{{ icons.icon('eye', 16) }}</button>

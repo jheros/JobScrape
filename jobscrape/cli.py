@@ -1562,13 +1562,13 @@ def _step_args(command: str, argv: list[str], db_url: str | None) -> argparse.Na
 
 async def cmd_schedule_run(args: argparse.Namespace) -> int:
     """Discover -> validate -> fetch -> apify-pull -> dedupe -> stats, in one
-    of three modes:
+    of four modes:
 
-    - `daily`  — last 24 hours, cheap discover vectors, bounded validation.
+    - `daily`   — last 24 hours, cheap discover vectors, bounded validation.
       What the Mon-Sat cron leg runs.
-    - `weekly` — last 60 days, every discover vector, a wider validation cap.
+    - `weekly`  — last 60 days, every discover vector, a wider validation cap.
       What the Sunday cron leg runs.
-    - `full`   — also last 60 days, but no validation cap, every discover
+    - `full`    — also last 60 days, but no validation cap, every discover
       vector: the single "give me everything (recent)" button on the
       dashboard's Runs page. Discover finds every reachable board, validate
       probes all of them (not just a capped slice), and fetch collects
@@ -1577,15 +1577,21 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
       posting regardless of age — but that's what was filling the archive
       with postings from months back that nobody wants surfaced; capped to
       match `weekly`'s window instead.
+    - `sources` — discover (every vector) -> validate (same cap as `weekly`),
+      then stop: no fetch, no apify-pull. For a schedule that only wants to
+      keep the board registry itself fresh — new boards discovered, boards
+      revalidated — on its own cadence, decoupled from how often postings
+      are actually fetched.
 
     `daily`/`weekly` are `scripts/schedule.sh` ported to Python so the
     dashboard's in-process scheduler can run the identical sequence without
-    shelling out; `full` has no shell-script equivalent — it exists only for
-    the one-button case. All three call the same `cmd_discover`/
-    `cmd_validate`/... functions the terminal path calls; only the sequencing
-    (and each mode's discover vectors / validate limit / fetch window) is new.
+    shelling out; `full`/`sources` have no shell-script equivalent. All four
+    call the same `cmd_discover`/`cmd_validate`/... functions the terminal
+    path calls; only the sequencing (and each mode's discover vectors /
+    validate limit / fetch window) is new.
     """
     mode = args.mode
+    since: str | None
     if mode == "daily":
         # "Last 24 hours" as a calendar date: --since takes YYYY-MM-DD with no
         # time of day, so today's date at the moment this fires would miss
@@ -1600,6 +1606,12 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
         discover_argv = []
         validate_argv = ["--limit", "6000", "--concurrency", "6"]
         fetch_argv = ["--since", since]
+    elif mode == "sources":
+        # No fetch window: this mode never reaches the fetch step at all.
+        since = None
+        discover_argv = []
+        validate_argv = ["--limit", "6000", "--concurrency", "6"]
+        fetch_argv = []
     else:
         # Same 60-day window as `weekly` — only `--limit` on validate is
         # dropped (every unchecked board gets probed, not a capped slice).
@@ -1617,6 +1629,9 @@ async def cmd_schedule_run(args: argparse.Namespace) -> int:
     rc = await cmd_validate(_step_args("validate", validate_argv, args.db))
     if rc:
         return rc
+
+    if mode == "sources":
+        return 0
 
     rc = await cmd_fetch(_step_args("fetch", fetch_argv, args.db))
     if rc:
@@ -1998,7 +2013,9 @@ def build_parser() -> argparse.ArgumentParser:
              "sequence — daily/weekly are what the dashboard's scheduler fires; "
              "full is unbounded (every board, every currently open posting)",
     )
-    p_sched_run.add_argument("--mode", choices=["daily", "weekly", "full"], required=True)
+    p_sched_run.add_argument(
+        "--mode", choices=["daily", "weekly", "full", "sources"], required=True,
+    )
 
     p_dedupe = sub.add_parser("dedupe", help="collapse reposts and cross-source duplicates")
     p_dedupe.add_argument("--backfill", action="store_true",

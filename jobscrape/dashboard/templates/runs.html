@@ -147,6 +147,7 @@
     <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
     <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
     <button class="btn ghost" data-start-stage="validate" data-label="Validate">{{ icons.icon('play') }} Validate boards</button>
+    <button class="btn ghost" data-start-stage="discover-validate" data-label="Discover + validate">{{ icons.icon('play') }} Discover + validate</button>
     <button class="btn ghost" data-start-stage="export" data-label="Export">{{ icons.icon('play') }} Export</button>
     <button class="btn ghost" data-start-stage="dedupe" data-label="Dedupe">{{ icons.icon('play') }} Dedupe</button>
     <button class="btn ghost" data-start-stage="liveness" data-label="Liveness">{{ icons.icon('play') }} Liveness</button>
@@ -195,25 +196,44 @@
     <thead>
       <tr>
         <th>#</th><th>Stage</th><th>Command</th><th>Started</th>
-        <th>Duration</th><th class="num">New jobs</th><th>Status</th>
+        <th>Duration</th><th class="num">New jobs</th><th>Status</th><th>Result</th>
       </tr>
     </thead>
     <tbody>
       {% for run in history %}
-      <tr>
+      <tr{% if run.status == 'running' %} class="is-running" data-started-at="{{ run.started_at.isoformat() }}"{% endif %}>
         <td>{{ run.id }}</td>
         <td>{{ run.stage or "—" }}</td>
         <td><code class="text-sm">{{ run.command or "—" }}</code></td>
         <td>{{ run.started_at|datefmt }}</td>
-        <td>{{ run.duration }}</td>
+        <td>
+          {% if run.status == 'running' %}
+            <span class="duration-live">{{ run.duration }}</span>
+          {% else %}{{ run.duration }}{% endif %}
+        </td>
         <td class="num">
           {% if run.stats_parsed.rows_touched is defined %}{{ run.stats_parsed.rows_touched|comma }}
           {% else %}—{% endif %}
         </td>
         <td><span class="pill {{ run.status }}">{{ run.status }}</span></td>
+        <td>
+          {% if run.status == 'failed' and run.error %}
+            <details>
+              <summary class="text-sm">{{ run.error.splitlines()[0][:80] }}…</summary>
+              <pre class="text-sm">{{ run.error }}</pre>
+            </details>
+          {% elif run.status == 'ok' and run.stats_parsed %}
+            <details>
+              <summary class="text-sm">details</summary>
+              {% for k, v in run.stats_parsed.items() %}
+                <div class="text-sm">{{ k }}: {{ v }}</div>
+              {% endfor %}
+            </details>
+          {% else %}—{% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr class="empty-row"><td colspan="7">
+      <tr class="empty-row"><td colspan="8">
         No runs recorded yet.
       </td></tr>
       {% endfor %}

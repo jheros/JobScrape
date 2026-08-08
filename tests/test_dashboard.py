@@ -7,7 +7,7 @@ the run controller. Both are tested without starting a server.
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -113,6 +113,75 @@ def test_search_filters_combine(populated) -> None:
     assert total == 1
 
 
+def test_search_new_detailed_filters(populated) -> None:
+    conn, _ = populated
+    _, total = analytics.search_jobs(conn, status="all", company="Acme")
+    assert total == 2
+    _, total = analytics.search_jobs(conn, status="all", company="Globex")
+    assert total == 1
+    _, total = analytics.search_jobs(conn, status="all", posted_since=date(2026, 7, 2))
+    assert total == 2
+    _, total = analytics.search_jobs(conn, status="all", posted_until=date(2026, 7, 1))
+    assert total == 1
+    _, total = analytics.search_jobs(conn, status="all", max_salary=180000)
+    assert total == 1  # only the 150k-200k row's floor (salary_min) qualifies
+
+
+def test_search_render_sync_state(populated) -> None:
+    """Mirrors `render_sync.py`'s own `_CHANGED_SINCE_CTE` `changed_at`
+    expression exactly, so this page can never disagree with render_sync
+    about what "changed" means.
+
+    Explicit timestamp literals throughout, not `now()`: this test suite's
+    isolation holds the whole test in one uncommitted transaction (see
+    conftest.py), and Postgres's `now()` is fixed for a transaction's
+    entire duration -- every `now()` call here would return the identical
+    instant, so a "synced before this later change" scenario needs two
+    literal timestamps in the right order instead.
+    """
+    conn, _ = populated
+    # Never synced at all.
+    _, pending = analytics.search_jobs(conn, status="all", sync_state="pending")
+    assert pending == 3
+
+    # Relative to each row's own `last_seen_at` (stamped by `upsert_jobs` at
+    # fixture setup, itself pinned to this frozen-per-transaction `now()`)
+    # rather than a hardcoded date, so this doesn't depend on which real
+    # calendar date the suite happens to run on.
+    row = conn.execute(
+        "SELECT last_seen_at FROM jobs WHERE source_job_id = '1'"
+    ).fetchone()
+    synced_at = row["last_seen_at"] + timedelta(days=1)
+    later_change = row["last_seen_at"] + timedelta(days=2)
+
+    conn.execute(
+        "UPDATE jobs SET render_synced_at = ?, render_sync_status = 'synced' "
+        "WHERE source_job_id = '1'", (synced_at,),
+    )
+    # Blocked, and not superseded by any later successful sync.
+    conn.execute(
+        "UPDATE jobs SET render_synced_at = ?, render_sync_status = 'blocked' "
+        "WHERE source_job_id = '2'", (synced_at,),
+    )
+    conn.commit()
+
+    _, synced = analytics.search_jobs(conn, status="all", sync_state="synced")
+    assert synced == 1
+    _, blocked = analytics.search_jobs(conn, status="all", sync_state="blocked")
+    assert blocked == 1
+    _, pending = analytics.search_jobs(conn, status="all", sync_state="pending")
+    assert pending == 1
+
+    # A row changed again AFTER its last successful sync must fall back to
+    # 'pending' -- render_synced_at being in the past no longer covers it.
+    conn.execute(
+        "UPDATE jobs SET last_seen_at = ? WHERE source_job_id = '1'", (later_change,),
+    )
+    conn.commit()
+    _, synced = analytics.search_jobs(conn, status="all", sync_state="synced")
+    assert synced == 0
+
+
 def test_search_hides_closed_by_default(populated) -> None:
     conn, _ = populated
     _backdate_last_seen(conn, "2", config.CLOSURE_GRACE_HOURS + 1)
@@ -144,6 +213,20 @@ def test_run_history_parses_stats(populated) -> None:
     history = analytics.run_history(conn)
     assert history[0]["stats_parsed"]["rows_touched"] == 42
     assert history[0]["duration"]
+
+
+def test_run_history_exposes_started_at_as_a_real_datetime(populated) -> None:
+    """The Runs page's live-duration ticker needs `started_at.isoformat()`
+    to work in the template -- it must be a real `datetime`, not an
+    already-formatted string, whether the run finished or is still going."""
+    conn, _ = populated
+    run_id = db.start_run(conn, "fetch", "fetch")
+    db.finish_run(conn, run_id, "ok", {})
+    running_id = db.start_run(conn, "stats", "stats")
+
+    history = {row["id"]: row for row in analytics.run_history(conn)}
+    assert isinstance(history[run_id]["started_at"], datetime)
+    assert isinstance(history[running_id]["started_at"], datetime)
 
 
 def test_analytics_survive_an_empty_database(tmp_path) -> None:
@@ -243,7 +326,7 @@ def test_stage_allowlist_prevents_arbitrary_commands() -> None:
         "discover", "discover-fast", "validate", "fetch", "fetch-fast", "fetch-workday",
         "export", "apify-pull", "dedupe", "purge", "liveness", "stats", "sources",
         "daily-schedule", "weekly-schedule", "full-sweep", "jobright-fetch",
-        "render-sync",
+        "render-sync", "discover-validate",
     }
     known_subcommands = {
         "discover", "validate", "fetch", "export", "apify-pull", "dedupe",
@@ -470,6 +553,91 @@ async def test_stopping_a_composite_frees_its_whole_group(tmp_path, monkeypatch)
     assert not manager.is_running("discover")
     assert not manager.is_running("weekly-schedule")
     assert manager.active() == []
+
+
+def _fake_process_with_lines(lines: list[bytes], exit_code: int):
+    class _FakeStdout:
+        def __init__(self):
+            self._lines = list(lines)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._lines:
+                raise StopAsyncIteration
+            return self._lines.pop(0)
+
+    class _FakeProcess:
+        pid = 4300
+        stdout = _FakeStdout()
+
+        async def wait(self):
+            return exit_code
+
+    return _FakeProcess()
+
+
+async def test_consume_captures_the_error_reason_on_failure(tmp_path, monkeypatch) -> None:
+    """The actual failure reason was already sitting in `run_events` —
+    `_flush()` classifies any line containing " ERROR " as level='error' as
+    the run streams — this checks it's now read back and attached to
+    `runs.error` once the run finishes, not just visible in the live log."""
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    async def fake_exec(*args, **kwargs):
+        return _fake_process_with_lines(
+            [b"12:00:00 INFO    starting up",
+             b"12:00:01 ERROR   something broke: connection refused",
+             b"12:00:02 INFO    cleaning up"],
+            exit_code=1,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("stats")
+    run = manager._active["stats"]
+    await RunManager._consume(manager, run)
+
+    with db.session() as conn:
+        row = conn.execute(
+            "SELECT status, error FROM runs WHERE id = ?", (run.run_id,)
+        ).fetchone()
+    assert row["status"] == "failed"
+    assert "something broke: connection refused" in row["error"]
+
+
+async def test_consume_captures_the_error_reason_even_when_stats_already_written(
+    tmp_path, monkeypatch,
+) -> None:
+    """`cmd_fetch` writes its own rich stats before `_consume` sees the
+    process exit, so that branch takes a raw UPDATE instead of
+    `db.finish_run()` -- it must set `error` too, since a fetch run can
+    still fail after already having written partial stats."""
+    manager = RunManager(str(tmp_path / "r.db"))
+
+    async def fake_exec(*args, **kwargs):
+        return _fake_process_with_lines(
+            [b"12:00:00 ERROR   fetch blew up mid-sweep"], exit_code=1,
+        )
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(manager, "_consume", lambda run: asyncio.sleep(0))
+
+    await manager.start("stats")
+    run = manager._active["stats"]
+    with db.session() as conn:
+        db.finish_run(conn, run.run_id, "ok", {"rows_touched": 5})
+    await RunManager._consume(manager, run)
+
+    with db.session() as conn:
+        row = conn.execute(
+            "SELECT status, error, stats FROM runs WHERE id = ?", (run.run_id,)
+        ).fetchone()
+    assert row["status"] == "failed"
+    assert "fetch blew up mid-sweep" in row["error"]
+    assert row["stats"]  # untouched, not clobbered
 
 
 async def test_window_appends_since_and_until_to_argv(tmp_path, monkeypatch) -> None:

@@ -154,6 +154,12 @@ async def overview(request: Request) -> HTMLResponse:
         conn.close()
 
 
+#: Page sizes the Jobs pager actually offers — anything else in the query
+#: string (a stale bookmark, a hand-edited URL) falls back to the default
+#: rather than letting an arbitrary `per_page` turn into an unbounded query.
+_JOBS_PAGE_SIZES = (25, 50, 100, 200)
+
+
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs(
     request: Request,
@@ -164,36 +170,77 @@ async def jobs(
     seniority: str | None = None,
     skill: str | None = None,
     q: str | None = None,
+    company: str | None = None,
+    employment_type: str | None = None,
+    department: str | None = None,
+    industry: str | None = None,
+    is_remote: str | None = None,
     min_salary: BlankableFloat = None,
+    max_salary: BlankableFloat = None,
+    posted_since: str | None = None,
+    posted_until: str | None = None,
+    scam_signals: bool = False,
+    sync_state: str | None = None,
     stale: str | None = None,
     include_closed: bool = False,
+    include_duplicates: bool = False,
     sort: str = "newest",
     page: BlankableInt = 1,
+    per_page: BlankableInt = 50,
 ) -> HTMLResponse:
     conn = _conn()
     try:
-        per_page = 50
+        page_size = per_page if per_page in _JOBS_PAGE_SIZES else 50
         # A blank `page=` now validates to None rather than 422-ing; an absent
         # or unusable page number means the first one.
         current = max(page or 1, 1)
+        is_remote_bool = (
+            None if is_remote not in ("true", "false") else is_remote == "true"
+        )
+        # An unparseable date degrades to "no filter" rather than erroring the
+        # whole page — leaving a date box blank is the normal case here, the
+        # same reasoning `_blank_to_none` already applies to number inputs.
+        try:
+            since_date = filters.parse_date(posted_since) if posted_since else None
+        except ValueError:
+            since_date = None
+        try:
+            until_date = filters.parse_date(posted_until) if posted_until else None
+        except ValueError:
+            until_date = None
         rows, total = analytics.search_jobs(
             conn, status=status, source=source, state=state, workplace=workplace,
-            seniority=seniority, skill=skill,
-            query=q, min_salary=min_salary, stale=stale, include_closed=include_closed,
-            sort=sort, limit=per_page, offset=(current - 1) * per_page,
+            seniority=seniority, skill=skill, query=q,
+            company=company, employment_type=employment_type, department=department,
+            industry=industry, is_remote=is_remote_bool,
+            min_salary=min_salary, max_salary=max_salary,
+            posted_since=since_date, posted_until=until_date,
+            scam_signals=scam_signals or None, sync_state=sync_state,
+            stale=stale, include_closed=include_closed,
+            include_duplicates=include_duplicates,
+            sort=sort, limit=page_size, offset=(current - 1) * page_size,
         )
         return _page(
             request, "jobs.html",
-            rows=rows, total=total, page=current, per_page=per_page,
-            pages=max((total + per_page - 1) // per_page, 1),
+            rows=rows, total=total, page=current, per_page=page_size,
+            page_sizes=_JOBS_PAGE_SIZES,
+            pages=max((total + page_size - 1) // page_size, 1),
             options=analytics.filter_options(conn),
             statuses=db.JOB_STATUSES,
+            render_sync_configured=bool(config.RENDER_DATABASE_URL),
             filters={
                 "status": status, "source": source or "", "state": state or "",
                 "workplace": workplace or "", "seniority": seniority or "",
                 "skill": skill or "", "q": q or "",
-                "min_salary": min_salary or "", "stale": stale or "",
+                "company": company or "", "employment_type": employment_type or "",
+                "department": department or "", "industry": industry or "",
+                "is_remote": is_remote or "",
+                "min_salary": min_salary or "", "max_salary": max_salary or "",
+                "posted_since": posted_since or "", "posted_until": posted_until or "",
+                "scam_signals": scam_signals, "sync_state": sync_state or "",
+                "stale": stale or "",
                 "include_closed": include_closed,
+                "include_duplicates": include_duplicates,
                 "sort": sort,
             },
         )
@@ -344,7 +391,36 @@ _SCHEDULE_STAGE_CHOICES: list[tuple[str, str]] = [
         (value, f"{_STAGE_DISPLAY_NAMES[base]}({value.rsplit('-', 1)[-1]})")
         for value, (base, _days) in RELATIVE_WINDOWS.items()
     ),
+    ("discover-validate", "Discover + validate sources"),
+    ("jobright-fetch", "Fetch Jobright jobs"),
 ]
+
+
+def describe_cron(
+    hour: str, minute: str, day_of_week: str, interval_days: int | None,
+) -> str:
+    """A human-readable summary of a schedule's cadence, for the Schedule
+    tab's list — the raw fields alone stopped being readable once `minute`
+    could be a step expression (`*/15`) instead of a plain 0-59 integer, and
+    an interval schedule doesn't use `day_of_week` at all.
+    """
+    if interval_days:
+        try:
+            return f"every {int(interval_days)} days at {int(hour):02d}:{int(minute):02d}"
+        except (TypeError, ValueError):
+            return f"every {interval_days} days"
+    if minute.startswith("*/") and hour == "*":
+        return f"every {minute[2:]} min"
+    try:
+        time_str = f"{int(hour):02d}:{int(minute):02d}"
+    except (TypeError, ValueError):
+        return f"{hour}:{minute} ({day_of_week})"
+    if day_of_week in ("*", ""):
+        return time_str
+    return f"{time_str} ({day_of_week})"
+
+
+templates.env.globals["describe_cron"] = describe_cron
 
 
 @app.post("/api/runs/{stage}/start")
@@ -401,13 +477,15 @@ async def create_schedule(
     cron_hour: str = Form("7"),
     cron_day_of_week: str = Form("*"),
     timezone: str = Form("Asia/Bangkok"),
+    interval_days: BlankableInt = Form(None),
 ) -> JSONResponse:
     if stage not in STAGES and stage not in RELATIVE_WINDOWS:
         return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
     conn = _conn()
     try:
         schedule_id = db.create_schedule(
-            conn, name, stage, extra, cron_minute, cron_hour, cron_day_of_week, timezone,
+            conn, name, stage, extra, cron_minute, cron_hour, cron_day_of_week,
+            timezone, interval_days=interval_days,
         )
     finally:
         conn.close()
@@ -425,6 +503,7 @@ async def update_schedule(
     cron_hour: str = Form("7"),
     cron_day_of_week: str = Form("*"),
     timezone: str = Form("Asia/Bangkok"),
+    interval_days: BlankableInt = Form(None),
 ) -> JSONResponse:
     if stage not in STAGES and stage not in RELATIVE_WINDOWS:
         return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
@@ -434,6 +513,7 @@ async def update_schedule(
             conn, schedule_id, name=name, stage=stage, extra=extra,
             cron_minute=cron_minute, cron_hour=cron_hour,
             cron_day_of_week=cron_day_of_week, timezone=timezone,
+            interval_days=interval_days,
         )
     finally:
         conn.close()

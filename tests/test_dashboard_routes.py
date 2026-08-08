@@ -116,6 +116,36 @@ def test_an_unmatchable_filter_renders_the_empty_state(client) -> None:
     assert "Nothing matches these filters" in response.text
 
 
+@pytest.mark.parametrize(
+    "extra",
+    ["company=Acme", "employment_type=full-time", "department=Engineering",
+     "industry=Software", "is_remote=true", "is_remote=false",
+     "max_salary=200000", "posted_since=2026-01-01", "posted_until=2026-12-31",
+     "scam_signals=true", "include_duplicates=true", "sync_state=pending"],
+)
+def test_apply_with_each_new_detailed_filter(client, extra: str) -> None:
+    response = client.get(f"/jobs?{BROWSER_SUBMIT}&{extra}")
+    assert response.status_code == 200, response.text
+
+
+def test_the_company_filter_narrows_the_result_set(client) -> None:
+    both = client.get("/jobs?status=all").text
+    assert "Acme" in both and "Globex" in both
+
+    acme_only = client.get("/jobs?status=all&company=Acme").text
+    assert "Acme" in acme_only
+    assert "Globex" not in acme_only
+
+
+def test_an_unparseable_posted_date_degrades_to_no_filter(client) -> None:
+    """Leaving a date box blank is the normal case, same reasoning
+    `_blank_to_none` already applies to number inputs -- a garbage date
+    must not 422 the whole page either."""
+    response = client.get("/jobs?status=all&posted_since=not-a-date")
+    assert response.status_code == 200
+    assert "Acme" in response.text  # filter was silently dropped, not applied
+
+
 def test_a_skill_filter_matches_whole_entries_not_substrings(client) -> None:
     """`skills` is stored comma-separated, so the filter matches a whole entry.
 
@@ -136,6 +166,21 @@ def test_pagination_links_keep_the_filters(client) -> None:
     response = client.get("/jobs?status=all&seniority=staff&min_salary=1&page=1")
     assert response.status_code == 200
     assert "&&" not in response.text
+
+
+@pytest.mark.parametrize("size", [25, 50, 100, 200])
+def test_per_page_accepts_every_offered_size(client, size: int) -> None:
+    response = client.get(f"/jobs?status=all&per_page={size}")
+    assert response.status_code == 200
+    assert f'value="{size}" selected' in response.text
+
+
+def test_per_page_outside_the_allowlist_falls_back_to_the_default(client) -> None:
+    """An arbitrary `per_page` (a hand-edited URL) must not turn into an
+    unbounded query -- only the offered sizes are honoured."""
+    response = client.get("/jobs?status=all&per_page=99999")
+    assert response.status_code == 200
+    assert 'value="50" selected' in response.text
 
 
 # --- every page still renders ----------------------------------------------
@@ -222,6 +267,33 @@ def test_create_update_toggle_delete_schedule(client) -> None:
     delete = client.post(f"/api/schedule/{schedule_id}/delete")
     assert delete.status_code == 200
     assert "Nightly (renamed)" not in client.get("/schedule").text
+
+
+def test_create_schedule_with_interval_days_round_trips(client) -> None:
+    create = client.post("/api/schedule", data={
+        "name": "Every 2 days", "stage": "discover-validate", "extra": "",
+        "cron_minute": "0", "cron_hour": "7", "cron_day_of_week": "*",
+        "timezone": "Asia/Bangkok", "interval_days": "2",
+    })
+    assert create.status_code == 200, create.text
+    schedule_id = create.json()["id"]
+
+    with db.session() as conn:
+        row = db.get_schedule(conn, schedule_id)
+    assert row["interval_days"] == 2
+    assert "every 2 days" in client.get("/schedule").text
+
+    # Switching back to a plain cron schedule must clear interval_days, not
+    # just leave it stale alongside the new cron fields.
+    update = client.post(f"/api/schedule/{schedule_id}", data={
+        "name": "Every 2 days", "stage": "discover-validate", "extra": "",
+        "cron_minute": "0", "cron_hour": "7", "cron_day_of_week": "*",
+        "timezone": "Asia/Bangkok", "interval_days": "",
+    })
+    assert update.status_code == 200, update.text
+    with db.session() as conn:
+        row = db.get_schedule(conn, schedule_id)
+    assert row["interval_days"] is None
 
 
 def test_create_schedule_rejects_an_unknown_stage(client) -> None:
@@ -366,3 +438,38 @@ def test_settings_save_does_not_write_fields_the_user_never_touched(
     assert response.status_code == 200
     assert response.json()["changed"] == ["RAPIDAPI_KEY"]
     assert "APIFY_INDEED_ACTOR" not in env_path.read_text()
+
+
+def test_settings_renders_the_current_blocked_companies_as_chips(
+    client, tmp_path, monkeypatch,
+) -> None:
+    """The "currently registered blocked companies" list is satisfied by the
+    initial chip render itself -- whatever's in .env right now IS the list
+    shown, no separate query."""
+    from jobscrape.dashboard import envfile
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("JOBSCRAPE_BLOCKED_COMPANIES=Amazon,Apple Roofing\n")
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    page = client.get("/settings").text
+    assert 'data-company="Amazon"' in page
+    assert 'data-company="Apple Roofing"' in page
+
+
+def test_settings_save_writes_blocked_companies_as_one_comma_joined_value(
+    client, tmp_path, monkeypatch,
+) -> None:
+    """The chip UI is a client-side concern only -- the backend contract is
+    unchanged, still one comma-separated value under the same form key."""
+    from jobscrape.dashboard import envfile
+
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    response = client.post("/api/settings", data={
+        "JOBSCRAPE_BLOCKED_COMPANIES": "Amazon,Apple Roofing,Stripe",
+    })
+    assert response.status_code == 200
+    assert response.json()["changed"] == ["JOBSCRAPE_BLOCKED_COMPANIES"]
+    assert "JOBSCRAPE_BLOCKED_COMPANIES=Amazon,Apple Roofing,Stripe" in env_path.read_text()

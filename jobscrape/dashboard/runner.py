@@ -94,6 +94,11 @@ STAGES: dict[str, list[str]] = {
     # open posting, no date window and no validation cap — the Runs page's
     # single primary action, as opposed to clicking each stage separately.
     "full-sweep": ["schedule-run", "--mode", "full"],
+    # Discover + validate only, no fetch/apify-pull — for a schedule that
+    # just wants the board registry itself kept fresh (new boards found,
+    # existing ones revalidated) on its own cadence, independent of how
+    # often postings are actually fetched.
+    "discover-validate": ["schedule-run", "--mode", "sources"],
 }
 
 #: `purge` deletes data for real unless `extra` carries `--dry-run` (already on
@@ -151,6 +156,16 @@ STAGE_GROUPS: dict[str, tuple[str, ...]] = {
     # recursing through `fetch`'s entry — see `_reserved_keys`'s docstring
     # and `test_stage_groups_are_pre_flattened`).
     "fetch": ("fetch-fast", "fetch-workday"),
+    # `discover-validate` is a plain composite of two already-listed members
+    # (both `daily-schedule`/`weekly-schedule`/`full-sweep` already reserve
+    # `discover`/`validate` directly) — this entry alone is enough for
+    # bidirectional conflict protection: `RunManager._reserved_keys()`
+    # checks by key-membership, not by name, so starting `discover-validate`
+    # while e.g. `daily-schedule` is active finds `discover` already claimed
+    # and refuses, and vice versa. Neither `discover` nor `validate` has its
+    # own entry, so `test_stage_groups_are_pre_flattened`'s one-level-only
+    # invariant is satisfied trivially.
+    "discover-validate": ("discover", "validate"),
 }
 
 
@@ -423,13 +438,23 @@ class RunManager:
             existing = conn.execute(
                 "SELECT stats FROM runs WHERE id = ?", (run.run_id,)
             ).fetchone()
+            # The actual failure reason is already sitting in run_events —
+            # `_flush()` below classifies any line containing " ERROR " as
+            # level='error' as the run streams — just never read back and
+            # attached to the run itself until now.
+            error_text = None
+            if status == "failed":
+                error_rows = db.recent_error_events(conn, run.run_id)
+                if error_rows:
+                    error_text = "\n".join(r["message"] for r in error_rows)
             # cmd_fetch writes its own rich stats; don't clobber them.
             if not (existing and existing["stats"]):
-                db.finish_run(conn, run.run_id, status, {"progress": run.progress})
+                db.finish_run(conn, run.run_id, status, {"progress": run.progress},
+                               error=error_text)
             else:
                 conn.execute(
-                    "UPDATE runs SET ended_at = ?, status = ? WHERE id = ?",
-                    (db.now_iso(), status, run.run_id),
+                    "UPDATE runs SET ended_at = ?, status = ?, error = ? WHERE id = ?",
+                    (db.now_iso(), status, error_text, run.run_id),
                 )
                 conn.commit()
 

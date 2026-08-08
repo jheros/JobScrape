@@ -30,31 +30,25 @@ SECRET_KEYS = frozenset({
     "RENDER_DATABASE_URL",
 })
 
-#: The Settings page's grouping, mirroring `.env.example`'s section headers so
-#: the two stay easy to compare. `INDEED_PUBLISHER_ID` is carried through even
-#: though no source reads it yet — same reason it's still in `.env.example`.
+#: The Settings page's grouping — trimmed to what a user actually needs to
+#: set up front (identity, credentials, the blocklist) rather than every env
+#: var `.env.example` documents. Tuning knobs with a working default
+#: (DB pool sizing, politeness/performance, per-source pagination depth,
+#: log format/level, `JSEARCH_MAX_REQUESTS`, `JOBSCRAPE_TEST_DATABASE_URL`,
+#: `INDEED_PUBLISHER_ID` — unread by any source today) are deliberately not
+#: here. This is purely a UI trim: every one of those still works exactly as
+#: before via `.env`/the real environment, `config.py`'s own reads are
+#: completely decoupled from what this list shows — see `read_env_file`'s
+#: docstring. Add a key back here if it turns out to need routine adjustment
+#: after all.
 SECTIONS: list[tuple[str, list[str]]] = [
     ("Contact", ["JOBSCRAPE_CONTACT"]),
-    ("Database", [
-        "DATABASE_URL", "JOBSCRAPE_TEST_DATABASE_URL",
-        "JOBSCRAPE_DB_POOL_SIZE", "JOBSCRAPE_DB_MAX_OVERFLOW",
-        "JOBSCRAPE_CLOSURE_GRACE_HOURS",
-    ]),
-    ("Observability", ["JOBSCRAPE_LOG_FORMAT", "JOBSCRAPE_LOG_LEVEL"]),
+    ("Database", ["DATABASE_URL"]),
     ("API keys", [
-        "RAPIDAPI_KEY", "JSEARCH_MAX_REQUESTS", "USAJOBS_API_KEY", "USAJOBS_EMAIL",
-        "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JOOBLE_API_KEY", "INDEED_PUBLISHER_ID",
-    ]),
-    ("Politeness / performance tuning", [
-        "JOBSCRAPE_CONCURRENCY", "JOBSCRAPE_PER_HOST_CONCURRENCY",
-        "JOBSCRAPE_PER_HOST_DELAY", "JOBSCRAPE_TIMEOUT", "JOBSCRAPE_MAX_RETRIES",
-        "JOBSCRAPE_CACHE", "JOBSCRAPE_CACHE_TTL", "JOBSCRAPE_CC_COLLECTIONS",
+        "RAPIDAPI_KEY", "USAJOBS_API_KEY", "USAJOBS_EMAIL",
+        "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JOOBLE_API_KEY",
     ]),
     ("Blocked employers", ["JOBSCRAPE_BLOCKED_COMPANIES"]),
-    ("Per-source pagination depth", [
-        "JOBSCRAPE_WORKDAY_MAX_PER_BOARD", "JOBSCRAPE_HIMALAYAS_MAX_PAGES",
-        "JOOBLE_MAX_PAGES", "JOBSCRAPE_ADZUNA_MAX_PAGES", "JOBSCRAPE_ADZUNA_CALL_BUDGET",
-    ]),
     ("Apify: Indeed and LinkedIn postings", [
         "APIFY_TOKEN", "APIFY_WEBHOOK_SECRET",
         "APIFY_INDEED_ACTOR", "APIFY_LINKEDIN_ACTOR", "APIFY_PAGE_SIZE",
