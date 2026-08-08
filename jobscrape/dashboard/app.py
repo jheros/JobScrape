@@ -411,6 +411,15 @@ def describe_cron(
             return f"every {interval_days} days"
     if minute.startswith("*/") and hour == "*":
         return f"every {minute[2:]} min"
+    if hour.startswith("*/"):
+        # An hour-step schedule ("every N hours") predates the every-N-
+        # minutes UI (created directly via the API, e.g. fetch-workday's
+        # "*/2") — not reachable from the form itself, but a real value
+        # already stored, so it still needs a readable rendering here.
+        try:
+            return f"every {int(hour[2:])}h at :{int(minute):02d}"
+        except (TypeError, ValueError):
+            return f"every {hour[2:]}h"
     try:
         time_str = f"{int(hour):02d}:{int(minute):02d}"
     except (TypeError, ValueError):

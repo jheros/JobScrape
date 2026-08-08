@@ -269,6 +269,19 @@ def test_create_update_toggle_delete_schedule(client) -> None:
     assert "Nightly (renamed)" not in client.get("/schedule").text
 
 
+def test_describe_cron_renders_every_cadence_shape() -> None:
+    from jobscrape.dashboard.app import describe_cron
+
+    assert describe_cron("7", "0", "*", None) == "07:00"
+    assert describe_cron("9", "30", "mon-fri", None) == "09:30 (mon-fri)"
+    assert describe_cron("*", "*/15", "*", None) == "every 15 min"
+    assert describe_cron("7", "0", "*", 2) == "every 2 days at 07:00"
+    # A stored hour-step value predating the every-N-minutes UI (e.g.
+    # fetch-workday's "*/2", created directly via the API) must render
+    # readably, not crash `|int` the way the old template filter would.
+    assert describe_cron("*/2", "0", "*", None) == "every 2h at :00"
+
+
 def test_create_schedule_with_interval_days_round_trips(client) -> None:
     create = client.post("/api/schedule", data={
         "name": "Every 2 days", "stage": "discover-validate", "extra": "",
