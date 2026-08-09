@@ -75,13 +75,17 @@ templates.env.filters["datefmt"] = _datefmt
 templates.env.filters["scamreasons"] = _scam_reasons
 templates.env.filters["mdlite"] = mdlite.render
 
-# `?v=` cache-buster for /static/app.css and app.js: without it, browsers
-# that already cached these from a prior deploy can keep serving a stale
-# copy indefinitely (no Cache-Control header is set, so caching is up to
-# each browser's own heuristics, and those don't reliably revalidate across
-# same-session navigations). Keyed off the newest mtime of the two files so
+# `?v=` cache-buster for every /static asset: without it, browsers that
+# already cached one from a prior deploy can keep serving a stale copy
+# indefinitely (no Cache-Control header is set, so caching is up to each
+# browser's own heuristics, and those don't reliably revalidate across
+# same-session navigations). Keyed off the newest mtime of these files so
 # it only changes when their content actually does.
-_STATIC_ASSETS = (HERE / "static" / "app.css", HERE / "static" / "app.js")
+_STATIC_ASSETS = (
+    HERE / "static" / "app.css", HERE / "static" / "app.js",
+    HERE / "static" / "logo.png", HERE / "static" / "favicon-32.png",
+    HERE / "static" / "favicon-16.png", HERE / "static" / "apple-touch-icon.png",
+)
 templates.env.globals["static_version"] = str(
     int(max(p.stat().st_mtime for p in _STATIC_ASSETS))
 )

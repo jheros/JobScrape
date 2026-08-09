@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}jobscrape{% endblock %}</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png?v={{ static_version }}">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png?v={{ static_version }}">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png?v={{ static_version }}">
 <link rel="stylesheet" href="/static/app.css?v={{ static_version }}">
 </head>
 <body>
@@ -12,7 +15,7 @@
   <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
   <aside class="sidebar" id="sidebar">
     <button class="sidebar-close" id="sidebar-close" aria-label="Close menu">&times;</button>
-    <a class="brand" href="/">jobscrape</a>
+    <a class="brand" href="/"><img src="/static/logo.png?v={{ static_version }}" class="brand-icon" alt="">jobscrape</a>
     <nav>
       <div class="nav-group">
         <span class="nav-label">Monitor</span>

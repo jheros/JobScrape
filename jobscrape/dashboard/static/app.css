@@ -50,7 +50,6 @@
   --sidebar-hover-bg:    rgba(255,255,255,.06);
   --sidebar-active-bg:   #7c6af0;
   --sidebar-active-text: #ffffff;
-  --sidebar-brand-gradient: linear-gradient(135deg, #7c6af0, #9b87f5);
 
   --brand-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
@@ -125,10 +124,7 @@ body {
   text-decoration: none; font-size: 16px; padding: 4px 10px 14px;
   display: flex; align-items: center; gap: 8px;
 }
-.sidebar .brand::before {
-  content: ""; width: 9px; height: 9px; border-radius: 3px;
-  background: var(--sidebar-brand-gradient); display: inline-block;
-}
+.brand-icon { width: 26px; height: 26px; flex-shrink: 0; object-fit: contain; }
 .sidebar nav { display: flex; flex-direction: column; gap: 18px; flex: 1; }
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
 .nav-label {
