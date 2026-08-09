@@ -493,6 +493,9 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
   font-size: 11px; color: var(--text-secondary);
   text-transform: uppercase; letter-spacing: .04em;
 }
+/* A `.hint` inside a form label is a full sentence, not a field name --
+   inheriting the label's all-caps/letter-spacing turns it into shouting. */
+.form-grid label .hint { text-transform: none; letter-spacing: normal; }
 .form-field .field-label {
   font-size: 11px; color: var(--text-secondary);
   text-transform: uppercase; letter-spacing: .04em;
