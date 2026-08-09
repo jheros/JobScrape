@@ -226,7 +226,7 @@
     select.addEventListener("change", function () {
       var source = select.getAttribute("data-source");
       var jobId = select.getAttribute("data-job-id");
-      var row = select.closest("tr");
+      var row = select.closest(".job-card");
       post(
         "/api/jobs/" + encodeURIComponent(source) + "/" + encodeURIComponent(jobId) + "/status",
         "status=" + encodeURIComponent(select.value)

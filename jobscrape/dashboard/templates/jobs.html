@@ -160,51 +160,29 @@
 </div>
 
 <div class="card">
-  <div class="scroll-x">
-  <table>
-    <thead>
-      <tr>
-        <th class="col-check"><input type="checkbox" id="check-all" aria-label="Select all"></th>
-        <th class="col-status">Status</th>
-        <th>Source</th>
-        <th>Title</th>
-        <th>Company</th>
-        <th>Job URL</th>
-        <th>Apply URL</th>
-        <th>Location</th>
-        <th>Workplace</th>
-        <th>Department</th>
-        <th>Level</th>
-        <th class="num">Salary</th>
-        <th>Posted</th>
-        <th>Updated</th>
-        <th>First seen</th>
-        <th>Last seen</th>
-        <th>Duplicate of</th>
-        <th>Skills</th>
-        <th>Description</th>
-        <th>Raw JSON</th>
-        {% if render_sync_configured %}<th>Render</th>{% endif %}
-      </tr>
-    </thead>
-    <tbody>
-      {% for row in rows %}
-      <tr>
-        <td><input type="checkbox" class="row-check"
-                   data-token="{{ row.source }}|{{ row.source_job_id }}"
-                   aria-label="Select job"></td>
-        <td>
-          <select class="status-select" data-source="{{ row.source }}"
-                  data-job-id="{{ row.source_job_id }}" aria-label="Set status">
-            {% for s in statuses %}
-              <option value="{{ s }}" {% if row.status == s %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-          </select>
-        </td>
-        <td class="nowrap"><span class="tag">{{ row.source }}</span></td>
-        <td class="job-title">
-          {{ row.title }}
-          <div class="job-meta">
+  <div class="jobs-list-toolbar">
+    <label class="checkbox-label">
+      <input type="checkbox" id="check-all" aria-label="Select all">
+      Select all on this page
+    </label>
+  </div>
+
+  <div class="jobs-list">
+    {% for row in rows %}
+    <article class="job-card">
+      <div class="job-card-head">
+        <input type="checkbox" class="row-check job-card-check"
+               data-token="{{ row.source }}|{{ row.source_job_id }}"
+               aria-label="Select job">
+        <div class="job-card-main">
+          <div class="job-card-title-row">
+            <span class="job-title">{{ row.title }}</span>
+            <span class="tag">{{ row.source }}</span>
+            {% if render_sync_configured %}
+              {% if row.render_sync_state == 'synced' %}<span class="tag good">synced</span>
+              {% elif row.render_sync_state == 'blocked' %}<span class="tag critical">blocked</span>
+              {% else %}<span class="tag warn">pending</span>{% endif %}
+            {% endif %}
             {% if row.staleness == 'likely_evergreen' %}<span class="tag warn"
               title="Old, mass-posted, or worded as a standing advert — probably not a live opening">likely evergreen</span>
             {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
@@ -212,65 +190,61 @@
               title="{{ row.scam_signals | scamreasons }}">possible scam</span>{% endif %}
             {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
           </div>
-        </td>
-        <td>{{ row.company or "—" }}</td>
-        <td class="nowrap">
-          {% if row.job_url %}<a href="{{ row.job_url }}" target="_blank" rel="noopener" title="{{ row.job_url }}">↗</a>{% else %}—{% endif %}
-        </td>
-        <td class="nowrap">
-          {% if row.apply_url and row.apply_url != row.job_url %}
-            <a href="{{ row.apply_url }}" target="_blank" rel="noopener" title="{{ row.apply_url }}">↗</a>
-          {% else %}—{% endif %}
-        </td>
-        <td>{{ row.location_raw or "—" }}</td>
-        <td>{{ row.workplace_type or "—" }}</td>
-        <td>{{ row.department or "—" }}</td>
-        <td>{{ row.seniority or "—" }}</td>
-        <td class="num">
-          {{ row.salary_raw or "—" }}
-        </td>
-        <td class="nowrap">{{ row.posted_at|datefmt(10) }}</td>
-        <td class="nowrap">{{ row.updated_at|datefmt(10) }}</td>
-        <td class="nowrap">{{ row.first_seen_at|datefmt(10) }}</td>
-        <td class="nowrap">{{ row.last_seen_at|datefmt(10) }}</td>
-        <td>{{ row.duplicate_of or "—" }}</td>
-        <td>
-          {% if row.skills %}
-          <div class="job-skills">
-            {% for skill in row.skills.split(',')[:8] %}<span class="chip">{{ skill }}</span>{% endfor %}
-            {% if row.skills.split(',')|length > 8 %}<span class="chip more">+{{ row.skills.split(',')|length - 8 }}</span>{% endif %}
+          <div class="job-card-company">
+            <span>{{ row.company or "—" }}{% if row.location_raw %} · {{ row.location_raw }}{% endif %}</span>
+            {% if row.workplace_type %}<span class="tag {% if row.workplace_type == 'remote' %}good{% elif row.workplace_type == 'hybrid' %}accent{% endif %}">{{ row.workplace_type }}</span>{% endif %}
+            {% if row.department %}<span class="tag">{{ row.department }}</span>{% endif %}
+            {% if row.seniority %}<span class="tag level">{{ row.seniority }}</span>{% endif %}
           </div>
-          {% else %}—{% endif %}
-        </td>
-        <td>
-          {% if row.description_text %}
-          <details><summary class="text-sm">description</summary>
-            <div class="text-sm smart-view">{{ row.description_text }}</div>
-          </details>
-          {% else %}—{% endif %}
-        </td>
-        <td>
-          {% if row.raw_json %}
-          <details><summary class="text-sm">raw_json</summary>
-            <pre class="text-sm smart-view">{{ row.raw_json | tojson(indent=2) }}</pre>
-          </details>
-          {% else %}—{% endif %}
-        </td>
-        {% if render_sync_configured %}
-        <td>
-          {% if row.render_sync_state == 'synced' %}<span class="tag">synced</span>
-          {% elif row.render_sync_state == 'blocked' %}<span class="tag critical">blocked</span>
-          {% else %}<span class="tag warn">pending</span>{% endif %}
-        </td>
+        </div>
+        <div class="job-card-actions">
+          <select class="status-select" data-source="{{ row.source }}"
+                  data-job-id="{{ row.source_job_id }}" aria-label="Set status">
+            {% for s in statuses %}
+              <option value="{{ s }}" {% if row.status == s %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+          </select>
+          <div class="job-card-links">
+            {% if row.job_url %}<a class="btn ghost btn-sm" href="{{ row.job_url }}" target="_blank" rel="noopener" title="{{ row.job_url }}">Job ↗</a>{% endif %}
+            {% if row.apply_url and row.apply_url != row.job_url %}<a class="btn ghost btn-sm" href="{{ row.apply_url }}" target="_blank" rel="noopener" title="{{ row.apply_url }}">Apply ↗</a>{% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="job-card-fields">
+        <div class="job-card-field"><span class="field-label">Salary</span><span class="field-value">{{ row.salary_raw or "—" }}</span></div>
+        <div class="job-card-field"><span class="field-label">Posted</span><span class="field-value">{{ row.posted_at|datefmt(10) }}</span></div>
+        <div class="job-card-field"><span class="field-label">Updated</span><span class="field-value">{{ row.updated_at|datefmt(10) }}</span></div>
+        <div class="job-card-field"><span class="field-label">First seen</span><span class="field-value">{{ row.first_seen_at|datefmt(10) }}</span></div>
+        <div class="job-card-field"><span class="field-label">Last seen</span><span class="field-value">{{ row.last_seen_at|datefmt(10) }}</span></div>
+        <div class="job-card-field"><span class="field-label">Duplicate of</span><span class="field-value">{{ row.duplicate_of or "—" }}</span></div>
+      </div>
+
+      {% if row.skills %}
+      <div class="job-skills">
+        {% for skill in row.skills.split(',')[:8] %}<span class="chip">{{ skill }}</span>{% endfor %}
+        {% if row.skills.split(',')|length > 8 %}<span class="chip more">+{{ row.skills.split(',')|length - 8 }}</span>{% endif %}
+      </div>
+      {% endif %}
+
+      {% if row.description_text or row.raw_json %}
+      <div class="job-card-expand">
+        {% if row.description_text %}
+        <details><summary class="text-sm">description</summary>
+          <div class="text-sm smart-view">{{ row.description_text }}</div>
+        </details>
         {% endif %}
-      </tr>
-      {% else %}
-      <tr class="empty-row"><td colspan="20">
-        Nothing matches these filters.
-      </td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+        {% if row.raw_json %}
+        <details><summary class="text-sm">raw_json</summary>
+          <pre class="text-sm smart-view">{{ row.raw_json | tojson(indent=2) }}</pre>
+        </details>
+        {% endif %}
+      </div>
+      {% endif %}
+    </article>
+    {% else %}
+    <div class="jobs-empty">Nothing matches these filters.</div>
+    {% endfor %}
   </div>
 
   <div class="pager">

@@ -283,7 +283,7 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 
 /* --- job rows ----------------------------------------------------------- */
 
-.job-title { font-weight: 600; color: var(--text-primary); text-decoration: none; }
+.job-title { font-weight: 600; color: var(--text-primary); text-decoration: none; font-size: 14.5px; }
 .job-title:hover { text-decoration: underline; }
 .job-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px;
             display: flex; flex-wrap: wrap; gap: 10px; }
@@ -293,6 +293,45 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 /* The tag always carries its own word ("likely evergreen"), so the colour is
    reinforcement rather than the signal itself — readable without colour vision. */
 .tag.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.tag.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.tag.accent { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 40%, transparent); }
+
+/* --- jobs: card list -----------------------------------------------------
+   Every requested DB column has to be visible with zero horizontal scroll,
+   which a ~20-column table can never do at readable font sizes. Each job is
+   a card instead: identity + triage up top, a reflowing label/value grid
+   for the record-keeping fields, chips and expandable panels below. Every
+   piece here wraps (flex-wrap / grid auto-fit) so width never forces a
+   scrollbar — only the page's normal vertical scroll is ever needed. */
+.jobs-list-toolbar { display: flex; align-items: center; gap: 8px;
+                      padding-bottom: 12px; font-size: 13px; }
+.jobs-list { display: flex; flex-direction: column; gap: 10px; }
+.jobs-empty { text-align: center; padding: 40px 20px; color: var(--text-muted); }
+
+.job-card { border: 1px solid var(--border); border-radius: var(--radius);
+            padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+            transition: opacity .25s, box-shadow .15s; }
+.job-card:hover { box-shadow: var(--shadow); }
+
+.job-card-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.job-card-check { margin-top: 5px; flex-shrink: 0; }
+.job-card-main { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 5px; }
+.job-card-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.job-card-company { color: var(--text-secondary); font-size: 12.5px;
+                     display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.job-card-actions { display: flex; flex-direction: column; align-items: flex-end;
+                     gap: 6px; flex-shrink: 0; margin-left: auto; }
+.job-card-links { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+.job-card-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+                    gap: 8px 16px; padding-top: 10px; border-top: 1px solid var(--border); }
+.job-card-field { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.job-card-field .field-label { font-size: 10px; text-transform: uppercase;
+                                letter-spacing: .04em; color: var(--text-muted); }
+.job-card-field .field-value { font-size: 12.5px; color: var(--text-primary);
+                                overflow-wrap: anywhere; }
+
+.job-card-expand { display: flex; flex-wrap: wrap; gap: 14px; }
 table.coverage { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.coverage td { padding: 4px 8px 4px 0; vertical-align: middle; }
 table.coverage td.name { width: 110px; color: var(--text-secondary); }
@@ -354,7 +393,7 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .filters-more-grid label { display: flex; flex-direction: column; gap: 4px;
                             font-size: 11px; color: var(--text-secondary);
                             text-transform: uppercase; letter-spacing: .04em; }
-.checkbox-label { flex-direction: row !important; align-items: center; gap: 6px !important;
+.checkbox-label { display: flex; flex-direction: row !important; align-items: center; gap: 6px !important;
                    text-transform: none !important; font-size: 13px !important; }
 .checkbox-label input { min-width: 0; }
 
@@ -435,8 +474,6 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .flex-1 { flex: 1; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .empty-row td { text-align: center; padding: 32px; color: var(--text-muted); }
-.col-check { width: 28px; }
-.col-status { width: 130px; }
 .bulk-bar { display: none; margin-bottom: 12px; align-items: center; gap: 10px; }
 .run-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .card.active-run { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
