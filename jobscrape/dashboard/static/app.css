@@ -14,7 +14,10 @@
   --text-muted:     #7b7a74;
 
   /* Categorical slots — fixed order, never cycled. Validated light:
-     worst adjacent CVD dE 9.1, normal-vision dE 22.9. */
+     worst adjacent CVD dE 9.1, normal-vision dE 22.9. Chart/data-series
+     colour ONLY — see --accent below for UI chrome (buttons, links,
+     active nav), which is a separate role and never reused for series
+     identity in a chart. */
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;
@@ -25,17 +28,31 @@
   --warning:  #fab219;
   --critical: #d03b3b;
 
+  /* Brand/UI-chrome accent — buttons, links, focus rings, the active nav
+     pill. Indigo-violet, deliberately distinct from the chart series hues
+     above so a purple button next to a blue chart line never reads as
+     "same series". White-on-it and text-on-surface both checked >= 4.5:1. */
+  --accent:   #6d4feb;
+  --accent-2: #8b5cf6;
+
   --radius: 10px;
-  --radius-lg: 16px;
+  --radius-lg: 18px;
   --shadow: 0 1px 2px rgba(0,0,0,.05), 0 4px 12px rgba(0,0,0,.04);
   --shadow-lg: 0 2px 6px rgba(0,0,0,.06), 0 12px 28px rgba(0,0,0,.08);
   --sidebar-w: 232px;
-  /* Decorative only — combines two already-validated categorical anchors
-     (blue -> teal), so it carries no data-identity meaning and needs no
-     separate colourblind validation pass. Resolves against whichever
-     --series-1/--series-3 are active, so it re-tunes itself in dark mode
-     for free. */
-  --brand-gradient: linear-gradient(135deg, var(--series-1), color-mix(in srgb, var(--series-1) 55%, var(--series-3)));
+  /* The sidebar is deliberately dark in BOTH themes (a fixed identity, like
+     the rest of the app's chrome) -- only the main content area follows
+     the light/dark toggle. Values here never change with the toggle. */
+  --sidebar-bg:          #15141f;
+  --sidebar-border:      rgba(255,255,255,.07);
+  --sidebar-text:        #c7cbe0;
+  --sidebar-text-muted:  #8b8aa3;
+  --sidebar-hover-bg:    rgba(255,255,255,.06);
+  --sidebar-active-bg:   #7c6af0;
+  --sidebar-active-text: #ffffff;
+  --sidebar-brand-gradient: linear-gradient(135deg, #7c6af0, #9b87f5);
+
+  --brand-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
 }
 
 @media (prefers-color-scheme: dark) {
@@ -53,6 +70,10 @@
     --series-2: #d95926;
     --series-3: #199e70;
     --series-4: #c98500;
+    /* Brighter than the light-mode accent so white button text and
+       accent-as-link-text both still clear ~4:1 against a dark surface. */
+    --accent:   #7c6af0;
+    --accent-2: #9b87f5;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
     --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 16px 32px rgba(0,0,0,.4);
   }
@@ -70,6 +91,8 @@
   --series-2: #d95926;
   --series-3: #199e70;
   --series-4: #c98500;
+  --accent:   #7c6af0;
+  --accent-2: #9b87f5;
   --shadow: 0 1px 2px rgba(0,0,0,.4), 0 4px 12px rgba(0,0,0,.3);
   --shadow-lg: 0 2px 6px rgba(0,0,0,.5), 0 16px 32px rgba(0,0,0,.4);
 }
@@ -88,40 +111,42 @@ body {
 
 .shell { display: flex; min-height: 100vh; }
 
+/* Fixed dark identity in both themes -- see the --sidebar-* tokens' own
+   comment in :root for why this doesn't follow the light/dark toggle. */
 .sidebar {
   width: var(--sidebar-w); flex: 0 0 var(--sidebar-w);
-  background: var(--surface-1); border-right: 1px solid var(--border);
+  background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
   display: flex; flex-direction: column; gap: 4px;
   padding: 18px 14px; position: sticky; top: 0; height: 100vh; overflow-y: auto;
   z-index: 30;
 }
 .sidebar .brand {
-  font-weight: 700; letter-spacing: -.01em; color: var(--text-primary);
+  font-weight: 700; letter-spacing: -.01em; color: #ffffff;
   text-decoration: none; font-size: 16px; padding: 4px 10px 14px;
   display: flex; align-items: center; gap: 8px;
 }
 .sidebar .brand::before {
   content: ""; width: 9px; height: 9px; border-radius: 3px;
-  background: var(--brand-gradient); display: inline-block;
+  background: var(--sidebar-brand-gradient); display: inline-block;
 }
 .sidebar nav { display: flex; flex-direction: column; gap: 18px; flex: 1; }
 .nav-group { display: flex; flex-direction: column; gap: 2px; }
 .nav-label {
   font-size: 10.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em;
-  color: var(--text-muted); padding: 0 10px 4px;
+  color: var(--sidebar-text-muted); padding: 0 10px 4px;
 }
 .sidebar nav a {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 10px; border-radius: 8px; text-decoration: none;
-  color: var(--text-secondary); font-weight: 550; font-size: 13.5px;
+  color: var(--sidebar-text); font-weight: 550; font-size: 13.5px;
 }
-.sidebar nav a .icon { color: var(--text-muted); flex: 0 0 auto; }
-.sidebar nav a:hover { background: var(--surface-2); color: var(--text-primary); }
+.sidebar nav a .icon { color: var(--sidebar-text-muted); flex: 0 0 auto; }
+.sidebar nav a:hover { background: var(--sidebar-hover-bg); color: #ffffff; }
 .sidebar nav a.on {
-  background: color-mix(in srgb, var(--series-1) 12%, var(--surface-1));
-  color: var(--series-1); font-weight: 650;
+  background: var(--sidebar-active-bg);
+  color: var(--sidebar-active-text); font-weight: 650;
 }
-.sidebar nav a.on .icon { color: var(--series-1); }
+.sidebar nav a.on .icon { color: var(--sidebar-active-text); }
 
 .sidebar-close, .menu-toggle { display: none; }
 
@@ -172,15 +197,15 @@ details.card[open] .h2-like { margin-bottom: 14px; }
 .tile .icon-chip {
   width: 30px; height: 30px; border-radius: 9px; display: flex;
   align-items: center; justify-content: center; margin-bottom: 10px;
-  background: color-mix(in srgb, var(--series-1) 14%, var(--surface-1));
-  color: var(--series-1);
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface-1));
+  color: var(--accent);
 }
 .tile .label { color: var(--text-secondary); font-size: 11.5px; font-weight: 600;
                text-transform: uppercase; letter-spacing: .05em; }
 .tile .value { font-size: 30px; font-weight: 700; letter-spacing: -.02em;
                margin-top: 5px; font-variant-numeric: tabular-nums; }
 .tile .foot  { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
-.tile.accent { border-color: var(--series-1); }
+.tile.accent { border-color: var(--accent); }
 
 /* --- charts ------------------------------------------------------------- */
 
@@ -226,7 +251,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .btn {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--brand-gradient); color: #fff; border: none;
-  padding: 8px 15px; border-radius: 8px; font-size: 13px; font-weight: 600;
+  padding: 8px 15px; border-radius: 9px; font-size: 13px; font-weight: 600;
   cursor: pointer; text-decoration: none; box-shadow: 0 1px 2px rgba(0,0,0,.12);
   transition: filter .12s ease, box-shadow .12s ease, transform .12s ease;
 }
@@ -250,7 +275,7 @@ input, select {
   border: 1px solid var(--border); border-radius: 7px;
   padding: 7px 9px; font-size: 13px; font-family: inherit; min-width: 120px;
 }
-input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: -1px; }
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 /* --- status chips ------------------------------------------------------- */
 
@@ -286,14 +311,20 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 .job-title:hover { text-decoration: underline; }
 .job-meta { color: var(--text-muted); font-size: 12px; margin-top: 3px;
             display: flex; flex-wrap: wrap; gap: 10px; }
-.tag { font-size: 11px; padding: 1px 7px; border-radius: 5px;
+.tag { font-size: 11px; padding: 1px 7px; border-radius: 7px;
        background: var(--surface-2); border: 1px solid var(--border);
        color: var(--text-secondary); }
 /* The tag always carries its own word ("likely evergreen"), so the colour is
-   reinforcement rather than the signal itself — readable without colour vision. */
-.tag.warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
-.tag.good { color: var(--good); border-color: color-mix(in srgb, var(--good) 45%, transparent); }
-.tag.accent { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 40%, transparent); }
+   reinforcement rather than the signal itself — readable without colour vision.
+   A pastel background (same color-mix recipe as .pill.ok/.failed/...) reads
+   as a filled badge rather than an outline chip -- the fill IS the accent,
+   the border/text just deepen it slightly. */
+.tag.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 14%, var(--surface-1));
+            border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+.tag.good { color: var(--good); background: color-mix(in srgb, var(--good) 12%, var(--surface-1));
+            border-color: color-mix(in srgb, var(--good) 45%, transparent); }
+.tag.accent { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-1));
+              border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 
 /* --- jobs: card list -----------------------------------------------------
    Every requested DB column has to be visible with zero horizontal scroll,
@@ -335,9 +366,10 @@ table.coverage td.muted { color: var(--text-muted); }
 table.coverage tr.total { border-top: 1px solid var(--border); font-weight: 600; }
 table.coverage td.bar { background: var(--surface-2); border-radius: 3px; height: 9px; padding: 0; }
 table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
-                             background: var(--series-1); }
+                             background: var(--accent); }
 
-.tag.level { color: var(--series-1); border-color: color-mix(in srgb, var(--series-1) 40%, transparent); }
+.tag.level { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-1));
+             border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 /* Skills sit on their own line: a posting can name a dozen, and inlining them
    with the meta tags makes every row a different height. */
 .job-skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
@@ -346,7 +378,8 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
         border: 1px solid var(--border); }
 .chip.more { opacity: .7; }
 
-.tag.critical { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 55%, transparent); }
+.tag.critical { color: var(--critical); background: color-mix(in srgb, var(--critical) 12%, var(--surface-1));
+                border-color: color-mix(in srgb, var(--critical) 55%, transparent); }
 
 /* --- live log ----------------------------------------------------------- */
 
@@ -407,7 +440,7 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .md-body .md-heading { font-weight: 650; color: var(--text-primary); }
 .md-body code { background: var(--surface-2); border: 1px solid var(--border);
                  border-radius: 3px; padding: 1px 4px; font-size: 11px; }
-.md-body a { color: var(--series-1); }
+.md-body a { color: var(--accent); }
 
 .chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip.removable { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; }
@@ -435,7 +468,7 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
   .sidebar.open { transform: translateX(0); }
   .sidebar-close {
     display: inline-flex; align-self: flex-end; background: none; border: none;
-    color: var(--text-muted); font-size: 20px; line-height: 1; cursor: pointer;
+    color: var(--sidebar-text-muted); font-size: 20px; line-height: 1; cursor: pointer;
     padding: 4px 8px; margin-bottom: 6px;
   }
   .sidebar-backdrop {
