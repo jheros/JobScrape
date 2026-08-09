@@ -149,6 +149,10 @@ class ADP(BoardSource):
                 source=self.name,
                 source_job_id=f"{cid}:{job_id}",
                 title=item.get("requisitionTitle") or detail.get("requisitionTitle") or "",
+                # `slug` is ADP's opaque customer id (cid), not the employer's real
+                # name — the blocklist in cli.py's _fetch_boards can't match this
+                # board to a blocked employer by name alone. Recovering the real
+                # name would need it parsed out of the ADP API response here.
                 company=slug,
                 company_slug=slug,
                 job_url=(

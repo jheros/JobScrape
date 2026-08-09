@@ -269,6 +269,37 @@ def test_a_blocked_board_is_never_asked_for_anything(_isolated_db, monkeypatch):
     assert sorted(source.asked) == ["acme", "stripes"]
 
 
+def test_a_blocked_board_in_cooldown_is_never_probed_either(_isolated_db, monkeypatch):
+    """The half-open recovery probe used to run BEFORE the blocked-employer
+    filter, so a blocked board sitting in cooldown during a platform outage
+    could still receive one live request — the exact HTTP the filter above
+    exists to guarantee never happens. `blocked-co` must never appear in
+    `source.asked`, whether or not it happens to be in cooldown; `cooldown-co`
+    (not blocked) must still get its normal recovery probe.
+    """
+    from jobscrape import filters
+
+    conn = _isolated_db
+    # A single fused word, deliberately: a space- or hyphen-separated
+    # "... Co"/"... Corp" would additionally exercise slugify()'s legal-
+    # suffix stripping, which is not what this test is about.
+    monkeypatch.setattr(filters, "BLOCKED_COMPANIES", frozenset({"Widgetronics"}))
+    _register(conn, {"live": ["widgetronics", "cooldownco", "healthyco"]})
+    future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    conn.execute(
+        "UPDATE companies SET cooldown_until = ? WHERE ats = 'fake' "
+        "AND slug IN ('widgetronics', 'cooldownco')",
+        (future,),
+    )
+    conn.commit()
+    source = FakeBoard({s: [_job(s)] for s in ("cooldownco", "healthyco")})
+
+    asyncio.run(_sweep(conn, source, _args(unchecked=0)))
+
+    assert "widgetronics" not in source.asked
+    assert "cooldownco" in source.asked  # the non-blocked cooldown board is still probed
+
+
 def test_a_blocked_board_is_not_probed_by_validate(_isolated_db, monkeypatch):
     """Probing a board we will never fetch wastes a request every pass, and
     thousands of unvalidated slugs are competing for that budget."""

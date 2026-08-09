@@ -162,6 +162,10 @@ class Oracle(BoardSource):
                 source=self.name,
                 source_job_id=f"{host}:{job_id}",
                 title=item.get("Title") or detail.get("Title") or "",
+                # host's subdomain is Oracle's opaque tenant id, not the employer's
+                # real name — the blocklist in cli.py's _fetch_boards can't match
+                # this board to a blocked employer by name alone. Recovering the
+                # real name would need it parsed out of the Oracle API response.
                 company=host.split(".")[0],
                 company_slug=slug,
                 job_url=f"https://{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{job_id}",

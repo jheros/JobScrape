@@ -162,6 +162,10 @@ class UKG(BoardSource):
                 source=self.name,
                 source_job_id=f"{tenant}:{job_id}",
                 title=item.get("Title") or "",
+                # `tenant` is UKG's opaque tenant id, not the employer's real name
+                # — the blocklist in cli.py's _fetch_boards can't match this board
+                # to a blocked employer by name alone. Recovering the real name
+                # would need it parsed out of the UKG API response.
                 company=tenant,
                 company_slug=slug,
                 job_url=DETAIL_URL.format(host=host, tenant=tenant, guid=guid, job_id=job_id),

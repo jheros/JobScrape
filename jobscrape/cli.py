@@ -200,6 +200,40 @@ async def _fetch_boards(
         log.info("%-16s no companies discovered yet", ats)
         return empty, FilterFunnel()
 
+    # Blocked employers, dropped before a single request is made — including
+    # the cooldown-recovery probe just below, which used to run first and
+    # could send one blocked board a live request during an outage. This is
+    # the one filter in the project that genuinely saves HTTP: for a board
+    # source the company IS the slug, so it is knowable with no network at
+    # all — `greenhouse/stripe` alone is 544 postings never fetched again.
+    #
+    # That assumption is FALSE for adp/oracle/ukg: their board identifier is
+    # an opaque platform id (a `cid` GUID, a tenant hostname label, a tenant
+    # code) rather than the employer's name, so `is_blocked_company(slug)`
+    # can never match for them no matter what's in the blocklist, and the
+    # adapters currently set `Job.company`/`company_slug` to that same
+    # opaque id too, so `filters.apply_filters_counted`'s post-fetch safety
+    # net can't catch it after the fact either — a company on these three
+    # platforms specifically added to the blocklist is fetched and stored
+    # regardless. `r["name"]` is also checked below for exactly this case,
+    # but nothing currently populates it at discovery time; closing this for
+    # real needs each adapter to recover the employer's actual name from its
+    # own API response (Paycom already does this, from `hiringOrganization`
+    # on the per-posting detail) and set `Job.company` to it instead of the
+    # slug — deliberately not attempted here without a real API response
+    # from each of the three to verify the right field against.
+    blocked = [
+        r["slug"] for r in rows
+        if apply_filters_mod.is_blocked_company(r["slug"])
+        or apply_filters_mod.is_blocked_company(r.get("name"))
+    ]
+    if blocked:
+        log.info("%-16s %d board(s) skipped as blocked employers: %s",
+                 ats, len(blocked), ", ".join(sorted(blocked)[:5]))
+        rows = [r for r in rows if r["slug"] not in set(blocked)]
+    if not rows:
+        return empty, FilterFunnel()
+
     cooldown = db.boards_in_cooldown(conn, ats)
     if cooldown and len(rows) > 1:
         # Half-open probe. A platform-wide outage backs off every board of that
@@ -234,16 +268,6 @@ async def _fetch_boards(
             ats, skipped_cooldown, len(rows),
         )
     rows = [r for r in rows if r["slug"] not in cooldown]
-
-    # Blocked employers, dropped before a single request is made. This is the
-    # one filter in the project that genuinely saves HTTP: for a board source
-    # the company IS the slug, so it is knowable with no network at all —
-    # `greenhouse/stripe` alone is 544 postings never fetched again.
-    blocked = [r["slug"] for r in rows if apply_filters_mod.is_blocked_company(r["slug"])]
-    if blocked:
-        log.info("%-16s %d board(s) skipped as blocked employers: %s",
-                 ats, len(blocked), ", ".join(sorted(blocked)[:5]))
-        rows = [r for r in rows if r["slug"] not in set(blocked)]
 
     # Boards that answer fine and never carry a software job — see
     # db.mark_board_yield. Skipped unless `--all-boards` says otherwise, which
@@ -1162,6 +1186,14 @@ async def cmd_apify_pull(args: argparse.Namespace) -> int:
                         level="error" if result.error else "info",
                         counters=result.as_dict(),
                     )
+                    # Commit each run_id's ingest + log line as it finishes,
+                    # not just once at the very end. Without this, a later
+                    # run_id raising sent `conn.rollback()` back through the
+                    # WHOLE transaction — silently discarding the job upserts
+                    # and log_events of every run_id that had already
+                    # succeeded earlier in this same loop, not just the
+                    # failed one's own partial work.
+                    conn.commit()
                     if result.funnel:
                         log.info("   funnel: %s", result.funnel)
         except Exception as exc:                  # noqa: BLE001 - reported, then re-raised
@@ -1436,6 +1468,14 @@ def cmd_render_sync(args: argparse.Namespace) -> int:
             result = render_sync.sync(
                 conn, render_conn, dry_run=args.dry_run, limit=args.limit,
             )
+        except render_sync.RenderSyncLocked as exc:
+            # Not a failure -- an overlapping schedule or a manually
+            # launched backfill/delete-source already holds the lock. Same
+            # "skip, don't abort the rest of the schedule" contract every
+            # other benign skip in this command follows.
+            log.info("render-sync: %s — skipping", exc)
+            db.finish_run(conn, run_id, status="skipped", error=str(exc))
+            return 0
         except Exception as exc:                       # noqa: BLE001 - reported, not raised
             log.exception("render-sync: sync failed")
             conn.rollback()
@@ -1487,6 +1527,10 @@ def cmd_backfill_render_sync_status(args: argparse.Namespace) -> int:
             result = render_sync.backfill_local_sync_status(
                 conn, render_conn, dry_run=args.dry_run,
             )
+        except render_sync.RenderSyncLocked as exc:
+            log.info("backfill-render-sync-status: %s — skipping", exc)
+            db.finish_run(conn, run_id, status="skipped", error=str(exc))
+            return 0
         except Exception as exc:                       # noqa: BLE001 - reported, not raised
             log.exception("backfill-render-sync-status: failed")
             conn.rollback()
@@ -1540,6 +1584,10 @@ def cmd_delete_source(args: argparse.Namespace) -> int:
             result = render_sync.delete_source(
                 conn, render_conn, args.source, dry_run=args.dry_run,
             )
+        except render_sync.RenderSyncLocked as exc:
+            log.info("delete-source: %s — skipping", exc)
+            db.finish_run(conn, run_id, status="skipped", error=str(exc))
+            return 0
         except Exception as exc:                       # noqa: BLE001 - reported, not raised
             log.exception("delete-source: failed")
             conn.rollback()
