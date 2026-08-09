@@ -122,3 +122,27 @@ def test_public_url_passes(monkeypatch) -> None:
         lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
     )
     check_url("https://boards.greenhouse.io/acme/jobs/1")  # must not raise
+
+
+def test_check_url_returns_the_validated_address_to_connect_to(monkeypatch) -> None:
+    """The return value is not incidental -- `http.Fetcher.probe` dials this
+    exact address rather than handing the hostname to the client and letting
+    it resolve DNS a second time (the TOCTOU form of rebinding)."""
+    import jobscrape.safehttp as safe
+
+    monkeypatch.setattr(
+        safe.socket, "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443))],
+    )
+    assert check_url("https://boards.greenhouse.io/acme/jobs/1") == "93.184.216.34"
+
+
+def test_check_url_returns_the_first_of_several_validated_addresses(monkeypatch) -> None:
+    import jobscrape.safehttp as safe
+
+    monkeypatch.setattr(
+        safe.socket, "getaddrinfo",
+        lambda *a, **k: [(2, 1, 6, "", ("93.184.216.34", 443)),
+                         (2, 1, 6, "", ("93.184.216.35", 443))],
+    )
+    assert check_url("https://multi.example.com/") == "93.184.216.34"

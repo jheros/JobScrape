@@ -233,6 +233,77 @@ def test_export_is_also_a_window_stage(client) -> None:
     assert {"fetch", "export"} <= _WINDOW_STAGES
 
 
+# --- a real (non-dry-run) purge needs explicit confirmation ------------------
+#
+# The dashboard has no login on any route (docs/DOCKER.md) -- the client-side
+# confirm() dialog on the "delete for real" button is a UX nicety a direct
+# POST skips entirely. `manager.start` is monkeypatched here so these tests
+# never actually spawn a subprocess -- the same reasoning the module
+# docstring gives for testing only the rejection paths through HTTP.
+
+
+def test_a_real_purge_without_confirmation_is_rejected(client, monkeypatch) -> None:
+    from jobscrape.dashboard import app as app_module
+
+    async def _boom(*a, **kw):
+        raise AssertionError("manager.start must not be reached without confirmation")
+
+    monkeypatch.setattr(app_module.manager, "start", _boom)
+
+    response = client.post("/api/runs/purge/start", data={"extra": ""})
+    assert response.status_code == 400
+
+
+def test_a_real_purge_with_confirmation_is_allowed_through(client, monkeypatch) -> None:
+    from jobscrape.dashboard import app as app_module
+
+    started = {}
+
+    async def _fake_start(stage, extra, window=None):
+        started["stage"] = stage
+        started["extra"] = extra
+        return {"run_id": 1, "stage": stage}
+
+    monkeypatch.setattr(app_module.manager, "start", _fake_start)
+
+    response = client.post(
+        "/api/runs/purge/start",
+        data={"extra": "", "confirm": app_module._PURGE_CONFIRM_TOKEN},
+    )
+    assert response.status_code == 200
+    assert started["stage"] == "purge"
+
+
+def test_a_dry_run_purge_needs_no_confirmation(client, monkeypatch) -> None:
+    from jobscrape.dashboard import app as app_module
+
+    started = {}
+
+    async def _fake_start(stage, extra, window=None):
+        started["extra"] = extra
+        return {"run_id": 1, "stage": stage}
+
+    monkeypatch.setattr(app_module.manager, "start", _fake_start)
+
+    response = client.post("/api/runs/purge/start", data={"extra": "--dry-run"})
+    assert response.status_code == 200
+    assert started["extra"] == ["--dry-run"]
+
+
+def test_a_wrong_confirmation_token_is_still_rejected(client, monkeypatch) -> None:
+    from jobscrape.dashboard import app as app_module
+
+    async def _boom(*a, **kw):
+        raise AssertionError("manager.start must not be reached with the wrong token")
+
+    monkeypatch.setattr(app_module.manager, "start", _boom)
+
+    response = client.post(
+        "/api/runs/purge/start", data={"extra": "", "confirm": "yes please"},
+    )
+    assert response.status_code == 400
+
+
 def test_apify_pull_and_jobright_fetch_are_also_window_stages(client) -> None:
     """The dashboard's "Fetch Apify jobs" and "Fetch JobRight jobs" cards
     each target their own bare stage directly and need a date range too."""
@@ -486,3 +557,28 @@ def test_settings_save_writes_blocked_companies_as_one_comma_joined_value(
     assert response.status_code == 200
     assert response.json()["changed"] == ["JOBSCRAPE_BLOCKED_COMPANIES"]
     assert "JOBSCRAPE_BLOCKED_COMPANIES=Amazon,Apple Roofing,Stripe" in env_path.read_text()
+
+
+def test_settings_save_rejects_a_newline_injection_attempt(client, tmp_path, monkeypatch) -> None:
+    """The dashboard has no login on any route (docs/DOCKER.md). A value with
+    an embedded newline would otherwise write a second, unrelated `KEY=value`
+    line into `.env` -- bypassing `ALL_KEYS`'s allowlist on which fields this
+    form may write, since that allowlist only checks the field NAME. Must be
+    rejected before anything reaches disk, and must not touch os.environ
+    either (the loop that applies `changed` only runs after a successful
+    write)."""
+    import os
+
+    from jobscrape.dashboard import envfile
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("RAPIDAPI_KEY=old\n")
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    response = client.post("/api/settings", data={
+        "JOBSCRAPE_CONTACT": "me@example.com\nDATABASE_URL=postgresql://evil/db",
+    })
+    assert response.status_code == 400
+    assert "DATABASE_URL" not in env_path.read_text()
+    assert "DATABASE_URL" not in os.environ

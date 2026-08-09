@@ -111,9 +111,27 @@ def write_env_file(updates: dict[str, str]) -> list[str]:
 
     Returns the list of keys actually changed, so the caller can apply the
     same set to `os.environ` for the current process.
+
+    Rejects (raises `ValueError`, writes nothing) any value containing `\n`
+    or `\r`. The dashboard has no login on any route (`docs/DOCKER.md`), and
+    a value with an embedded newline turns one `f"{key}={value}"` line into
+    two real lines once joined — `JOBSCRAPE_CONTACT=x\nDATABASE_URL=evil`
+    submitted as ONE field's value writes a second, completely different
+    `KEY=value` line into `.env`, entirely bypassing `ALL_KEYS`'s allowlist
+    on which fields the Settings form may write (that allowlist only checks
+    the submitted field NAME, never a value's contents). `DATABASE_URL`/
+    `RENDER_DATABASE_URL` are themselves writable through this same form, so
+    this is a real privilege-escalation path, not just malformed output.
     """
     if not updates:
         return []
+
+    bad = {k: v for k, v in updates.items() if "\n" in v or "\r" in v}
+    if bad:
+        raise ValueError(
+            f"value(s) for {', '.join(sorted(bad))} contain a newline, which "
+            "is not allowed in a .env value"
+        )
 
     existing_lines = (
         ENV_PATH.read_text(encoding="utf-8").splitlines()

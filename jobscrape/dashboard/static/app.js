@@ -81,10 +81,13 @@
       if (confirmMsg && !confirm(confirmMsg)) return;
       var stage = btn.getAttribute("data-start-stage");
       var extra = btn.getAttribute("data-extra") || "";
+      var confirmToken = btn.getAttribute("data-confirm-token") || "";
       var label = btn.textContent;
       btn.disabled = true;
       btn.textContent = "Starting…";
-      post("/api/runs/" + stage + "/start", "extra=" + encodeURIComponent(extra))
+      var body = "extra=" + encodeURIComponent(extra);
+      if (confirmToken) body += "&confirm=" + encodeURIComponent(confirmToken);
+      post("/api/runs/" + stage + "/start", body)
         .then(function (res) {
           if (!res.ok) {
             alert(res.data.error || "Could not start");
@@ -226,27 +229,52 @@
   // actually streamed.
   document.querySelectorAll("[id^='live-log-']").forEach(function (logEl) {
     var runId = logEl.getAttribute("data-run-id");
-    var source = new EventSource("/api/runs/" + runId + "/events");
-    source.onmessage = function (event) {
-      var payload = JSON.parse(event.data);
-      if (payload.done) {
-        var end = document.createElement("div");
-        end.textContent = "— run finished (" + payload.status + ") —";
-        logEl.appendChild(end);
+    var cursor = 0;
+    var finished = false;
+    var reconnectDelay = 1000;
+    var source = null;
+
+    function connect() {
+      source = new EventSource("/api/runs/" + runId + "/events?after=" + cursor);
+      source.onopen = function () { reconnectDelay = 1000; };
+      source.onmessage = function (event) {
+        var payload = JSON.parse(event.data);
+        if (payload.done) {
+          finished = true;
+          var end = document.createElement("div");
+          end.textContent = "— run finished (" + payload.status + ") —";
+          logEl.appendChild(end);
+          source.close();
+          setTimeout(function () { window.location.reload(); }, 1500);
+          return;
+        }
+        cursor = payload.id;
+        var line = document.createElement("div");
+        if (payload.level === "warn") line.className = "warn";
+        if (payload.level === "error") line.className = "error";
+        line.textContent = payload.message;
+        logEl.appendChild(line);
+        // Only autoscroll when already at the bottom, so reading isn't yanked.
+        var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
+        if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+      };
+      // A dropped connection used to just give up here (`source.close()`
+      // and nothing else) -- a brief network blip, or the server's own
+      // ~20-minute silent-stream timeout on a genuinely still-running but
+      // quiet stage (Jobright's Selenium session can run 20-45+ minutes),
+      // permanently stalled the live log with no sign anything was wrong.
+      // Reconnecting with `?after=<cursor>` (the endpoint already supports
+      // resuming from a cursor -- see app.py's `stream_events`) picks up
+      // exactly where it left off instead of re-showing the whole log from
+      // the start.
+      source.onerror = function () {
         source.close();
-        setTimeout(function () { window.location.reload(); }, 1500);
-        return;
-      }
-      var line = document.createElement("div");
-      if (payload.level === "warn") line.className = "warn";
-      if (payload.level === "error") line.className = "error";
-      line.textContent = payload.message;
-      logEl.appendChild(line);
-      // Only autoscroll when already at the bottom, so reading isn't yanked.
-      var atBottom = logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 60;
-      if (atBottom) logEl.scrollTop = logEl.scrollHeight;
-    };
-    source.onerror = function () { source.close(); };
+        if (finished) return;
+        setTimeout(connect, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 15000);
+      };
+    }
+    connect();
   });
 
   // --- keep the active-run pill honest ------------------------------------
@@ -294,7 +322,7 @@
       var body = new URLSearchParams(new FormData(settingsForm)).toString();
       post("/api/settings", body).then(function (res) {
         if (!res.ok) { alert(res.data.error || "Could not save"); return; }
-        document.getElementById("settings-banner").style.display = "flex";
+        document.getElementById("settings-banner").classList.remove("hidden");
         window.scrollTo(0, 0);
       });
     });
@@ -450,7 +478,7 @@
       editIdField.value = "";
       submitBtn.textContent = "Add schedule";
       title.textContent = "Add a schedule";
-      cancelBtn.style.display = "none";
+      cancelBtn.classList.add("hidden");
       frequencyMode.value = "cron";
       applyFrequencyMode("cron");
       updateJobrightHint();
@@ -489,7 +517,7 @@
         updateJobrightHint();
         submitBtn.textContent = "Save changes";
         title.textContent = "Edit schedule";
-        cancelBtn.style.display = "inline-flex";
+        cancelBtn.classList.remove("hidden");
         window.scrollTo(0, 0);
       });
     });

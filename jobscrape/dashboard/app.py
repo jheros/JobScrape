@@ -446,10 +446,28 @@ def describe_cron(
 templates.env.globals["describe_cron"] = describe_cron
 
 
+#: `runner.STAGES["purge"]` deletes data for real unless `extra` carries
+#: `--dry-run` (see that module's own comment). The dashboard has no login on
+#: any route (`docs/DOCKER.md`), so the client-side `confirm()` dialog on the
+#: "Purge (delete for real)" button is a UX nicety, not a gate — any direct
+#: POST to this route skips it entirely. This token is the actual gate: a
+#: real purge without it is rejected outright, so an accidental or
+#: non-interactive POST (a stray script, a misclick automation, a copy-pasted
+#: curl command missing `--dry-run`) can no longer delete anything by itself.
+_PURGE_CONFIRM_TOKEN = "delete-for-real"
+
+
 @app.post("/api/runs/{stage}/start")
 async def start_stage(
     stage: str, extra: str = Form(""), since: str = Form(""), until: str = Form(""),
+    confirm: str = Form(""),
 ) -> JSONResponse:
+    extra_args = extra.split() if extra.strip() else []
+    if stage == "purge" and "--dry-run" not in extra_args and confirm != _PURGE_CONFIRM_TOKEN:
+        return JSONResponse(
+            {"error": "a real (non-dry-run) purge requires explicit confirmation"},
+            status_code=400,
+        )
     window = None
     if since.strip() or until.strip():
         if stage not in _WINDOW_STAGES:
@@ -470,7 +488,7 @@ async def start_stage(
 
     try:
         info = await manager.start(
-            stage, extra.split() if extra.strip() else None, window=window,
+            stage, extra_args or None, window=window,
         )
     except (ValueError, RuntimeError) as exc:
         return JSONResponse({"error": str(exc)}, status_code=409)
@@ -664,7 +682,10 @@ async def save_settings(request: Request) -> JSONResponse:
         key: str(value) for key, value in form.items()
         if key in envfile.ALL_KEYS and str(value) != current.get(key, "")
     }
-    changed = envfile.write_env_file(updates)
+    try:
+        changed = envfile.write_env_file(updates)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     # Immediate, for free: every subsequent RunManager.start() subprocess
     # inherits os.environ at spawn time, so a newly-started stage or schedule
     # sees this right away. Values THIS process already baked into config.py's

@@ -301,14 +301,14 @@ class Fetcher:
     async def probe(
         self,
         url: str,
-        validate: Callable[[str], None] | None = None,
+        validate: Callable[[str], str] | None = None,
         max_redirects: int = 5,
     ) -> tuple[int, str, str] | None:
         """Fetch a URL we did not choose, checking **every** hop.
 
         Returns ``(status, final_url, body)``, or ``None`` if the request could
-        not be made at all. Bypasses `request` deliberately, for two reasons
-        that both matter only for untrusted URLs:
+        not be made at all. Bypasses `request` deliberately, for three reasons
+        that all matter only for untrusted URLs:
 
         **Redirects are followed by hand.** The shared client sets
         ``follow_redirects=True``, so a URL that passes an SSRF check can 302 to
@@ -316,6 +316,18 @@ class Fetcher:
         scrutiny. `safehttp`'s docstring claimed hops were re-checked; nothing
         implemented it. ``validate`` is called on the original URL *and on every
         Location* before that hop is followed.
+
+        **The address `validate` approved is the address dialed, not re-resolved.**
+        `validate` (`safehttp.check_url`) returns the one public address it
+        confirmed the hostname resolves to. Handing `current` (the hostname
+        URL) straight to the client would make it resolve DNS a *second* time
+        at connect — an independent lookup, with a window for the name to now
+        answer with a private/metadata address between the two (DNS
+        rebinding; see `safehttp`'s module docstring). The request is instead
+        made against the validated IP directly, with the real hostname
+        preserved via the `Host` header and, for HTTPS, the `sni_hostname`
+        extension (so TLS SNI and certificate-hostname verification still
+        target the name, not the IP).
 
         **The status is returned.** `request` collapses every response >= 400 to
         ``None``, which made 404 and 410 — the most reliable death signals a
@@ -330,14 +342,23 @@ class Fetcher:
 
         current = url
         for _ in range(max_redirects + 1):
+            parsed = urlparse(current)
+            host = parsed.netloc
+            request_url = current
+            headers = {}
+            extensions = {}
             if validate is not None:
-                validate(current)
-            host = urlparse(current).netloc
+                ip = validate(current)
+                request_url = str(httpx.URL(current).copy_with(host=ip))
+                headers["Host"] = parsed.hostname or ""
+                if parsed.scheme == "https":
+                    extensions["sni_hostname"] = parsed.hostname or ""
             async with self._global:
                 sem = await self._hosts.acquire(host)
                 try:
                     response = await self._client.request(
-                        "GET", current, follow_redirects=False
+                        "GET", request_url, follow_redirects=False,
+                        headers=headers, extensions=extensions,
                     )
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
                     self.stats["failed"] += 1
@@ -348,10 +369,16 @@ class Fetcher:
 
             location = response.headers.get("location")
             if response.is_redirect and location:
-                current = str(response.url.join(location))
+                # Joined against `current` (the real-hostname URL), not
+                # `response.url` — the actual request went to the pinned IP
+                # above, so `response.url` would resolve a relative Location
+                # against that IP instead of the hostname it belongs with.
+                current = str(httpx.URL(current).join(location))
                 continue
             self.stats["ok"] += 1
-            return response.status_code, str(response.url), response.text
+            # Same reasoning: report the hostname URL that was validated,
+            # not the IP that was actually dialed underneath it.
+            return response.status_code, current, response.text
 
         log.debug("probe %s: too many redirects", url)
         return None

@@ -157,7 +157,8 @@
             data-label="Purge (dry-run)">{{ icons.icon('trash') }} Purge (dry-run)</button>
     <button class="btn danger" data-start-stage="purge"
             data-label="Purge (delete for real)"
-            data-confirm="Really delete every stored posting that no longer passes the role filter? This is not a dry run.">{{ icons.icon('trash') }} Purge (delete for real)</button>
+            data-confirm="Really delete every stored posting that no longer passes the role filter? This is not a dry run."
+            data-confirm-token="delete-for-real">{{ icons.icon('trash') }} Purge (delete for real)</button>
   </div>
   <p class="sub mt-md mb-0">
     Stages run as separate processes, so stopping one is immediate and whatever

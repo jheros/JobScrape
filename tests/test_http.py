@@ -144,3 +144,109 @@ async def test_shared_ats_hosts_get_extra_retries() -> None:
     """A board lost to a 429 is a board whose jobs never arrive."""
     assert "jobs.ashbyhq.com" in config.HOST_LIMITS
     assert config.MAX_RETRIES <= 6
+
+
+# --- probe(): validated-address pinning (SSRF / DNS-rebinding TOCTOU) ------
+
+
+class _RecordingClient:
+    """Stands in for httpx.AsyncClient — records every request() call and
+    plays back a queued response, without ever touching the network."""
+
+    def __init__(self, responses):
+        self.calls: list[tuple[str, str, dict]] = []
+        self._responses = list(responses)
+
+    async def request(self, method, url, **kw):
+        self.calls.append((method, url, kw))
+        return self._responses.pop(0)
+
+    async def aclose(self) -> None:
+        pass
+
+
+def _response(status: int, *, url: str, text: str = "", location: str | None = None):
+    import httpx
+    headers = {"location": location} if location else {}
+    return httpx.Response(status, headers=headers, text=text,
+                           request=httpx.Request("GET", url))
+
+
+async def test_probe_dials_the_validated_ip_not_the_hostname() -> None:
+    """`validate` returns the one address it confirmed public; probe() must
+    connect to THAT address rather than handing the hostname to the client,
+    which would resolve DNS again at connect time -- an independent lookup
+    with a rebinding window between the two (see safehttp's module docstring)."""
+    client = _RecordingClient([
+        _response(200, url="https://93.184.216.34/job/1", text="hello"),
+    ])
+    async with Fetcher() as fetcher:
+        fetcher._client = client
+        result = await fetcher.probe(
+            "https://totally-innocent.example.com/job/1",
+            validate=lambda u: "93.184.216.34",
+        )
+
+    assert result == (200, "https://totally-innocent.example.com/job/1", "hello")
+    method, url, kw = client.calls[0]
+    assert url.startswith("https://93.184.216.34"), url
+    assert kw["headers"]["Host"] == "totally-innocent.example.com"
+    assert kw["extensions"]["sni_hostname"] == "totally-innocent.example.com"
+
+
+async def test_probe_does_not_set_sni_hostname_for_plain_http() -> None:
+    """SNI is a TLS concept -- setting it for a plain http:// request is at
+    best a no-op and shouldn't be asserted as if it mattered there."""
+    client = _RecordingClient([
+        _response(200, url="http://93.184.216.34/job/1", text="hello"),
+    ])
+    async with Fetcher() as fetcher:
+        fetcher._client = client
+        await fetcher.probe(
+            "http://totally-innocent.example.com/job/1",
+            validate=lambda u: "93.184.216.34",
+        )
+
+    _, _, kw = client.calls[0]
+    assert kw["headers"]["Host"] == "totally-innocent.example.com"
+    assert "sni_hostname" not in kw["extensions"]
+
+
+async def test_probe_redirect_is_resolved_against_the_hostname_not_the_pinned_ip() -> None:
+    """The physical request went to an IP; joining a relative Location against
+    that would produce a next hop with the IP as its "hostname" instead of
+    resolving relative to the real host the redirect belongs to."""
+    client = _RecordingClient([
+        _response(302, url="https://93.184.216.34/a", location="/b"),
+        _response(200, url="https://93.184.216.34/b", text="done"),
+    ])
+    async with Fetcher() as fetcher:
+        fetcher._client = client
+        result = await fetcher.probe(
+            "https://real-host.example.com/a",
+            validate=lambda u: "93.184.216.34",
+        )
+
+    assert result == (200, "https://real-host.example.com/b", "done")
+    # Second hop must also have been validated and pinned again, against the
+    # real next-hop hostname URL, not re-resolved from the IP.
+    assert len(client.calls) == 2
+    assert client.calls[1][1].startswith("https://93.184.216.34")
+    assert client.calls[1][2]["headers"]["Host"] == "real-host.example.com"
+
+
+async def test_probe_without_validate_still_works_unpinned() -> None:
+    """Only the untrusted-URL caller (liveness) passes `validate`; every other
+    use of probe() (currently none, but the parameter is optional) must keep
+    working with no pinning at all."""
+    client = _RecordingClient([
+        _response(200, url="https://trusted.example.com/x", text="ok"),
+    ])
+    async with Fetcher() as fetcher:
+        fetcher._client = client
+        result = await fetcher.probe("https://trusted.example.com/x")
+
+    assert result == (200, "https://trusted.example.com/x", "ok")
+    _, url, kw = client.calls[0]
+    assert url == "https://trusted.example.com/x"
+    assert kw["headers"] == {}
