@@ -439,3 +439,66 @@ def sync(
         "seen": len(changed), "upserted": upserted, "deleted": deleted,
         "skipped": skipped, "watermark": new_watermark.isoformat(), "dry_run": dry_run,
     }
+
+
+def backfill_local_sync_status(
+    conn: db.Connection, render_conn: db.Connection, *, dry_run: bool = False,
+) -> dict[str, Any]:
+    """One-time catch-up for `render_synced_at`/`render_sync_status`.
+
+    Those two columns didn't exist until this session added them; every row
+    `sync()` had already pushed to Render before that point has no local
+    record of it. Because `sync()` only ever re-examines rows whose
+    `changed_at` is newer than its own watermark, an old row that hasn't
+    changed since is never re-visited — it would show 'pending' forever even
+    though it's genuinely already on Render, with no future incremental pass
+    ever able to correct it.
+
+    This fixes that by asking Render directly rather than guessing: pull
+    every `dedup_key` Render actually has, compute the same key locally
+    (`_dedup_key`, the exact rule Render's own upsert keys on), and stamp
+    'synced' on any local row that matches. Deliberately excludes closed and
+    duplicate rows even if they still exist in Render — clearing anything
+    for them via `render_sync_status` still needs `sync()`'s own DELETE
+    path; marking one 'synced' here would just make it look like nothing
+    is left to do.
+    """
+    render_keys: set[str] = {
+        r["dedup_key"] for r in render_conn.execute("SELECT dedup_key FROM jobs")
+    }
+
+    candidates = conn.execute(
+        "SELECT source, source_job_id, apply_url, job_url, title, company "
+        "FROM jobs WHERE render_synced_at IS NULL "
+        "  AND closed_at IS NULL AND duplicate_of IS NULL"
+    ).fetchall()
+
+    matched_keys: list[tuple[str, str]] = []
+    for row in candidates:
+        source = row["source"] or ""
+        source_job_id = row["source_job_id"] or ""
+        dedup_key = _dedup_key(
+            source, source_job_id, row["apply_url"] or row["job_url"],
+            row["title"] or "", row["company"] or "",
+        )
+        if dedup_key in render_keys:
+            matched_keys.append((source, source_job_id))
+
+    stamped = 0
+    if not dry_run:
+        now = datetime.now(timezone.utc)
+        for i in range(0, len(matched_keys), _BATCH_SIZE):
+            batch = matched_keys[i : i + _BATCH_SIZE]
+            placeholders = ", ".join(["(?, ?)"] * len(batch))
+            conn.execute(
+                f"UPDATE jobs SET render_synced_at = ?, render_sync_status = 'synced' "
+                f"WHERE (source, source_job_id) IN ({placeholders})",
+                (now, *[v for pair in batch for v in pair]),
+            )
+            conn.commit()
+            stamped += len(batch)
+
+    return {
+        "candidates": len(candidates), "matched": len(matched_keys),
+        "stamped": stamped, "dry_run": dry_run,
+    }

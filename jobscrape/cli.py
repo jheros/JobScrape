@@ -1457,6 +1457,58 @@ def cmd_render_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_backfill_render_sync_status(args: argparse.Namespace) -> int:
+    """One-time catch-up: stamp `render_synced_at` on local rows that were
+    already pushed to Render before that column existed. See
+    `render_sync.backfill_local_sync_status` for why `sync()` itself can
+    never do this on its own.
+    """
+    from . import render_sync
+
+    ok, reason = render_sync.available()
+    if not ok:
+        log.info("backfill-render-sync-status: %s — skipping", reason)
+        return 0
+
+    with db.session(args.db) as conn:
+        run_id = db.start_run(
+            conn, _command_line(), "backfill-render-sync-status", pid=os.getpid()
+        )
+        try:
+            render_conn = render_sync.connect_render()
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            log.exception("backfill-render-sync-status: could not connect to Render")
+            db.log_event(conn, run_id, f"connect failed: {exc}",
+                         stage="backfill-render-sync-status", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+
+        try:
+            result = render_sync.backfill_local_sync_status(
+                conn, render_conn, dry_run=args.dry_run,
+            )
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            log.exception("backfill-render-sync-status: failed")
+            conn.rollback()
+            db.log_event(conn, run_id, f"backfill failed: {exc}",
+                         stage="backfill-render-sync-status", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+        finally:
+            render_conn.close()
+
+        message = (
+            f"backfill-render-sync-status: {result['candidates']} candidates, "
+            f"{result['matched']} matched, {result['stamped']} stamped"
+            + (" (dry run)" if result["dry_run"] else "")
+        )
+        log.info(message)
+        db.log_event(conn, run_id, message, stage="backfill-render-sync-status",
+                     counters=result)
+        db.finish_run(conn, run_id, status="ok", stats_payload=result)
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     with db.session(args.db) as conn:
         print(json.dumps(db.stats(conn), indent=2))
@@ -1951,6 +2003,14 @@ def build_parser() -> argparse.ArgumentParser:
                                "(oldest-changed-first); writes for real, unlike "
                                "--dry-run, and advances the watermark to match")
 
+    p_backfill_sync = sub.add_parser(
+        "backfill-render-sync-status",
+        help="one-time: stamp render_synced_at on local rows already pushed "
+             "to Render before that column existed (needs RENDER_DATABASE_URL)",
+    )
+    p_backfill_sync.add_argument("--dry-run", action="store_true",
+                                 help="report what would be stamped without writing")
+
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")
 
@@ -2070,6 +2130,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_jobright_fetch(args)
         if args.command == "render-sync":
             return cmd_render_sync(args)
+        if args.command == "backfill-render-sync-status":
+            return cmd_backfill_render_sync_status(args)
         if args.command == "schedule-run":
             return asyncio.run(cmd_schedule_run(args))
         if args.command == "migrate-from-sqlite":

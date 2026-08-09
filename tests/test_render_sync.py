@@ -137,6 +137,18 @@ class _FakeRenderConn:
         self._aborted = False
 
 
+class _FakeRenderKeysConn:
+    """`backfill_local_sync_status` only ever asks Render one thing: which
+    dedup_keys currently exist there. No upserts/deletes to record."""
+
+    def __init__(self, dedup_keys: list[str]) -> None:
+        self._keys = dedup_keys
+
+    def execute(self, sql: str, params: tuple = ()) -> list[dict[str, str]]:
+        assert sql.strip().startswith("SELECT") and "dedup_key" in sql
+        return [{"dedup_key": k} for k in self._keys]
+
+
 def _upserted_keys(calls: list[tuple[str, tuple]]) -> list[str]:
     """Every dedup_key upserted across all INSERT calls, whether a given
     call is the single-row `_UPSERT_SQL` (dedup_key at index 2) or a
@@ -414,3 +426,97 @@ def test_sync_limit_does_not_permanently_strand_a_tied_row() -> None:
             _dedup_key("adzuna", "t1", "https://x/q0", "iOS Engineer -Remote", "Quora"),
             _dedup_key("adzuna", "t2", "https://x/q0", "iOS Engineer -Remote", "Quora"),
         }
+
+
+# --- backfill_local_sync_status(): catching up rows synced before the local
+# bookkeeping columns existed -------------------------------------------------
+
+
+def test_backfill_stamps_a_row_already_present_in_render() -> None:
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="b0", posted_at="2026-07-01")])
+        render = _FakeRenderKeysConn([_dedup_key("adzuna", "b0", "https://x/q0",
+                                                   "iOS Engineer -Remote", "Quora")])
+        result = render_sync.backfill_local_sync_status(conn, render)
+
+        assert result == {"candidates": 1, "matched": 1, "stamped": 1, "dry_run": False}
+        synced_at, status = _local_sync_state(conn, "b0")
+        assert synced_at is not None and status == "synced"
+
+
+def test_backfill_leaves_a_row_not_found_in_render_alone() -> None:
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="b1", posted_at="2026-07-01")])
+        render = _FakeRenderKeysConn([])  # Render has nothing at all
+        result = render_sync.backfill_local_sync_status(conn, render)
+
+        assert result == {"candidates": 1, "matched": 0, "stamped": 0, "dry_run": False}
+        synced_at, status = _local_sync_state(conn, "b1")
+        assert synced_at is None and status is None
+
+
+def test_backfill_excludes_a_closed_row_even_if_still_in_render() -> None:
+    """A closed row that's still sitting in Render needs sync()'s own DELETE
+    path, not to be marked 'synced' -- that would hide the still-pending
+    removal."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="b2", posted_at="2026-07-01")])
+        conn.execute("UPDATE jobs SET closed_at = now() WHERE source_job_id = 'b2'")
+        conn.commit()
+        render = _FakeRenderKeysConn([_dedup_key("adzuna", "b2", "https://x/q0",
+                                                   "iOS Engineer -Remote", "Quora")])
+        result = render_sync.backfill_local_sync_status(conn, render)
+
+        assert result["candidates"] == 0
+        synced_at, status = _local_sync_state(conn, "b2")
+        assert synced_at is None and status is None
+
+
+def test_backfill_excludes_a_duplicate_row_even_if_still_in_render() -> None:
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="b3", posted_at="2026-07-01"),
+            _dup_job(source_job_id="b4", posted_at="2026-07-02"),
+        ])
+        result = dedupe.resolve_all(conn)
+        assert result["collapsed"] == 1
+
+        keys = [
+            _dedup_key("adzuna", "b3", "https://x/q0", "iOS Engineer -Remote", "Quora"),
+            _dedup_key("adzuna", "b4", "https://x/q0", "iOS Engineer -Remote", "Quora"),
+        ]
+        render = _FakeRenderKeysConn(keys)
+        backfill_result = render_sync.backfill_local_sync_status(conn, render)
+
+        # Only the canonical survivor is a candidate; the suppressed dupe isn't.
+        assert backfill_result["candidates"] == 1
+        assert backfill_result["stamped"] == 1
+
+
+def test_backfill_dry_run_reports_without_writing() -> None:
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="b5", posted_at="2026-07-01")])
+        render = _FakeRenderKeysConn([_dedup_key("adzuna", "b5", "https://x/q0",
+                                                   "iOS Engineer -Remote", "Quora")])
+        result = render_sync.backfill_local_sync_status(conn, render, dry_run=True)
+
+        assert result == {"candidates": 1, "matched": 1, "stamped": 0, "dry_run": True}
+        synced_at, status = _local_sync_state(conn, "b5")
+        assert synced_at is None and status is None
+
+
+def test_backfill_batches_across_more_rows_than_one_batch_size(monkeypatch) -> None:
+    monkeypatch.setattr(render_sync, "_BATCH_SIZE", 2)
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id=f"c{i}", posted_at="2026-07-01") for i in range(5)
+        ])
+        keys = [_dedup_key("adzuna", f"c{i}", "https://x/q0",
+                            "iOS Engineer -Remote", "Quora") for i in range(5)]
+        render = _FakeRenderKeysConn(keys)
+        result = render_sync.backfill_local_sync_status(conn, render)
+
+        assert result == {"candidates": 5, "matched": 5, "stamped": 5, "dry_run": False}
+        for i in range(5):
+            synced_at, status = _local_sync_state(conn, f"c{i}")
+            assert synced_at is not None and status == "synced"
