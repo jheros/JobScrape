@@ -112,11 +112,14 @@ class _FakeRenderConn:
     fake conn accepts anything else, same as a real Postgres connection
     after an aborted statement)."""
 
-    def __init__(self, fail_deletes_for: set = frozenset()) -> None:
+    def __init__(
+        self, fail_deletes_for: set = frozenset(), fail_upserts_for: set = frozenset(),
+    ) -> None:
         self.calls: list[tuple[str, tuple]] = []
         self.rollback_calls = 0
         self.commit_calls = 0
         self._fail_deletes_for = fail_deletes_for
+        self._fail_upserts_for = fail_upserts_for
         self._aborted = False
 
     def execute(self, sql: str, params: tuple = ()) -> None:
@@ -128,6 +131,11 @@ class _FakeRenderConn:
         ):
             self._aborted = True
             raise IntegrityError("DELETE FROM jobs WHERE dedup_key = ?", params, Exception("fk"))
+        if sql.strip().startswith("INSERT") and any(
+            params[i + 2] in self._fail_upserts_for for i in range(0, len(params), 15)
+        ):
+            self._aborted = True
+            raise IntegrityError("INSERT INTO jobs (...)", params, Exception("constraint"))
 
     def commit(self) -> None:
         self.commit_calls += 1
@@ -327,6 +335,100 @@ def test_sync_batch_delete_falls_back_to_one_row_when_one_is_blocked() -> None:
         # One rollback for the failed 2-row batch, one more for d0's own
         # failed single-row retry in the fallback.
         assert render.rollback_calls == 2
+
+
+def test_sync_batch_upsert_falls_back_to_one_row_when_one_is_blocked() -> None:
+    """The upsert side of the same fallback the DELETE path already had —
+    `flush_upserts()` used to have no `IntegrityError` handling at all, so
+    one bad row in a batch (e.g. a constraint Render's schema enforces)
+    would abort the WHOLE batch, and the raw exception would propagate all
+    the way out of `sync()`, failing the entire pass and losing every other
+    row queued behind it too."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="u0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="u1", posted_at="2026-07-02",
+                     title="Backend Engineer -Remote"),
+        ])
+        blocked_key = _dedup_key("adzuna", "u0", "https://x/q0",
+                                  "iOS Engineer -Remote", "Quora")
+        render = _FakeRenderConn(fail_upserts_for={blocked_key})
+        stats = sync(conn, render)
+
+        assert stats["skipped"] == 1
+        assert stats["upserted"] == 1  # u1 still got upserted despite u0 blocking the batch
+        # One rollback for the failed 2-row batch, one more for u0's own
+        # failed single-row retry in the fallback.
+        assert render.rollback_calls == 2
+
+        u0_synced_at, u0_status = _local_sync_state(conn, "u0")
+        u1_synced_at, u1_status = _local_sync_state(conn, "u1")
+        assert u0_status == "blocked" and u0_synced_at is not None
+        assert u1_status == "synced" and u1_synced_at is not None
+
+
+# --- sync(): a `--limit=0` cut must not crash --------------------------------
+
+
+def test_sync_limit_zero_does_not_crash() -> None:
+    """`limit=0` used to reach `changed[-1]` on an empty list while checking
+    whether the cut landed inside a tied `changed_at` group — an IndexError,
+    not a graceful "nothing to do"."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="z0", posted_at="2026-07-01")])
+        render = _FakeRenderConn()
+        stats = sync(conn, render, limit=0)
+
+        assert stats["seen"] == 0
+        assert stats["upserted"] == 0
+        assert not render.calls
+
+
+# --- sync()/backfill/delete_source: serialized against each other -----------
+
+
+def test_sync_refuses_to_run_while_another_call_holds_the_lock() -> None:
+    """Two of `sync()`/`backfill_local_sync_status()`/`delete_source()`
+    running at once can race — e.g. `delete_source` computing a dedup_key
+    from a row right before deleting it locally, while a concurrent `sync()`
+    pass reads that same still-there row as "changed" and re-upserts it to
+    Render moments later, resurrecting exactly what was being removed. A
+    session-scoped Postgres advisory lock serializes all three.
+
+    Postgres advisory locks are reentrant WITHIN one session/connection —
+    the same backend can "acquire" a lock it already holds again without
+    blocking itself — so this has to hold the lock from a genuinely
+    separate connection to prove a concurrent CALLER is refused, not just
+    exercise a no-op self-reacquire."""
+    from sqlalchemy import create_engine
+
+    from jobscrape import config
+
+    other_engine = create_engine(config.TEST_DATABASE_URL)
+    other = other_engine.connect()
+    held = other.exec_driver_sql(
+        f"SELECT pg_try_advisory_lock({render_sync._LOCK_KEY})"
+    ).scalar()
+    assert held, "test setup: the other connection must acquire the lock first"
+    try:
+        import pytest
+        with db.session() as conn:
+            with pytest.raises(render_sync.RenderSyncLocked):
+                sync(conn, _FakeRenderConn())
+    finally:
+        other.exec_driver_sql(f"SELECT pg_advisory_unlock({render_sync._LOCK_KEY})")
+        other.close()
+        other_engine.dispose()
+
+
+def test_sync_releases_the_lock_so_a_later_call_can_proceed() -> None:
+    """Not held forever — one call finishing must let the next one in."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="l0", posted_at="2026-07-01")])
+        sync(conn, _FakeRenderConn())
+        # If the first call's lock had leaked, this second call would raise
+        # `RenderSyncLocked` instead of completing normally.
+        sync(conn, _FakeRenderConn())
 
 
 # --- sync(): stamps local render_synced_at/render_sync_status ---------------
@@ -617,9 +719,70 @@ def test_delete_source_dry_run_writes_nothing() -> None:
         assert not render.calls
 
 
+def test_delete_source_logs_which_key_was_blocked(caplog) -> None:
+    """`delete_source`'s own render-deletion loop used to just count a
+    blocked row (`render_blocked += 1`) with no `log.warning` identifying
+    WHICH posting is stuck — unlike `flush_deletes()`'s equivalent branch,
+    which always names the key. An operator turning a source off for good
+    has no way to go find and resolve the dependent review without this."""
+    import logging as _logging
+
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="d5", posted_at="2026-07-01")])
+        blocked_key = _dedup_key("adzuna", "d5", "https://x/q0",
+                                  "iOS Engineer -Remote", "Quora")
+        render = _FakeRenderConn(fail_deletes_for={blocked_key})
+        with caplog.at_level(_logging.WARNING, logger="jobscrape.render_sync"):
+            result = render_sync.delete_source(conn, render, "adzuna")
+
+        assert result["render_blocked"] == 1
+        assert any(
+            "adzuna" in rec.message and blocked_key in rec.message
+            for rec in caplog.records
+        ), "the blocked key must be identifiable in the logs, not just counted"
+
+
 def test_delete_source_finds_nothing_for_an_absent_source() -> None:
     with db.session() as conn:
         render = _FakeRenderConn()
         result = render_sync.delete_source(conn, render, "nope-not-a-source")
         assert result["found"] == 0
         assert result["render_deleted"] == 0 and result["local_deleted"] == 0
+
+
+# --- cli.cmd_render_sync: a lock skip is a skip, not a failure --------------
+
+
+def test_cmd_render_sync_treats_a_lock_skip_as_ok_not_error(monkeypatch) -> None:
+    """A `RenderSyncLocked` from an overlapping schedule/manual invocation
+    must behave like every other benign skip this command already has
+    (missing token, Render unreachable) — exit 0, `runs.status` something
+    other than 'failed', not a scary error a monitor would page on."""
+    import argparse
+
+    from jobscrape import cli
+
+    monkeypatch.setattr(render_sync, "available", lambda: (True, ""))
+
+    class _DummyRenderConn:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(render_sync, "connect_render", lambda: _DummyRenderConn())
+
+    def _locked_sync(conn, render_conn, **kw):
+        raise render_sync.RenderSyncLocked("another sync is already running")
+
+    monkeypatch.setattr(render_sync, "sync", _locked_sync)
+
+    args = argparse.Namespace(db=None, dry_run=False, limit=None)
+    rc = cli.cmd_render_sync(args)
+    assert rc == 0
+
+    with db.session() as conn:
+        row = conn.execute(
+            "SELECT status, error FROM runs WHERE stage = 'render-sync' "
+            "ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert row["status"] != "failed" and row["status"] != "ok"
+        assert "already running" in (row["error"] or "")

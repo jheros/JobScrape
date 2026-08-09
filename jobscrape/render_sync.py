@@ -14,7 +14,9 @@ happens; everything else here is watermark bookkeeping and plain upserts.
 
 from __future__ import annotations
 
+import functools
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -142,6 +144,73 @@ _WATERMARK_SQL = """
     ORDER BY id DESC LIMIT 1
 """
 
+#: Arbitrary constant naming this module's slice of Postgres's single,
+#: database-wide advisory-lock keyspace — picked by hand so it stays
+#: readable here rather than being the opaque output of some hash.
+_LOCK_KEY = 913_427_730_162
+
+
+class RenderSyncLocked(Exception):
+    """Another `sync()`/`backfill_local_sync_status()`/`delete_source()` call
+    already holds the lock — see `_locked()`."""
+
+
+def _try_lock(conn: db.Connection) -> bool:
+    return bool(
+        conn.execute("SELECT pg_try_advisory_lock(?) AS ok", (_LOCK_KEY,)).fetchone()["ok"]
+    )
+
+
+def _unlock(conn: db.Connection) -> None:
+    conn.execute("SELECT pg_advisory_unlock(?)", (_LOCK_KEY,))
+
+
+@contextmanager
+def _locked(conn: db.Connection):
+    """Serializes `sync()`, `backfill_local_sync_status()`, and
+    `delete_source()` against each other via a session-scoped Postgres
+    advisory lock on the LOCAL database — the one all three read and mutate
+    overlapping state against (jobscrape's local `jobs` rows, Render's own
+    `jobs` rows, and, for `sync()`, the watermark computed from
+    `runs.stats`).
+
+    Two of these running at once can race in a way that resurrects exactly
+    what the other was trying to remove: `delete_source` computing a
+    dedup_key from a row's own data right before deleting it locally, while
+    a concurrent `sync()` pass reads that same still-there row as "changed"
+    and re-upserts it to Render moments later. The dashboard's own
+    `RunManager` already keeps two dashboard-LAUNCHED `render-sync` stages
+    from overlapping (see `runner.STAGE_GROUPS`), but `delete_source` and
+    `backfill_local_sync_status` are CLI-only, and even a plain
+    `python -m jobscrape render-sync` invoked twice bypasses that
+    reservation entirely — this is the guarantee that holds regardless of
+    how any of the three was launched.
+
+    `pg_try_advisory_lock` (non-blocking), not the blocking form: a second
+    caller skipping outright with a clear message is safer than silently
+    queuing for however long the first one takes — especially from a cron
+    context, where a queued second invocation could still be running when a
+    third one fires.
+    """
+    if not _try_lock(conn):
+        raise RenderSyncLocked(
+            "another render-sync/backfill/delete-source is already running"
+        )
+    try:
+        yield
+    finally:
+        _unlock(conn)
+
+
+def _serialized(func):
+    """Wraps a `(conn, render_conn, ...)` function in `_locked(conn)` without
+    touching its body — see `_locked`'s docstring for why this exists."""
+    @functools.wraps(func)
+    def wrapper(conn: db.Connection, *args: Any, **kwargs: Any) -> Any:
+        with _locked(conn):
+            return func(conn, *args, **kwargs)
+    return wrapper
+
 
 def available() -> tuple[bool, str]:
     if not config.RENDER_DATABASE_URL:
@@ -217,6 +286,7 @@ def _to_render_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@_serialized
 def sync(
     conn: db.Connection,
     render_conn: db.Connection,
@@ -264,7 +334,7 @@ def sync(
         params.append(limit)
     changed = conn.execute(sql, tuple(params)).fetchall()
 
-    if limit is not None and len(changed) == limit:
+    if changed and limit is not None and len(changed) == limit:
         # The batch came back exactly full, so the cut may have landed
         # inside a tie rather than at a natural end -- pull in the rest of
         # the boundary group so the watermark never advances past a
@@ -364,21 +434,54 @@ def sync(
         render_conn.commit()
 
     def flush_upserts() -> None:
-        nonlocal upserted
+        nonlocal upserted, skipped
         if not pending_upserts:
             return
         rows, pending_upserts[:] = pending_upserts[:], []
         local_keys, pending_upsert_local_keys[:] = pending_upsert_local_keys[:], []
         if len(rows) == 1:
-            render_conn.execute(_UPSERT_SQL, rows[0])
-        else:
+            try:
+                render_conn.execute(_UPSERT_SQL, rows[0])
+                upserted += 1
+                render_conn.commit()
+                stamp_local_sync(local_keys, "synced")
+            except IntegrityError as exc:
+                render_conn.rollback()
+                skipped += 1
+                stamp_local_sync(local_keys, "blocked")
+                log.warning(
+                    "render-sync: %s rejected by Render (%s) — skipping this upsert",
+                    rows[0][2], exc,
+                )
+            return
+        try:
             render_conn.execute(
                 _batch_upsert_sql(len(rows)),
                 [v for row in rows for v in row],
             )
-        upserted += len(rows)
-        render_conn.commit()
-        stamp_local_sync(local_keys, "synced")
+            upserted += len(rows)
+            render_conn.commit()
+            stamp_local_sync(local_keys, "synced")
+        except IntegrityError:
+            # One bad row (e.g. a constraint Render's schema enforces that
+            # this batch happens to violate) must not cost the whole batch —
+            # the same per-row fallback `flush_deletes()` uses for a delete
+            # blocked by Render's `reviews.job_id` foreign key.
+            render_conn.rollback()
+            for row, local_key in zip(rows, local_keys):
+                try:
+                    render_conn.execute(_UPSERT_SQL, row)
+                    upserted += 1
+                    render_conn.commit()
+                    stamp_local_sync([local_key], "synced")
+                except IntegrityError as exc:
+                    render_conn.rollback()
+                    skipped += 1
+                    stamp_local_sync([local_key], "blocked")
+                    log.warning(
+                        "render-sync: %s rejected by Render (%s) — skipping "
+                        "this upsert", row[2], exc,
+                    )
 
     def flush_pending() -> None:
         # Deletes first: a row that closed makes room for whatever comes
@@ -441,6 +544,7 @@ def sync(
     }
 
 
+@_serialized
 def backfill_local_sync_status(
     conn: db.Connection, render_conn: db.Connection, *, dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -504,6 +608,7 @@ def backfill_local_sync_status(
     }
 
 
+@_serialized
 def delete_source(
     conn: db.Connection, render_conn: db.Connection, source: str, *, dry_run: bool = False,
 ) -> dict[str, Any]:
@@ -548,6 +653,11 @@ def delete_source(
                 except IntegrityError:
                     render_conn.rollback()
                     render_blocked += 1
+                    log.warning(
+                        "delete-source %s: %s has a dependent review — "
+                        "leaving it in Render rather than deleting",
+                        source, batch[0],
+                    )
                 continue
             try:
                 render_conn.execute(_batch_delete_sql(len(batch)), batch)
@@ -563,6 +673,11 @@ def delete_source(
                     except IntegrityError:
                         render_conn.rollback()
                         render_blocked += 1
+                        log.warning(
+                            "delete-source %s: %s has a dependent review — "
+                            "leaving it in Render rather than deleting",
+                            source, key,
+                        )
 
     local_deleted = local_released = 0
     if not dry_run:

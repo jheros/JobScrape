@@ -434,6 +434,17 @@ def _get_engine(database_url: str) -> Engine:
 #: missing it would never trip the "add this column" branch below.
 _MIGRATED_COLUMNS = {"duplicate_marked_at", "render_synced_at", "render_sync_status"}
 
+#: Same idea as `_MIGRATED_COLUMNS`, for `companies`/`schedules` — columns
+#: added to those tables after their `CREATE TABLE` first shipped. Docker's
+#: documented update flow (`docs/DOCKER.md`) is `docker compose build && up
+#: -d`, with no `alembic upgrade head` step — only the one-time fresh-install
+#: path runs Alembic. Without an entry here, a column added to `companies`/
+#: `schedules` only ever reaches an already-running deployment if someone
+#: remembers to run the migration by hand; `jobs` never had that gap because
+#: `_MIGRATED_COLUMNS` already self-heals it on every `connect()`.
+_COMPANY_MIGRATED_COLUMNS = {"zero_yield_streak", "quiet_until"}
+_SCHEDULE_MIGRATED_COLUMNS = {"interval_days"}
+
 
 def _migrate(conn: Connection) -> None:
     # Postgres backfill of role_fingerprint/role_key for rows that predate
@@ -443,6 +454,12 @@ def _migrate(conn: Connection) -> None:
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_marked_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS render_synced_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS render_sync_status TEXT")
+    conn.execute(
+        "ALTER TABLE companies ADD COLUMN IF NOT EXISTS zero_yield_streak "
+        "INTEGER NOT NULL DEFAULT 0"
+    )
+    conn.execute("ALTER TABLE companies ADD COLUMN IF NOT EXISTS quiet_until TIMESTAMPTZ")
+    conn.execute("ALTER TABLE schedules ADD COLUMN IF NOT EXISTS interval_days INTEGER")
     conn.commit()
 
 
@@ -502,12 +519,24 @@ def _schema_is_current(conn: Connection) -> bool:
     if not row or not row["jobs"] or not row["companies"] or not row["schedules"]:
         return False
     # Column drift matters as much as a missing table: a release that adds one
-    # must still run its DDL. Compare what `jobs` has against what SCHEMA says.
-    have = {r["column_name"] for r in conn.execute(
-        "SELECT column_name FROM information_schema.columns "
-        "WHERE table_schema = current_schema() AND table_name = 'jobs'"
-    )}
-    required = set(JOB_COLUMNS) | _MIGRATED_COLUMNS
+    # must still run its DDL. Compare what each table has against what SCHEMA
+    # says — `jobs` against its full dataclass-derived contract plus
+    # bookkeeping extras, `companies`/`schedules` against just the columns
+    # known to have been added after their `CREATE TABLE` first shipped (see
+    # `_COMPANY_MIGRATED_COLUMNS`/`_SCHEDULE_MIGRATED_COLUMNS`).
+    have = {
+        (r["table_name"], r["column_name"])
+        for r in conn.execute(
+            "SELECT table_name, column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() "
+            "AND table_name IN ('jobs', 'companies', 'schedules')"
+        )
+    }
+    required = (
+        {("jobs", c) for c in set(JOB_COLUMNS) | _MIGRATED_COLUMNS}
+        | {("companies", c) for c in _COMPANY_MIGRATED_COLUMNS}
+        | {("schedules", c) for c in _SCHEDULE_MIGRATED_COLUMNS}
+    )
     return required.issubset(have) and int(row["n_idx"]) >= _EXPECTED_INDEX_COUNT
 
 
@@ -841,8 +870,8 @@ def skippable_ids(
     }
 
     for row in conn.execute(
-        "SELECT source_job_id, posted_at FROM posting_seen "
-        "WHERE source = ? AND company_slug = ?",
+        "SELECT source_job_id, (posted_at AT TIME ZONE 'UTC') AS posted_at "
+        "FROM posting_seen WHERE source = ? AND company_slug = ?",
         (source, company_slug),
     ):
         posted = row["posted_at"]
@@ -874,10 +903,10 @@ def query_jobs(
     if not include_duplicates:
         sql += " AND duplicate_of IS NULL"
     if since:
-        sql += " AND posted_at::date >= ?"
+        sql += " AND (posted_at AT TIME ZONE 'UTC')::date >= ?"
         params.append(since)
     if until:
-        sql += " AND posted_at::date <= ?"
+        sql += " AND (posted_at AT TIME ZONE 'UTC')::date <= ?"
         params.append(until)
     if sources:
         sql += f" AND source IN ({','.join('?' * len(sources))})"
@@ -1124,9 +1153,32 @@ def finish_run(
     stats_payload: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> None:
+    """Close out a run row. `stats_payload` is merged into whatever `stats`
+    the row already has, not replaced.
+
+    A composite invocation shares one row across stages via
+    `JOBSCRAPE_RUN_ID` — `schedule-run`'s `daily`/`full` modes have
+    `cmd_fetch` and `cmd_apify_pull` each call this once on the same
+    `run_id`, with disjoint stats keys (`sources`/`http`/`rows_touched`/...
+    vs `items`/`mapped`/...). A blind overwrite meant whichever stage
+    finished LAST silently erased the earlier stage's stats from the row,
+    even though both stages had succeeded — the dashboard's Runs page then
+    showed only the last stage's numbers for the whole run.
+    """
+    existing = conn.execute(
+        "SELECT stats FROM runs WHERE id = ?", (run_id,)
+    ).fetchone()
+    prior = existing["stats"] if existing else None
+    if isinstance(prior, str):
+        try:
+            prior = json.loads(prior or "{}")
+        except json.JSONDecodeError:
+            prior = {}
+    merged = dict(prior or {})
+    merged.update(stats_payload or {})
     conn.execute(
         "UPDATE runs SET ended_at = ?, status = ?, stats = ?, error = ? WHERE id = ?",
-        (now_iso(), status, json.dumps(stats_payload or {}, default=str), error, run_id),
+        (now_iso(), status, json.dumps(merged, default=str), error, run_id),
     )
     conn.commit()
 
@@ -1446,7 +1498,8 @@ def stats(conn: Connection) -> dict[str, Any]:
         )
     }
     row = conn.execute(
-        "SELECT MIN(posted_at::date) lo, MAX(posted_at::date) hi FROM jobs "
+        "SELECT MIN((posted_at AT TIME ZONE 'UTC')::date) lo, "
+        "MAX((posted_at AT TIME ZONE 'UTC')::date) hi FROM jobs "
         "WHERE posted_at IS NOT NULL AND duplicate_of IS NULL"
     ).fetchone()
     out["date_range"] = [

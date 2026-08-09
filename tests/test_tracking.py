@@ -224,6 +224,37 @@ def test_run_lifecycle(tmp_path) -> None:
         assert len(events) == 1 and events[0]["source"] == "greenhouse"
 
 
+def test_finish_run_merges_stats_instead_of_replacing_them(tmp_path) -> None:
+    """A composite invocation shares one row across stages via
+    `JOBSCRAPE_RUN_ID` — `schedule-run`'s `daily`/`full` modes have
+    `cmd_fetch` and `cmd_apify_pull` each call `finish_run` once on the SAME
+    run id, with disjoint stats keys. A blind overwrite meant whichever
+    stage finished last silently erased the other's stats from the row."""
+    with db.session(tmp_path / "r.db") as conn:
+        run_id = db.start_run(conn, "schedule-run --mode daily", "fetch")
+        db.finish_run(conn, run_id, "ok", {"sources": {"greenhouse": 5}, "rows_touched": 5})
+        db.finish_run(conn, run_id, "ok", {"items": 12, "inserted": 3})
+
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert row["stats"] == {
+            "sources": {"greenhouse": 5}, "rows_touched": 5,
+            "items": 12, "inserted": 3,
+        }
+
+
+def test_finish_run_merge_lets_a_later_call_overwrite_a_shared_key(tmp_path) -> None:
+    """Not an append-only log — a key both calls set (e.g. a second stage
+    correcting an earlier estimate) takes the later value, same as a plain
+    dict `.update()`."""
+    with db.session(tmp_path / "r.db") as conn:
+        run_id = db.start_run(conn, "fetch", "fetch")
+        db.finish_run(conn, run_id, "ok", {"rows_touched": 5})
+        db.finish_run(conn, run_id, "ok", {"rows_touched": 9})
+
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        assert row["stats"] == {"rows_touched": 9}
+
+
 def test_stale_runs_are_closed_out(tmp_path) -> None:
     """A crashed run must not leave a phantom 'running' row forever."""
     with db.session(tmp_path / "r.db") as conn:
@@ -568,6 +599,48 @@ def test_the_schema_is_still_applied_when_something_is_missing(
     assert db._schema_is_current(_isolated_db) is False
     assert db.ensure_schema(_isolated_db, "test-url") is True
     assert ran == ["migrate", "indexes"]
+
+
+def test_a_missing_companies_or_schedules_column_trips_the_ddl_too(
+    _isolated_db, monkeypatch
+):
+    """`companies`/`schedules` used to be existence-checked only, not
+    column-diffed the way `jobs` already was — a real gap, since
+    `docs/DOCKER.md`'s documented Update flow (`docker compose build && up
+    -d`) never runs `alembic upgrade head`; only the one-time fresh-install
+    path does. A column added to either table after its `CREATE TABLE`
+    first shipped would silently never reach an already-running
+    deployment."""
+    from jobscrape import db
+
+    ran: list[str] = []
+    monkeypatch.setattr(db, "_apply_indexes", lambda conn: ran.append("indexes"))
+    monkeypatch.setattr(db, "_migrate", lambda conn: ran.append("migrate"))
+    monkeypatch.setattr(db, "_SCHEMA_READY", set())
+    monkeypatch.setattr(
+        db, "_COMPANY_MIGRATED_COLUMNS",
+        {*db._COMPANY_MIGRATED_COLUMNS, "a_column_added_next_release"},
+    )
+
+    assert db._schema_is_current(_isolated_db) is False
+    assert db.ensure_schema(_isolated_db, "test-url") is True
+    assert ran == ["migrate", "indexes"]
+
+
+def test_migrate_actually_restores_a_dropped_companies_column(_isolated_db) -> None:
+    """Not just that the check trips — the self-heal DDL must actually put
+    the column back, the same guarantee `jobs` already had."""
+    from jobscrape import db
+
+    _isolated_db.execute("ALTER TABLE companies DROP COLUMN quiet_until")
+    db._migrate(_isolated_db)
+    cols = {
+        r["column_name"] for r in _isolated_db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'companies'"
+        )
+    }
+    assert "quiet_until" in cols
 
 
 def test_the_expected_index_count_tracks_the_script() -> None:

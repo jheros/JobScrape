@@ -121,31 +121,33 @@ def next_action(data: dict[str, Any]) -> dict[str, str]:
 
 def jobs_over_time(conn: db.Connection, days: int = 30) -> list[dict[str, Any]]:
     """Jobs first seen per day — the growth curve of the archive."""
-    start = (date.today() - timedelta(days=days)).isoformat()
+    today = datetime.now(timezone.utc).date()
+    start = (today - timedelta(days=days)).isoformat()
     found = {
         str(r["d"]): r["c"]
         for r in conn.execute(
-            "SELECT first_seen_at::date d, COUNT(*) c FROM jobs "
-            "WHERE first_seen_at::date >= ? AND duplicate_of IS NULL GROUP BY d",
+            "SELECT (first_seen_at AT TIME ZONE 'UTC')::date d, COUNT(*) c FROM jobs "
+            "WHERE (first_seen_at AT TIME ZONE 'UTC')::date >= ? AND duplicate_of IS NULL "
+            "GROUP BY d",
             (start,),
         )
     }
     # Fill gaps so the chart has no misleading holes.
     series = []
     for offset in range(days + 1):
-        day = (date.today() - timedelta(days=days - offset)).isoformat()
+        day = (today - timedelta(days=days - offset)).isoformat()
         series.append({"date": day, "count": found.get(day, 0)})
     return series
 
 
 def postings_by_date(conn: db.Connection, days: int = 30) -> list[dict[str, Any]]:
     """When the jobs were *posted*, as opposed to when we saw them."""
-    start = (date.today() - timedelta(days=days)).isoformat()
+    start = (datetime.now(timezone.utc).date() - timedelta(days=days)).isoformat()
     rows = _rows(
         conn,
-        f"SELECT posted_at::date d, COUNT(*) c FROM jobs "
-        f"WHERE posted_at IS NOT NULL AND posted_at::date >= ? AND {_OPEN} "
-        "GROUP BY d ORDER BY d",
+        f"SELECT (posted_at AT TIME ZONE 'UTC')::date d, COUNT(*) c FROM jobs "
+        f"WHERE posted_at IS NOT NULL AND (posted_at AT TIME ZONE 'UTC')::date >= ? "
+        f"AND {_OPEN} GROUP BY d ORDER BY d",
         (start,),
     )
     for r in rows:

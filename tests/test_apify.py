@@ -975,3 +975,48 @@ def test_apify_pull_writes_one_run_row_for_multiple_run_ids(
 
     logged = conn.execute("SELECT count(*) AS n FROM run_events").fetchone()["n"]
     assert logged == 3, "each run_id's own log_event must still be recorded individually"
+
+
+def test_a_later_run_ids_failure_commits_earlier_successes_first(
+    monkeypatch, _isolated_db,
+) -> None:
+    """The whole multi-run_id loop used to share one uncommitted transaction
+    end to end. A later run_id raising sent `conn.rollback()` back through
+    the ENTIRE transaction — discarding the job upserts and log_events of
+    every run_id that had already succeeded earlier in the same loop, not
+    just the failed one's own partial work.
+
+    `_isolated_db` deliberately neuters `commit()` (every test lives inside
+    one rolled-back-at-teardown transaction), so persistence across the
+    rollback can't be asserted directly here — this instead verifies the
+    call pattern a real deployment relies on: a real commit fires after
+    EACH successful run_id, before the failing run_id's own rollback, so
+    only its own not-yet-committed work is ever at risk."""
+    from jobscrape import cli
+
+    commit_calls: list[None] = []
+    monkeypatch.setattr(_isolated_db, "commit", lambda: commit_calls.append(None))
+
+    async def fake_ingest_run(fetcher, conn, run_id, **kw):
+        if run_id == "R3":
+            raise RuntimeError("boom")
+        return _FakeIngestResult()
+
+    monkeypatch.setattr(
+        "jobscrape.sources.apify.ingest.ingest_run", fake_ingest_run
+    )
+    from jobscrape import config as cfg
+    monkeypatch.setattr(cfg, "APIFY_TOKEN", "fake-token-for-this-test")
+
+    import pytest as _pytest
+    with _pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(cli.cmd_apify_pull(_pull_args(run=["R1", "R2", "R3"])))
+
+    # 1 for `start_run`, 1 each for R1/R2's own incremental commit, 1 for the
+    # final error-path `finish_run` — 4 total. Before this fix there was no
+    # per-run_id commit at all, so this would have been 2 (start_run +
+    # finish_run only), with R1/R2's work sitting uncommitted right up until
+    # R3's exception rolled all of it back.
+    assert len(commit_calls) == 4, (
+        "R1 and R2 must each commit before R3's exception ever triggers a rollback"
+    )
