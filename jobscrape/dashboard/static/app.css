@@ -325,7 +325,7 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 .job-card-field .field-value { font-size: 12.5px; color: var(--text-primary);
                                 overflow-wrap: anywhere; }
 
-.job-card-expand { display: flex; flex-wrap: wrap; gap: 14px; }
+.job-card-expand details { width: 100%; }
 table.coverage { width: 100%; border-collapse: collapse; font-size: 13px; }
 table.coverage td { padding: 4px 8px 4px 0; vertical-align: middle; }
 table.coverage td.name { width: 110px; color: var(--text-secondary); }
@@ -392,9 +392,21 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .checkbox-label input { min-width: 0; }
 
 /* Truncated by default (the row would otherwise be as tall as the longest
-   description/JSON blob on the page) -- <details> already handles the
-   collapse/expand, this just caps the open state's own height. */
-.smart-view { max-width: 42ch; max-height: 220px; overflow: auto; margin-top: 4px; }
+   description on the page) -- <details> already handles the collapse/expand,
+   this just caps the open state's own height. Full width (not a narrow
+   fixed `ch` measure) so it lines up with the card/table it sits inside
+   instead of sitting in a column of its own. */
+.smart-view { width: 100%; max-height: 320px; overflow: auto; margin-top: 4px; }
+
+/* --- mdlite: the lightweight markdown renderer for job descriptions ----- */
+.md-body p { margin: 0 0 8px; }
+.md-body p:last-child { margin-bottom: 0; }
+.md-body ul, .md-body ol { margin: 0 0 8px; padding-left: 20px; }
+.md-body li { margin-bottom: 2px; }
+.md-body .md-heading { font-weight: 650; color: var(--text-primary); }
+.md-body code { background: var(--surface-2); border: 1px solid var(--border);
+                 border-radius: 3px; padding: 1px 4px; font-size: 11px; }
+.md-body a { color: var(--series-1); }
 
 .chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip.removable { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; padding: 3px 8px; }

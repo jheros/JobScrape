@@ -198,7 +198,7 @@
       {% if row.description_text %}
       <div class="job-card-expand">
         <details><summary class="text-sm">description</summary>
-          <div class="text-sm smart-view">{{ row.description_text }}</div>
+          <div class="text-sm smart-view md-body">{{ row.description_text | mdlite }}</div>
         </details>
       </div>
       {% endif %}

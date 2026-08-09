@@ -24,7 +24,7 @@ from pydantic import BeforeValidator
 
 from .. import config, db, filters, scam
 from ..observability import health as health_check
-from . import analytics, charts, envfile
+from . import analytics, charts, envfile, mdlite
 from . import scheduler as scheduler_module
 from .runner import RELATIVE_WINDOWS, STAGES, manager, resolve_stage
 
@@ -73,6 +73,7 @@ templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.filters["comma"] = lambda v: f"{int(v):,}" if v is not None else "0"
 templates.env.filters["datefmt"] = _datefmt
 templates.env.filters["scamreasons"] = _scam_reasons
+templates.env.filters["mdlite"] = mdlite.render
 
 # `?v=` cache-buster for /static/app.css and app.js: without it, browsers
 # that already cached these from a prior deploy can keep serving a stale
