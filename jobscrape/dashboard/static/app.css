@@ -145,6 +145,7 @@ h2 { font-size: 15px; margin: 0 0 14px; letter-spacing: -.005em; font-weight: 65
 details.card[open] .h2-like { margin-bottom: 14px; }
 .sub { color: var(--text-secondary); margin: 0 0 22px; }
 .hint { color: var(--text-muted); font-size: 12.5px; margin: -6px 0 14px; max-width: 68ch; }
+.hint.error { color: var(--critical); }
 
 /* --- cards & tiles ------------------------------------------------------ */
 

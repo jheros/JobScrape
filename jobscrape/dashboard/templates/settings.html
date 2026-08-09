@@ -39,7 +39,7 @@
           <input type="text" id="blocked-company-add" placeholder="Amazon, Microsoft, ..." class="flex-1" autocomplete="off">
           <button class="btn ghost" type="button" id="blocked-company-add-btn">Add</button>
         </div>
-        <span class="hint">Added companies aren't saved yet — click "Save settings" below to apply them.</span>
+        <span class="hint" id="blocked-companies-save-status" aria-live="polite"></span>
         <input type="hidden" name="{{ f.key }}" id="blocked-companies-hidden" value="{{ f.value }}">
         {% elif f.secret %}
         <span class="flex">

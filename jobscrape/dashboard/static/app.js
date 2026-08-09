@@ -272,10 +272,14 @@
     });
   }
   // --- settings: blocked-companies chip list --------------------------------
+  // Auto-saves on every add/remove, independently of the page's big "Save
+  // settings" button -- a chip visibly appearing/disappearing already reads
+  // as a completed action, so it should actually be one.
   var chipList = document.getElementById("blocked-companies-chips");
   var chipHidden = document.getElementById("blocked-companies-hidden");
   var chipAddInput = document.getElementById("blocked-company-add");
   var chipAddBtn = document.getElementById("blocked-company-add-btn");
+  var chipSaveStatus = document.getElementById("blocked-companies-save-status");
   if (chipList && chipHidden) {
     function syncBlockedCompaniesHidden() {
       var names = Array.prototype.slice
@@ -283,12 +287,32 @@
         .map(function (c) { return c.getAttribute("data-company"); });
       chipHidden.value = names.join(",");
     }
+    var chipSaveClearTimer = null;
+    function saveBlockedCompanies() {
+      if (!chipSaveStatus) return;
+      clearTimeout(chipSaveClearTimer);
+      chipSaveStatus.textContent = "Saving…";
+      chipSaveStatus.classList.remove("error");
+      post("/api/settings",
+        "JOBSCRAPE_BLOCKED_COMPANIES=" + encodeURIComponent(chipHidden.value)
+      ).then(function (res) {
+        if (!res.ok) {
+          chipSaveStatus.textContent = res.data.error || "Could not save";
+          chipSaveStatus.classList.add("error");
+          return;
+        }
+        chipSaveStatus.textContent = "Saved";
+        chipSaveClearTimer = setTimeout(function () {
+          chipSaveStatus.textContent = "";
+        }, 2000);
+      });
+    }
     function addChip(name) {
       name = name.trim();
-      if (!name) return;
+      if (!name) return false;
       var existing = Array.prototype.slice.call(chipList.querySelectorAll(".chip"))
         .map(function (c) { return c.getAttribute("data-company").toLowerCase(); });
-      if (existing.indexOf(name.toLowerCase()) !== -1) return;
+      if (existing.indexOf(name.toLowerCase()) !== -1) return false;
       var chip = document.createElement("span");
       chip.className = "chip removable";
       chip.setAttribute("data-company", name);
@@ -301,19 +325,25 @@
       removeBtn.addEventListener("click", function () {
         chip.remove();
         syncBlockedCompaniesHidden();
+        saveBlockedCompanies();
       });
       chip.appendChild(removeBtn);
       chipList.appendChild(chip);
       syncBlockedCompaniesHidden();
+      return true;
     }
-    // "Amazon, Microsoft, ..." in one go, not just one name per Add click.
+    // "Amazon, Microsoft, ..." in one go, not just one name per Add click --
+    // one save after the whole batch, not one per name, and none at all if
+    // every piece was blank or already blocked.
     function addChipsFromInput(value) {
-      value.split(",").forEach(function (part) { addChip(part); });
+      var added = value.split(",").map(addChip).some(Boolean);
+      if (added) saveBlockedCompanies();
     }
     chipList.querySelectorAll(".chip-remove").forEach(function (btn) {
       btn.addEventListener("click", function () {
         btn.closest(".chip").remove();
         syncBlockedCompaniesHidden();
+        saveBlockedCompanies();
       });
     });
     if (chipAddBtn) {
