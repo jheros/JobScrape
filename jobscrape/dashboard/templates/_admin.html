@@ -1,0 +1,26 @@
+{#
+  Wraps admin-only content so a non-admin visitor still SEES it -- blurred,
+  dimmed, non-interactive -- rather than it being hidden outright. Real
+  enforcement is server-side (each mutating route checks admin itself); this
+  is purely the "should see, not click" visual contract.
+
+  Usage:
+    {% call admin.locked(is_admin) %}
+      <button ...>...</button>
+    {% endcall %}
+
+  Pass inline=true for content that must lay out alongside siblings (a
+  table-cell button group, a button-row entry) rather than as a full-width
+  block.
+#}
+{% import "_icons.html" as icons %}
+{% macro locked(is_admin, inline=false, label="Admin only") %}
+{%- if is_admin -%}
+{{ caller() }}
+{%- else -%}
+<div class="admin-locked{% if inline %} inline{% endif %}">
+  <div class="admin-locked-content">{{ caller() }}</div>
+  <div class="admin-locked-badge">{{ icons.icon('lock', 13) }} {{ label }}</div>
+</div>
+{%- endif -%}
+{% endmacro %}

@@ -582,3 +582,166 @@ def test_settings_save_rejects_a_newline_injection_attempt(client, tmp_path, mon
     assert response.status_code == 400
     assert "DATABASE_URL" not in env_path.read_text()
     assert "DATABASE_URL" not in os.environ
+
+
+# --- admin session: view-only for everyone except the configured passcode --
+#
+# Every other test in this file runs with `JOBSCRAPE_ADMIN_PASSCODE` unset
+# (the default in this environment), which is itself the regression case for
+# "an existing deployment that never configures this must keep working
+# exactly as before" -- confirmed here explicitly, not just implicitly by
+# every other test in the file passing with no cookie at all.
+
+
+def test_with_no_passcode_configured_every_visitor_may_still_mutate(client) -> None:
+    response = client.post("/api/schedule", data={
+        "name": "no passcode set", "stage": "validate", "cron_minute": "0",
+        "cron_hour": "7", "cron_day_of_week": "*", "timezone": "Asia/Bangkok",
+    })
+    assert response.status_code == 200, response.text
+
+
+def test_admin_login_with_the_right_passcode_sets_a_cookie(client, monkeypatch) -> None:
+    from jobscrape import config
+    from jobscrape.dashboard import auth
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    response = client.post(
+        "/admin-login", data={"passcode": "hunter2"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert auth.COOKIE_NAME in response.cookies
+
+
+def test_admin_login_with_the_wrong_passcode_sets_no_cookie(client, monkeypatch) -> None:
+    from jobscrape import config
+    from jobscrape.dashboard import auth
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    response = client.post(
+        "/admin-login", data={"passcode": "wrong"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert "error=1" in response.headers["location"]
+    assert auth.COOKIE_NAME not in response.cookies
+
+
+def test_admin_logout_expires_the_cookie(client, monkeypatch) -> None:
+    from jobscrape import config
+    from jobscrape.dashboard import auth
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    response = client.post("/admin-logout", follow_redirects=False)
+    assert response.status_code == 303
+    # Starlette's delete_cookie replaces the value with one that expires
+    # immediately rather than omitting the header -- either way the client's
+    # own jar must not carry a usable cookie afterward.
+    client.cookies.extract_cookies(response)
+    assert not client.cookies.get(auth.COOKIE_NAME)
+
+
+def test_the_whole_mutating_surface_refuses_a_non_admin_visitor(
+    client, monkeypatch,
+) -> None:
+    """One pass over every admin-gated route, not one test per route: build
+    everything AS admin first (a schedule to toggle/edit/delete/run), then
+    confirm each one refuses a plain visitor once a passcode is configured."""
+    from jobscrape import config
+    from jobscrape.dashboard import auth
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    client.cookies.set(auth.COOKIE_NAME, auth.make_token())
+
+    create = client.post("/api/schedule", data={
+        "name": "gate-test", "stage": "validate", "cron_minute": "0",
+        "cron_hour": "7", "cron_day_of_week": "*", "timezone": "Asia/Bangkok",
+    })
+    assert create.status_code == 200, create.text
+    schedule_id = create.json()["id"]
+
+    client.cookies.delete(auth.COOKIE_NAME)  # now a plain, non-admin visitor
+
+    sched_payload = {
+        "name": "gate-test", "stage": "validate", "cron_minute": "0",
+        "cron_hour": "7", "cron_day_of_week": "*", "timezone": "Asia/Bangkok",
+    }
+    denied = {
+        "start a stage": client.post("/api/runs/validate/start"),
+        "stop a stage": client.post("/api/runs/validate/stop"),
+        "create a schedule": client.post("/api/schedule", data=sched_payload),
+        "update a schedule": client.post(f"/api/schedule/{schedule_id}", data=sched_payload),
+        "toggle a schedule": client.post(f"/api/schedule/{schedule_id}/toggle"),
+        "run a schedule now": client.post(f"/api/schedule/{schedule_id}/run-now"),
+        "delete a schedule": client.post(f"/api/schedule/{schedule_id}/delete"),
+        "restart the dashboard": client.post("/api/settings/restart"),
+    }
+    for action, response in denied.items():
+        assert response.status_code == 403, f"{action} should have been denied: {response.text}"
+
+
+def test_a_confirmed_purge_still_needs_admin(client, monkeypatch) -> None:
+    """The purge-confirmation token (see the earlier deep-review commit) and
+    the admin gate are independent checks -- having the right token is not
+    itself enough for a non-admin visitor."""
+    from jobscrape import config
+    from jobscrape.dashboard import app as app_module
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    response = client.post("/api/runs/purge/start", data={
+        "extra": "", "confirm": app_module._PURGE_CONFIRM_TOKEN,
+    })
+    assert response.status_code == 403
+
+
+def test_a_non_admin_may_still_add_a_blocked_company(client, tmp_path, monkeypatch) -> None:
+    """The one thing product wants every visitor able to do, even once a
+    passcode locks down everything else."""
+    from jobscrape import config
+    from jobscrape.dashboard import envfile
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    env_path = tmp_path / ".env"
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    response = client.post("/api/settings", data={
+        "JOBSCRAPE_BLOCKED_COMPANIES": "Acme, Globex",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] == ["JOBSCRAPE_BLOCKED_COMPANIES"]
+    assert "JOBSCRAPE_BLOCKED_COMPANIES=Acme, Globex" in env_path.read_text()
+
+
+def test_a_non_admin_cannot_smuggle_other_fields_alongside_blocked_companies(
+    client, tmp_path, monkeypatch,
+) -> None:
+    """A raw POST can carry any field regardless of what the page shows --
+    the server, not the form, is what must actually restrict this."""
+    from jobscrape import config
+    from jobscrape.dashboard import envfile
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    env_path = tmp_path / ".env"
+    env_path.write_text("RAPIDAPI_KEY=old\n")
+    monkeypatch.setattr(envfile, "ENV_PATH", env_path)
+
+    response = client.post("/api/settings", data={
+        "JOBSCRAPE_BLOCKED_COMPANIES": "Acme",
+        "RAPIDAPI_KEY": "stolen-key",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["changed"] == ["JOBSCRAPE_BLOCKED_COMPANIES"]
+    assert "RAPIDAPI_KEY=old" in env_path.read_text()
+    assert "stolen-key" not in env_path.read_text()
+
+
+def test_pages_stay_viewable_for_a_non_admin_visitor(client, monkeypatch) -> None:
+    """'Should see, not click' -- every page still renders (200), just with
+    its controls blurred/disabled client-side; only the mutating endpoints
+    themselves are actually gated."""
+    from jobscrape import config
+
+    monkeypatch.setattr(config, "ADMIN_PASSCODE", "hunter2")
+    for path in ("/", "/jobs", "/runs", "/coverage", "/sources", "/schedule", "/settings"):
+        response = client.get(path)
+        assert response.status_code == 200, f"{path}: {response.status_code}"

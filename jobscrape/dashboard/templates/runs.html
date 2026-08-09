@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as icons %}
+{% import "_admin.html" as admin %}
 {% block title %}Runs · jobscrape{% endblock %}
 {% block content %}
 
@@ -25,7 +26,9 @@
           {% if run.progress.jobs_new %}<span>{{ run.progress.jobs_new }} new jobs</span>{% endif %}
         </div>
       </div>
+      {% call admin.locked(is_admin, inline=true) %}
       <button class="btn danger" data-stop-stage="{{ run.stage }}">{{ icons.icon('stop') }} Stop</button>
+      {% endcall %}
     </div>
     <div class="log mt-md" id="live-log-{{ run.run_id }}" data-run-id="{{ run.run_id }}"></div>
   </div>
@@ -45,7 +48,9 @@
         single run, at the cost of being the slowest option here.
       </div>
     </div>
+    {% call admin.locked(is_admin, inline=true) %}
     <button class="btn ghost" data-start-stage="full-sweep" data-label="Run full pipeline">{{ icons.icon('play') }} Run full pipeline</button>
+    {% endcall %}
   </div>
 </div>
 
@@ -57,6 +62,7 @@
     fetch everything. Cross-source dedupes and refreshes stats afterward, in
     the same run.
   </p>
+  {% call admin.locked(is_admin) %}
   <form id="fetch-range-form" class="form-grid">
     <label>From date
       <input type="date" name="since" id="fetch-since">
@@ -76,6 +82,7 @@
     <button class="btn ghost btn-sm" type="button" data-preset-hours="720">Last 1 month</button>
     <button class="btn ghost btn-sm" type="button" data-preset-hours="1440">Last 2 months</button>
   </div>
+  {% endcall %}
 </div>
 
 <div class="card">
@@ -86,6 +93,7 @@
     actor runs. Cross-source dedupes and refreshes stats afterward, in the
     same run.
   </p>
+  {% call admin.locked(is_admin) %}
   <form id="apify-range-form" class="form-grid">
     <label>From date
       <input type="date" name="since" id="apify-since">
@@ -105,6 +113,7 @@
     <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="720">Last 1 month</button>
     <button class="btn ghost btn-sm" type="button" data-apify-preset-hours="1440">Last 2 months</button>
   </div>
+  {% endcall %}
 </div>
 
 <div class="card">
@@ -120,6 +129,7 @@
     Docker) and logs into your JobRight account — this can take
     20–45+ minutes.
   </p>
+  {% call admin.locked(is_admin) %}
   <form id="jobright-range-form" class="form-grid">
     <label>From date
       <input type="date" name="since" id="jobright-since">
@@ -139,10 +149,12 @@
     <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="720">Last 1 month</button>
     <button class="btn ghost btn-sm" type="button" data-jr-preset-hours="1440">Last 2 months</button>
   </div>
+  {% endcall %}
 </div>
 
 <details class="card">
   <summary class="h2-like">Advanced</summary>
+  {% call admin.locked(is_admin) %}
   <div class="btn-row mt-md">
     <button class="btn ghost" data-start-stage="discover-fast" data-label="Discover (fast)">{{ icons.icon('play') }} Discover (fast)</button>
     <button class="btn ghost" data-start-stage="discover" data-label="Discover (full)">{{ icons.icon('play') }} Discover (full)</button>
@@ -160,6 +172,7 @@
             data-confirm="Really delete every stored posting that no longer passes the role filter? This is not a dry run."
             data-confirm-token="delete-for-real">{{ icons.icon('trash') }} Purge (delete for real)</button>
   </div>
+  {% endcall %}
   <p class="sub mt-md mb-0">
     Stages run as separate processes, so stopping one is immediate and whatever
     it already wrote is kept. Every fetch card above already dedupes and

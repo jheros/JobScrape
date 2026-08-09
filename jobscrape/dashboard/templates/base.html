@@ -34,6 +34,18 @@
         <a href="/settings" class="{% if request.url.path == '/settings' %}on{% endif %}">{{ icons.icon('gear') }} Settings</a>
       </div>
     </nav>
+    {% if admin_configured %}
+    <div class="sidebar-admin">
+      {% if is_admin %}
+        <span class="sidebar-admin-status">{{ icons.icon('lock', 15) }} Admin</span>
+        <form method="post" action="/admin-logout">
+          <button type="submit" class="link-btn">Log out</button>
+        </form>
+      {% else %}
+        <a href="/admin-login" class="sidebar-admin-link">{{ icons.icon('lock', 15) }} Admin login</a>
+      {% endif %}
+    </div>
+    {% endif %}
   </aside>
 
   <div class="main-col">

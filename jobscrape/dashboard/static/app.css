@@ -146,6 +146,24 @@ body {
 
 .sidebar-close, .menu-toggle { display: none; }
 
+.sidebar-admin {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid var(--sidebar-border);
+  color: var(--sidebar-text-muted); font-size: 12.5px; font-weight: 550;
+}
+.sidebar-admin-status { display: inline-flex; align-items: center; gap: 6px; color: var(--sidebar-text); }
+.sidebar-admin-link {
+  display: inline-flex; align-items: center; gap: 6px;
+  color: var(--sidebar-text-muted); text-decoration: none; font-weight: 550;
+}
+.sidebar-admin-link:hover { color: #ffffff; }
+.link-btn {
+  background: none; border: none; padding: 0; margin: 0; cursor: pointer;
+  color: var(--sidebar-text-muted); font-size: 12.5px; font-weight: 550;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.link-btn:hover { color: #ffffff; }
+
 .main-col { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
 
 .topbar-mini {
@@ -544,6 +562,34 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .text-sm { font-size: 12px; }
 .nowrap { white-space: nowrap; }
 .hidden { display: none !important; }
+
+/* --- admin-locked: shown but unusable for a non-admin visitor -----------
+   The content stays visible (blurred, dimmed, non-interactive) rather than
+   hidden -- "should see, not click". `.admin-locked-content` carries the
+   actual blur/dim/pointer-events-none so the badge itself (a sibling, not a
+   descendant) stays crisp -- CSS filter applies to an element's own box
+   AND everything inside it as one atomic layer, so a blur on the same
+   element as the badge would blur the badge too. */
+.admin-locked { position: relative; display: block; width: 100%; }
+.admin-locked-content {
+  display: block; width: 100%;
+  filter: blur(3px) grayscale(.3); opacity: .5;
+  pointer-events: none; user-select: none;
+}
+/* Table-cell / button-row contexts need their children laid out inline,
+   not stacked as a block. */
+.admin-locked.inline { display: inline-block; width: auto; }
+.admin-locked.inline .admin-locked-content {
+  display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; width: auto;
+}
+.admin-locked-badge {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: 999px; padding: 5px 12px; font-size: 12px; font-weight: 650;
+  color: var(--text-secondary); box-shadow: var(--shadow-lg);
+  pointer-events: none; z-index: 2;
+}
 .flex-1 { flex: 1; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .empty-row td { text-align: center; padding: 32px; color: var(--text-muted); }

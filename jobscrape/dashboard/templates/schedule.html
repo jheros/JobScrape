@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as icons %}
+{% import "_admin.html" as admin %}
 {% block title %}Schedule · jobscrape{% endblock %}
 {% block content %}
 
@@ -12,6 +13,7 @@
 
 <div class="card">
   <h2 id="schedule-form-title">Add a schedule</h2>
+  {% call admin.locked(is_admin) %}
   <form id="schedule-form" class="form-grid">
     <input type="hidden" name="edit_id" value="">
     <label>Name
@@ -69,6 +71,7 @@
       <a class="btn ghost hidden" id="schedule-form-cancel">Cancel edit</a>
     </div>
   </form>
+  {% endcall %}
 </div>
 
 <div class="card">
@@ -96,11 +99,14 @@
           {% else %}never{% endif %}
         </td>
         <td>
+          {% call admin.locked(is_admin, inline=true) %}
           <button class="btn ghost btn-sm" data-schedule-toggle="{{ s.id }}">
             {{ "on" if s.enabled else "off" }}
           </button>
+          {% endcall %}
         </td>
         <td class="nowrap">
+          {% call admin.locked(is_admin, inline=true) %}
           <button class="btn ghost btn-sm" data-schedule-run="{{ s.id }}">{{ icons.icon('play', 14) }} Run now</button>
           <button class="btn ghost btn-sm" data-schedule-edit="{{ s.id }}"
                   data-name="{{ s.name }}" data-stage="{{ s.stage }}" data-extra="{{ s.extra or '' }}"
@@ -108,6 +114,7 @@
                   data-days="{{ s.cron_day_of_week }}" data-timezone="{{ s.timezone }}"
                   data-interval-days="{{ s.interval_days or '' }}">{{ icons.icon('edit', 14) }} Edit</button>
           <button class="btn danger btn-sm" data-schedule-delete="{{ s.id }}">{{ icons.icon('trash', 14) }} Delete</button>
+          {% endcall %}
         </td>
       </tr>
       {% else %}

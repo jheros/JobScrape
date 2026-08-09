@@ -116,6 +116,15 @@ LOG_LEVEL = _env_str("JOBSCRAPE_LOG_LEVEL", "INFO")
 CONTACT_EMAIL = _env_str("JOBSCRAPE_CONTACT", "jobscrape@example.com")
 USER_AGENT = _env_str("JOBSCRAPE_UA", f"jobscrape/1.0 (+{CONTACT_EMAIL})")
 
+# --- Dashboard admin session -----------------------------------------------
+#: The dashboard has no login on any route by default (see docs/DOCKER.md) --
+#: setting this turns on a lightweight distinction between "admin" (this
+#: passcode) and every other visitor (view-only, plus editing the blocked-
+#: companies list). Blank (the default) means every visitor is treated as
+#: admin, same as before this existed -- an existing single-user deployment
+#: is never locked out by an update. See dashboard/auth.py.
+ADMIN_PASSCODE = _env_str("JOBSCRAPE_ADMIN_PASSCODE", "")
+
 # --- HTTP tunables --------------------------------------------------------
 #: A process-wide ceiling on top of every per-host limit below. Since
 #: `cmd_fetch` now sweeps every ATS/global source concurrently (one host each,

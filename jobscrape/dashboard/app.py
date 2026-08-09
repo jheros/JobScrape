@@ -17,14 +17,14 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BeforeValidator
 
 from .. import config, db, filters, scam
 from ..observability import health as health_check
-from . import analytics, charts, envfile, mdlite
+from . import analytics, auth, charts, envfile, mdlite
 from . import scheduler as scheduler_module
 from .runner import RELATIVE_WINDOWS, STAGES, manager, resolve_stage
 
@@ -133,7 +133,54 @@ async def health() -> JSONResponse:
 def _page(request: Request, template: str, **context: Any) -> HTMLResponse:
     context.setdefault("active_runs", manager.active())
     context.setdefault("stages", list(STAGES))
+    context.setdefault("is_admin", auth.is_admin(request))
+    context.setdefault("admin_configured", auth.admin_configured())
     return templates.TemplateResponse(request, template, context)
+
+
+def _require_admin(request: Request) -> JSONResponse | None:
+    """Call at the top of a mutating route; returns a 403 to return early
+    with, or None when the caller may proceed.
+
+    Explicit per-route checks, not a FastAPI dependency -- matches this
+    module's existing style of inline validation (e.g. the `stage not in
+    STAGES` checks below) rather than introducing a second pattern for the
+    same kind of guard.
+    """
+    if auth.is_admin(request):
+        return None
+    return JSONResponse({"error": "admin only"}, status_code=403)
+
+
+# --- admin session ----------------------------------------------------------
+
+@app.get("/admin-login", response_class=HTMLResponse)
+async def admin_login_page(request: Request, error: str = "") -> HTMLResponse:
+    return templates.TemplateResponse(
+        request, "admin_login.html", {
+            "error": error, "is_admin": auth.is_admin(request),
+            "admin_configured": auth.admin_configured(),
+        },
+    )
+
+
+@app.post("/admin-login")
+async def admin_login(passcode: str = Form("")) -> RedirectResponse:
+    if not auth.check_passcode(passcode):
+        return RedirectResponse("/admin-login?error=1", status_code=303)
+    response = RedirectResponse("/", status_code=303)
+    response.set_cookie(
+        auth.COOKIE_NAME, auth.make_token(),
+        max_age=auth.SESSION_SECONDS, httponly=True, samesite="lax",
+    )
+    return response
+
+
+@app.post("/admin-logout")
+async def admin_logout() -> RedirectResponse:
+    response = RedirectResponse("/", status_code=303)
+    response.delete_cookie(auth.COOKIE_NAME)
+    return response
 
 
 # --- pages ----------------------------------------------------------------
@@ -459,9 +506,11 @@ _PURGE_CONFIRM_TOKEN = "delete-for-real"
 
 @app.post("/api/runs/{stage}/start")
 async def start_stage(
-    stage: str, extra: str = Form(""), since: str = Form(""), until: str = Form(""),
-    confirm: str = Form(""),
+    request: Request, stage: str, extra: str = Form(""), since: str = Form(""),
+    until: str = Form(""), confirm: str = Form(""),
 ) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     extra_args = extra.split() if extra.strip() else []
     if stage == "purge" and "--dry-run" not in extra_args and confirm != _PURGE_CONFIRM_TOKEN:
         return JSONResponse(
@@ -497,7 +546,9 @@ async def start_stage(
 
 
 @app.post("/api/runs/{stage}/stop")
-async def stop_stage(stage: str) -> JSONResponse:
+async def stop_stage(request: Request, stage: str) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     stopped = await manager.stop(stage)
     return JSONResponse({"stopped": stopped})
 
@@ -511,6 +562,7 @@ async def active_runs() -> JSONResponse:
 
 @app.post("/api/schedule")
 async def create_schedule(
+    request: Request,
     name: str = Form(...),
     stage: str = Form(...),
     extra: str = Form(""),
@@ -520,6 +572,8 @@ async def create_schedule(
     timezone: str = Form("Asia/Bangkok"),
     interval_days: BlankableInt = Form(None),
 ) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     if stage not in STAGES and stage not in RELATIVE_WINDOWS:
         return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
     conn = _conn()
@@ -536,6 +590,7 @@ async def create_schedule(
 
 @app.post("/api/schedule/{schedule_id}")
 async def update_schedule(
+    request: Request,
     schedule_id: int,
     name: str = Form(...),
     stage: str = Form(...),
@@ -546,6 +601,8 @@ async def update_schedule(
     timezone: str = Form("Asia/Bangkok"),
     interval_days: BlankableInt = Form(None),
 ) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     if stage not in STAGES and stage not in RELATIVE_WINDOWS:
         return JSONResponse({"error": f"unknown stage {stage!r}"}, status_code=400)
     conn = _conn()
@@ -563,7 +620,9 @@ async def update_schedule(
 
 
 @app.post("/api/schedule/{schedule_id}/toggle")
-async def toggle_schedule(schedule_id: int) -> JSONResponse:
+async def toggle_schedule(request: Request, schedule_id: int) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     conn = _conn()
     try:
         row = db.get_schedule(conn, schedule_id)
@@ -577,7 +636,9 @@ async def toggle_schedule(schedule_id: int) -> JSONResponse:
 
 
 @app.post("/api/schedule/{schedule_id}/delete")
-async def delete_schedule(schedule_id: int) -> JSONResponse:
+async def delete_schedule(request: Request, schedule_id: int) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     conn = _conn()
     try:
         db.delete_schedule(conn, schedule_id)
@@ -588,7 +649,9 @@ async def delete_schedule(schedule_id: int) -> JSONResponse:
 
 
 @app.post("/api/schedule/{schedule_id}/run-now")
-async def run_schedule_now(schedule_id: int) -> JSONResponse:
+async def run_schedule_now(request: Request, schedule_id: int) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
     conn = _conn()
     try:
         row = db.get_schedule(conn, schedule_id)
@@ -665,9 +728,19 @@ async def api_stats() -> JSONResponse:
 
 # --- settings ---------------------------------------------------------------
 
+#: The one field a non-admin visitor may write through `/api/settings` --
+#: every other key is silently dropped below, the same way a field not in
+#: `envfile.ALL_KEYS` already is. Enforced here, not just hidden/blurred in
+#: the template, since a non-admin's browser can still submit a raw POST
+#: with any field it wants regardless of what the page shows them.
+_NON_ADMIN_SETTINGS_KEYS = frozenset({"JOBSCRAPE_BLOCKED_COMPANIES"})
+
+
 @app.post("/api/settings")
 async def save_settings(request: Request) -> JSONResponse:
     form = await request.form()
+    is_admin = auth.is_admin(request)
+    allowed_keys = envfile.ALL_KEYS if is_admin else _NON_ADMIN_SETTINGS_KEYS
     # A browser submits EVERY field on the page, not just the one the user
     # actually edited — including ones that were blank because they were
     # never in `.env` in the first place (only shown blank because the
@@ -680,7 +753,7 @@ async def save_settings(request: Request) -> JSONResponse:
     current = envfile.read_env_file()
     updates = {
         key: str(value) for key, value in form.items()
-        if key in envfile.ALL_KEYS and str(value) != current.get(key, "")
+        if key in allowed_keys and str(value) != current.get(key, "")
     }
     try:
         changed = envfile.write_env_file(updates)
@@ -697,11 +770,14 @@ async def save_settings(request: Request) -> JSONResponse:
 
 
 @app.post("/api/settings/restart")
-async def restart_dashboard() -> JSONResponse:
+async def restart_dashboard(request: Request) -> JSONResponse:
     """SIGTERM this process after the response flushes. Only brings the
     dashboard back if it's supervised (e.g. the systemd service in
     docs/DEPLOYMENT.md with Restart=on-failure) — otherwise this just stops
     it, which the Settings page's banner says plainly."""
+    if (denied := _require_admin(request)) is not None:
+        return denied
+
     async def _delayed_kill() -> None:
         await asyncio.sleep(0.3)
         os.kill(os.getpid(), signal.SIGTERM)

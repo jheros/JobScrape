@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as icons %}
+{% import "_admin.html" as admin %}
 {% block title %}Settings · jobscrape{% endblock %}
 {% block content %}
 
@@ -15,14 +16,17 @@
       HTTP tuning) need a restart to apply.
     </div>
   </div>
+  {% call admin.locked(is_admin, inline=true) %}
   <button class="btn ghost" id="settings-restart" type="button">{{ icons.icon('refresh') }} Restart dashboard</button>
+  {% endcall %}
 </div>
 
 <form id="settings-form">
   {% for title, keys in sections %}
-  <div class="card">
+  {% set locked = not is_admin and title != "Blocked employers" %}
+  <div class="card{% if locked %} admin-locked{% endif %}">
     <h2>{{ title }}</h2>
-    <div class="form-grid">
+    <div class="form-grid{% if locked %} admin-locked-content{% endif %}">
       {% for f in keys %}
       <label>
         <span>{{ f.key }}</span>
@@ -52,9 +56,12 @@
       </label>
       {% endfor %}
     </div>
+    {% if locked %}<div class="admin-locked-badge">{{ icons.icon('lock', 13) }} Admin only</div>{% endif %}
   </div>
   {% endfor %}
+  {% call admin.locked(is_admin, inline=true) %}
   <button class="btn" type="submit">{{ icons.icon('play') }} Save settings</button>
+  {% endcall %}
 </form>
 
 {% endblock %}

@@ -7,21 +7,26 @@ supervisor, instead of systemd.
 
 ## This deployment has no authentication and no firewall, by explicit choice
 
-The dashboard has no login on any route — that's true everywhere in this
-project, and is normally made safe by binding to `127.0.0.1` only. **This
-compose file deliberately overrides that**, binding `0.0.0.0` on whatever port
-you choose, with no firewall restricting who can reach it. That means anyone
-who can reach that port on this network can read API keys off `/settings`,
-start or stop any pipeline stage, or trigger a real (non-dry-run) delete via
-Purge — there is nothing standing in the way.
+The dashboard has no *required* login on any route — that's true everywhere
+in this project, and is normally made safe by binding to `127.0.0.1` only.
+**This compose file deliberately overrides that**, binding `0.0.0.0` on
+whatever port you choose, with no firewall restricting who can reach it.
+Without `JOBSCRAPE_ADMIN_PASSCODE` set (see `.env.example`), anyone who can
+reach that port on this network can read API keys off `/settings`, start or
+stop any pipeline stage, or trigger a real (non-dry-run) delete via Purge —
+there is nothing standing in the way.
 
 This is sound only if you've deliberately accepted that trade-off for a
 network you trust (e.g. your own LAN, not the public internet). If you want
-the login-free convenience back without the wide-open exposure, the two
-options are: keep the container bound to `127.0.0.1` and reach it over an SSH
-tunnel (`ssh -L 8088:localhost:8088 you@host`), or put a reverse proxy with
-HTTP basic auth in front of it. Neither is set up here — this file documents
-the "expose it directly" path as configured.
+the login-free convenience back without the wide-open exposure, three
+options, in increasing order of effort: set `JOBSCRAPE_ADMIN_PASSCODE` so
+only whoever enters it at `/admin-login` can use Schedule/Runs/Coverage/
+Settings (everyone else gets a read-only, blurred view — see
+`.env.example`'s own comment); keep the container bound to `127.0.0.1` and
+reach it over an SSH tunnel (`ssh -L 8088:localhost:8088 you@host`); or put a
+reverse proxy with HTTP basic auth in front of it. The passcode option is a
+lightweight visitor distinction, not real accounts — treat it the same as
+any other shared secret in `.env`.
 
 ## Install
 

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% import "_icons.html" as icons %}
+{% import "_admin.html" as admin %}
 {% block title %}Coverage · jobscrape{% endblock %}
 {% block content %}
 
@@ -30,7 +31,9 @@
       can be stopped and resumed at any point.
     </div>
   </div>
+  {% call admin.locked(is_admin, inline=true) %}
   <button class="btn ghost" data-start-stage="validate" data-label="Validate now">{{ icons.icon('play') }} Validate now</button>
+  {% endcall %}
 </div>
 {% endif %}
 
