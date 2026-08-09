@@ -38,6 +38,34 @@
   if (sidebarClose) sidebarClose.addEventListener("click", closeSidebar);
   if (backdrop) backdrop.addEventListener("click", closeSidebar);
 
+  // --- stat tile count-up: 0 -> the server-rendered value on load ----------
+  // The final text is already correct HTML (comma-formatted, "%" suffix
+  // preserved) — this only re-renders it progressively, never computes it,
+  // so a JS-disabled load still shows the real number immediately.
+  if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    document.querySelectorAll(".tile .value").forEach(function (el) {
+      var raw = el.textContent.trim();
+      var match = raw.match(/^([\d,]+)(.*)$/);
+      if (!match) return;
+      var target = parseInt(match[1].replace(/,/g, ""), 10);
+      if (isNaN(target)) return;
+      var suffix = match[2] || "";
+      var hasComma = match[1].indexOf(",") !== -1;
+      var duration = 700;
+      var start = null;
+      function frame(ts) {
+        if (start === null) start = ts;
+        var progress = Math.min((ts - start) / duration, 1);
+        var eased = 1 - Math.pow(1 - progress, 3);
+        var current = Math.round(target * eased);
+        el.textContent = (hasComma ? current.toLocaleString("en-US") : String(current)) + suffix;
+        if (progress < 1) requestAnimationFrame(frame);
+        else el.textContent = raw;
+      }
+      requestAnimationFrame(frame);
+    });
+  }
+
   // --- run control --------------------------------------------------------
   function post(url, body) {
     return fetch(url, {

@@ -179,7 +179,7 @@ details.card[open] .h2-like { margin-bottom: 14px; }
   border-radius: var(--radius-lg); padding: 20px; box-shadow: var(--shadow);
   margin-bottom: 18px; transition: box-shadow .15s ease, transform .15s ease;
 }
-.card:hover { box-shadow: var(--shadow-lg); }
+.card:hover { box-shadow: var(--shadow-lg); transform: translateY(-1px); }
 .card.hero {
   background: var(--brand-gradient); border: none; color: #fff;
 }
@@ -206,6 +206,27 @@ details.card[open] .h2-like { margin-bottom: 14px; }
                margin-top: 5px; font-variant-numeric: tabular-nums; }
 .tile .foot  { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
 .tile.accent { border-color: var(--accent); }
+
+/* --- entrance animation --------------------------------------------------
+   A one-time settle-in on page load, not a persistent motion -- `both` so
+   it holds its start/end state outside the animation window instead of
+   flashing unstyled, and gated on prefers-reduced-motion since it's purely
+   decorative. Scoped to page-level .card/.tile sections only, never
+   .job-card (up to 200 on one page) or table rows -- animating each of
+   those would read as noise, not polish. */
+@media (prefers-reduced-motion: no-preference) {
+  .card, .tile { animation: settle-in .45s cubic-bezier(.16, .8, .34, 1) both; }
+  .grid.tiles > .tile:nth-child(1) { animation-delay: .02s; }
+  .grid.tiles > .tile:nth-child(2) { animation-delay: .06s; }
+  .grid.tiles > .tile:nth-child(3) { animation-delay: .10s; }
+  .grid.tiles > .tile:nth-child(4) { animation-delay: .14s; }
+  .grid.tiles > .tile:nth-child(5) { animation-delay: .18s; }
+  .grid.tiles > .tile:nth-child(6) { animation-delay: .22s; }
+  .grid.tiles > .tile:nth-child(n+7) { animation-delay: .26s; }
+}
+@keyframes settle-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
 
 /* --- charts ------------------------------------------------------------- */
 
@@ -366,7 +387,23 @@ table.coverage td.muted { color: var(--text-muted); }
 table.coverage tr.total { border-top: 1px solid var(--border); font-weight: 600; }
 table.coverage td.bar { background: var(--surface-2); border-radius: 3px; height: 9px; padding: 0; }
 table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
-                             background: var(--accent); }
+                             background: var(--accent); width: var(--bar-pct, 0%); }
+/* Fills in on load rather than appearing already-full -- the "from" state
+   is width:0, the implicit "to" is the width declared above. Staggered
+   per row for a light cascade instead of every bar filling in lockstep. */
+@media (prefers-reduced-motion: no-preference) {
+  table.coverage td.bar span { animation: bar-fill .8s cubic-bezier(.16, .8, .34, 1) both; }
+  table.coverage tbody tr:nth-child(1) td.bar span { animation-delay: .05s; }
+  table.coverage tbody tr:nth-child(2) td.bar span { animation-delay: .10s; }
+  table.coverage tbody tr:nth-child(3) td.bar span { animation-delay: .15s; }
+  table.coverage tbody tr:nth-child(4) td.bar span { animation-delay: .20s; }
+  table.coverage tbody tr:nth-child(5) td.bar span { animation-delay: .25s; }
+  table.coverage tbody tr:nth-child(6) td.bar span { animation-delay: .30s; }
+  table.coverage tbody tr:nth-child(n+7) td.bar span { animation-delay: .35s; }
+}
+@keyframes bar-fill {
+  from { width: 0; }
+}
 
 .tag.level { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-1));
              border-color: color-mix(in srgb, var(--accent) 40%, transparent); }

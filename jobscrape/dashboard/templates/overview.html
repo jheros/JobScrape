@@ -79,7 +79,7 @@
       {% for f in field_coverage %}
       <tr {% if f.field == 'all nine' %}class="total"{% endif %}>
         <td class="name">{{ f.field }}</td>
-        <td class="bar"><span style="width: {{ f.pct }}%"></span></td>
+        <td class="bar"><span style="--bar-pct: {{ f.pct }}%"></span></td>
         <td class="num">{{ f.pct }}%</td>
         <td class="num muted">{{ f.count|comma }}</td>
       </tr>
