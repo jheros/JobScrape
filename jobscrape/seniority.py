@@ -66,7 +66,14 @@ LADDER: tuple[tuple[str, str], ...] = (
     ("executive", r"\b(vp|svp|evp|vice\s+president|head\s+of|c[tioe]o|chief\s+(technology|information|executive|operating|product|data|security)\s+officer)\b"),
     ("director", r"\b(director|dir\.)\b"),
     ("manager", r"\b(manager|mgr\.?)\b"),
-    ("principal", r"\b(principal|distinguished|fellow)\b"),
+    # "fellow" was here too, bare, but "Fellow"/"Fellowship" is heavily used
+    # for early-career and rotational programs (engineering residencies,
+    # career-changer fellowships) in tech hiring, not just the
+    # Distinguished-Engineer-adjacent sense — "Software Engineering Fellow"
+    # and "AI Residency Fellow" read as senior-IC titles instead of the
+    # entry-level programs they actually are. "Distinguished Fellow" still
+    # correctly lands here via "distinguished" alone.
+    ("principal", r"\b(principal|distinguished)\b"),
     ("staff", r"\b(senior\s+staff|staff)\b"),
     ("lead", r"\b(tech(nical)?\s+lead|team\s+lead|eng(ineering)?\s+lead|lead)\b"),
     ("senior", r"\b(senior|sr\.?|snr\.?)\b"),

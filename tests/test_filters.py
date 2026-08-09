@@ -706,6 +706,22 @@ def test_a_us_state_still_wins_with_no_country_given() -> None:
     assert is_us_eligible("Georgia") is True
 
 
+@pytest.mark.parametrize("country", [
+    "New Zealand", "South Africa", "Saudi Arabia", "United Arab Emirates",
+    "Costa Rica", "Dominican Republic", "Hong Kong",
+])
+def test_a_multi_word_non_us_country_name_is_rejected(country: str) -> None:
+    """A prior version of this branch only rejected a country whose key was
+    <= 3 characters or alphabetic-with-no-spaces -- which is every 2/3-letter
+    ISO code, but NOT a country's own English name once it has more than one
+    word and isn't one of the ~20 entries `models._COUNTRY_ALIASES`
+    normalizes to a code. Every country above fell all the way through this
+    branch to "accept" instead of being rejected, silently defeating
+    `us_only` for any of them."""
+    assert is_us_eligible(None, country=country) is False
+    assert is_us_eligible("Remote", country=country) is False
+
+
 def test_parse_us_location() -> None:
     assert parse_us_location("Austin, TX") == ("Austin", "TX")
     assert parse_us_location("Boston, Massachusetts") == ("Boston", "MA")
@@ -1435,6 +1451,12 @@ def test_more_non_software_programmers(title: str) -> None:
         "Stripe", "PayPal", "Paypal", "paypal",
         # A Workday board slug: only the tenant names the company.
         "paypal|wd1|jobs",
+        # Amazon's own literal legal name on many real postings — a domain
+        # suffix glued directly to the name (no space before it) previously
+        # survived slugify() untouched, so `company_key('Amazon.com')` !=
+        # `company_key('Amazon')` and the blocklist's own primary documented
+        # target evaded its entry via the single most common real spelling.
+        "Amazon.com", "AMAZON.COM", "Amazon.com, Inc.",
     ],
 )
 def test_blocked_employers_are_recognised_in_every_spelling(name: str) -> None:
@@ -1471,6 +1493,21 @@ def test_look_alikes_and_subsidiaries_are_not_blocked(name: str) -> None:
     from jobscrape.filters import is_blocked_company
 
     assert is_blocked_company(name) is False, name
+
+
+def test_slugify_does_not_leave_a_dangling_and() -> None:
+    """`&` becomes " and " so "AT&T"/"Barnes & Noble" keep a real word, but
+    when `&` sits directly before a legal suffix that gets stripped, "and"
+    was left dangling at the end -- e.g. slugify('Tiffany & Co.') used to
+    produce 'tiffany-and', a garbled slug for a real, well-known company."""
+    from jobscrape.models import slugify
+
+    assert slugify("Tiffany & Co.") == "tiffany"
+    assert slugify("Acme & Co") == "acme"
+    assert slugify("Acme & Corp") == "acme"
+    # An "&" NOT immediately followed by a legal suffix keeps its real word.
+    assert slugify("Barnes & Noble") == "barnes-and-noble"
+    assert slugify("AT&T") == "at-and-t"
 
 
 def test_the_env_var_extends_the_list(monkeypatch) -> None:

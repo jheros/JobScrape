@@ -1183,7 +1183,14 @@ def is_us_eligible(
         return False
     if country:
         code = country.strip().lower()
-        if code not in _UNSCOPED_COUNTRY and (len(code) <= 3 or code.isalpha()):
+        # Same check as `_has_us_state`/`parse_us_location`/the `job.state`
+        # guard below in this file — no length/alpha condition. There was
+        # one here once, and it meant any country whose English name has a
+        # space ("New Zealand", "South Africa", "United Arab Emirates") and
+        # isn't one of the ~20 entries `models._COUNTRY_ALIASES` normalizes
+        # to a 2-letter code fell all the way through to "accept" instead of
+        # being rejected here — the opposite of what this branch exists for.
+        if code and code not in _US_COUNTRY_CODES and code not in _UNSCOPED_COUNTRY:
             return False
 
     # 5. Everything else — bare "Remote", empty, or unrecognized — is accepted.

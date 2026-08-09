@@ -285,6 +285,21 @@ def test_clean_location_under_the_cap_is_untouched() -> None:
     from jobscrape.models import clean_location
 
     assert clean_location("Austin, TX; Remote") == "Austin, TX; Remote"
+
+
+def test_clean_location_never_reports_a_negative_more_count() -> None:
+    """The cap decision is made from the PRE-dedup segment count, but the
+    "+N more" count itself came from the POST-dedup list -- a string with
+    enough repeated segments to cross the cap, but few enough distinct ones
+    to land back under it once deduped, used to produce a garbled negative
+    count like "NY; +-4 more"."""
+    from jobscrape.models import clean_location
+
+    assert clean_location("NY; NY; NY; NY; NY; NY") == "NY"
+    result = clean_location(
+        "Austin, TX; Austin, TX; Austin, TX; Austin, TX; Austin, TX; Remote"
+    )
+    assert result == "Austin, TX; Remote"
     assert clean_location("Austin, TX, US") == "Austin, TX, US"
 
 

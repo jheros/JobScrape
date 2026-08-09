@@ -73,6 +73,11 @@ def test_scam_wording_is_flagged(text: str, signal: str) -> None:
         "starting on day one.",
         "We offer a competitive salary and equity.",
         "We use Signal internally for incident response chat.",
+        # A bank's own product feature name, not an action asked of the
+        # applicant — "mobile deposit" alone used to be a fourth check_fraud
+        # alternative and fired on postings like this one.
+        "We are hiring engineers to build our Mobile Deposit feature used by "
+        "millions of customers to deposit checks from their phone.",
         "",
     ],
 )

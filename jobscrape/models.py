@@ -63,6 +63,14 @@ _MAX_LOCATION_SEGMENTS = 5
 
 def _cap_segments(value: str, sep: str) -> str:
     segments = list(dict.fromkeys(s.strip() for s in value.split(sep) if s.strip()))
+    # The caller decides whether to cap at all from the PRE-dedup count (see
+    # `clean_location`), so a string with many repeated segments can still
+    # land here with a post-dedup count at or under the cap — "NY; NY; NY;
+    # NY; NY; NY" is one real place repeated six times. Re-check after
+    # dedup instead of assuming there's still an overflow to report; a
+    # negative "+N more" was the bug this guards.
+    if len(segments) <= _MAX_LOCATION_SEGMENTS:
+        return sep.join(segments)
     shown = segments[:_MAX_LOCATION_SEGMENTS]
     return sep.join(shown) + f"{sep}+{len(segments) - _MAX_LOCATION_SEGMENTS} more"
 
@@ -141,6 +149,24 @@ _LEGAL_SUFFIX_RE = re.compile(
     r")\.?\s*$",
     re.I,
 )
+#: A domain-style suffix attached directly to the name with no separating
+#: space — "Amazon.com", not "Amazon, Inc." Real companies write their own
+#: name this way often enough (it's Amazon's own literal legal name on many
+#: postings: "Amazon.com" / "Amazon.com, Inc." / "Amazon.com Services LLC")
+#: that leaving it unstripped meant `company_key('Amazon.com') != company_key('Amazon')`
+#: — the blocklist's primary documented target evading its own entry via the
+#: single most common real spelling of it. Applied AFTER `_LEGAL_SUFFIX_RE`
+#: so "Amazon.com, Inc." strips the ", Inc." first and exposes the ".com" as
+#: newly trailing.
+_TLD_SUFFIX_RE = re.compile(r"\.(?:com|co|io|net|org)\s*$", re.I)
+#: `&` becomes " and " below so "AT&T"/"Barnes & Noble" keep a real,
+#: distinguishing word rather than vanishing — but when `&` sits directly
+#: before a legal suffix ("Acme & Co", "Tiffany & Co."), stripping the
+#: suffix leaves that "and" dangling with nothing after it. A trailing "and"
+#: is never a company's actual distinguishing final word (that's an artifact
+#: of this substitution, not a real name), so it is stripped too, same as a
+#: legal suffix would be.
+_TRAILING_AND_RE = re.compile(r"[\s,]+and\s*$", re.I)
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 
 
@@ -162,6 +188,8 @@ def slugify(name: str | None) -> str:
     folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
     folded = folded.replace("&", " and ").lower().strip()
     folded = _LEGAL_SUFFIX_RE.sub("", folded)
+    folded = _TLD_SUFFIX_RE.sub("", folded)
+    folded = _TRAILING_AND_RE.sub("", folded)
     return _SLUG_STRIP_RE.sub("-", folded).strip("-")
 
 
@@ -180,7 +208,19 @@ _RE_HYBRID = re.compile(
 )
 _RE_ONSITE = re.compile(
     r"\b(on[\s-]?site|onsite|in[\s-]?office|in[\s-]?person|office[\s-]?based|"
-    r"no\s+remote|not\s+remote|100%\s+in\s+office)\b",
+    r"no\s+remote|not\s+remote|100%\s+in\s+office|"
+    # A negated mention of remote work still contains the bare word "remote",
+    # which `_RE_REMOTE` below would otherwise match on its own — this tier
+    # has no equivalent of tier 5's documented, deliberately-accepted
+    # negation blind spot, so this needs to actually catch the shape rather
+    # than rely on "no remote"/"not remote" being adjacent, which real
+    # postings usually don't phrase that way. "Remote work is not
+    # available" (a real, literal Workday value — see `_HINT_NEGATIONS`,
+    # which only guards the structured hint field, not this free-text tier)
+    # has "not" and "remote" nowhere near each other.
+    r"remote\s*(work)?\s*(is\s+)?not\s+(available|permitted|allowed|possible|offered|an\s+option)|"
+    r"not\s+(available|eligible|permitted|offered)\s+for\s+remote|"
+    r"remote\s*(work)?\s*(is\s+)?(unavailable|not\s+offered))\b",
     re.I,
 )
 

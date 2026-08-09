@@ -53,8 +53,17 @@ SCAM_SIGNALS: tuple[tuple[str, str], ...] = (
     # deposit it and wire part back. No legitimate posting discusses this.
     (
         "check_fraud",
-        r"\b(?:cashier'?s\s+check|fake\s+check|deposit\s+(?:the\s+)?check"
-        r"|mobile\s+deposit)\b",
+        # `mobile deposit` on its own used to be a fourth alternative here,
+        # but it's a real, common bank-product *feature name* ("Mobile
+        # Deposit" — Chase, USAA, Ally, most consumer banks), not an action
+        # asked of the applicant — a fintech/banking engineering posting
+        # describing that feature triggers it despite naming zero fraud.
+        # The other three alternatives all still require "check" paired
+        # with either a qualifying adjective or a direct action verb, so
+        # dropping this one rather than tuning it follows the module's own
+        # measured precedent above for the six JobSentinel patterns cut for
+        # the same reason.
+        r"\b(?:cashier'?s\s+check|fake\s+check|deposit\s+(?:the\s+)?check)\b",
     ),
     # Being asked to buy stored-value instruments — the standard way scam
     # proceeds are made irreversible.

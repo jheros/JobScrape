@@ -33,11 +33,20 @@ from jobscrape.seniority import LEVELS, UNKNOWN, classify, sort_key
         ("New Grad Software Engineer", "entry"),
         ("Associate Software Engineer", "entry"),
         ("Tech Lead, Payments", "lead"),
+        # "Distinguished Fellow" still correctly lands here via "distinguished"
+        # alone — only the bare "fellow" alternative was removed.
+        ("Distinguished Fellow", "principal"),
         # --- nothing stated: the honest answer ---
         ("Software Engineer", UNKNOWN),
         ("Backend Developer", UNKNOWN),
         ("Data Scientist", UNKNOWN),
         ("", UNKNOWN),
+        # "Fellow"/"Fellowship" is heavily used for early-career and
+        # rotational programs, not just the Distinguished-Engineer-adjacent
+        # sense — a bare "fellow" used to land in the "principal" tier,
+        # misreading these as senior-IC titles.
+        ("Software Engineering Fellow", UNKNOWN),
+        ("AI Residency Fellow", UNKNOWN),
     ],
 )
 def test_single_signal(title: str, expected: str) -> None:

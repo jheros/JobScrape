@@ -48,6 +48,25 @@ def test_text_classification(text: str, expected: str) -> None:
     assert classify_workplace(text) == expected
 
 
+@pytest.mark.parametrize("text", [
+    "Remote work is not available for this position.",
+    "Remote is not available.",
+    "Remote work is not permitted for this role.",
+    "This role is not eligible for remote work.",
+    "Not available for remote — candidates must relocate.",
+    "Remote work is unavailable at this time.",
+    "Remote is not an option for this position.",
+])
+def test_a_negated_remote_mention_is_not_read_as_remote(text: str) -> None:
+    """"Remote work is not available" contains the bare word "remote", which
+    `_RE_REMOTE` alone would match — real Workday postings use this exact
+    phrase (see `_HINT_NEGATIONS`, which only guards the structured hint
+    field). This tier has no equivalent of the sweep tier's documented,
+    deliberately-accepted negation blind spot: a wrong answer here costs a
+    posting via `filters.keeps_workplace`, not just a mislabel."""
+    assert classify_workplace(text) == "onsite"
+
+
 def test_hybrid_beats_remote() -> None:
     """"Hybrid remote" and "remote-friendly" are hybrid arrangements."""
     assert classify_workplace("hybrid remote") == "hybrid"
