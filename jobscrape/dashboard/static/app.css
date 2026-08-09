@@ -401,13 +401,19 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 
 /* --- layout utilities (retire one-off inline `style=` attributes) -------
    Deliberately LAST in the file: every one of these is meant to override a
-   component rule above it (`.hidden` beats `.btn`'s display, `.btn-sm` beats
-   `.btn`'s padding, `.bulk-bar` beats `.btn-row`'s display, ...) and most of
-   those pairs tie on specificity (single class vs single class), so source
-   order is what decides. Utilities losing that tie is a real, silent bug —
-   it happened here once already (the "Cancel edit" button stayed visible
-   because `.btn`'s `display: inline-flex` came after `.hidden` in the file)
-   — so keep this block below everything it might need to override. */
+   component rule above it (`.btn-sm` beats `.btn`'s padding, `.bulk-bar`
+   beats `.btn-row`'s display, ...) and most of those pairs tie on
+   specificity (single class vs single class), so source order is what
+   decides. Utilities losing that tie is a real, silent bug — it happened
+   here once already (the "Cancel edit" button stayed visible because
+   `.btn`'s `display: inline-flex` came after `.hidden` in the file) — so
+   keep this block below everything it might need to override.
+   `.hidden` itself is `!important` (below), not just source-order-last:
+   component selectors like `.form-grid label` combine a class with a type
+   selector, which outranks `.hidden`'s single class on specificity alone —
+   no amount of reordering fixes that, only `!important` does. Nothing in
+   this codebase ever needs to out-rank "hidden": every toggle removes the
+   class in JS rather than fighting it with a more specific selector. */
 
 .flex { display: flex; align-items: center; gap: 10px; }
 .flex-between { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
@@ -425,7 +431,7 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .mb-6 { margin-bottom: 6px; }
 .text-sm { font-size: 12px; }
 .nowrap { white-space: nowrap; }
-.hidden { display: none; }
+.hidden { display: none !important; }
 .flex-1 { flex: 1; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .empty-row td { text-align: center; padding: 32px; color: var(--text-muted); }
