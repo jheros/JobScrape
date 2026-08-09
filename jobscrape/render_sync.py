@@ -502,3 +502,75 @@ def backfill_local_sync_status(
         "candidates": len(candidates), "matched": len(matched_keys),
         "stamped": stamped, "dry_run": dry_run,
     }
+
+
+def delete_source(
+    conn: db.Connection, render_conn: db.Connection, source: str, *, dry_run: bool = False,
+) -> dict[str, Any]:
+    """Remove every job from ``source`` from both this database and Render.
+
+    For turning a source off for good (see `sources.OFF_BY_DEFAULT`) and
+    wanting its existing archive gone too, not just stopped from growing.
+
+    Order matters: Render is deleted FIRST, using each row's own
+    `apply_url`/`job_url`/`title`/`company` to compute its `dedup_key` — once
+    a row is gone from `jobs`, `sync()`'s changed-since sweep can never see it
+    again to issue the matching Render DELETE on its own, so this does that
+    side itself, directly, with the same per-row IntegrityError fallback
+    `flush_deletes()` uses for a delete blocked by Render's `reviews.job_id`
+    foreign key. `db.delete_jobs` runs after, for the local side — it already
+    releases any surviving duplicate that pointed at a doomed row here as its
+    canonical, and bumps `duplicate_marked_at` so the next `sync()` pass picks
+    up the newly-released row as a fresh upsert.
+    """
+    rows = conn.execute(
+        "SELECT source, source_job_id, apply_url, job_url, title, company "
+        "FROM jobs WHERE source = ?", (source,)
+    ).fetchall()
+    keys = [(r["source"], r["source_job_id"]) for r in rows]
+    dedup_keys = [
+        _dedup_key(
+            r["source"], r["source_job_id"], r["apply_url"] or r["job_url"],
+            r["title"] or "", r["company"] or "",
+        )
+        for r in rows
+    ]
+
+    render_deleted = render_blocked = 0
+    if not dry_run:
+        for i in range(0, len(dedup_keys), _BATCH_SIZE):
+            batch = dedup_keys[i:i + _BATCH_SIZE]
+            if len(batch) == 1:
+                try:
+                    render_conn.execute(_DELETE_SQL, (batch[0],))
+                    render_conn.commit()
+                    render_deleted += 1
+                except IntegrityError:
+                    render_conn.rollback()
+                    render_blocked += 1
+                continue
+            try:
+                render_conn.execute(_batch_delete_sql(len(batch)), batch)
+                render_conn.commit()
+                render_deleted += len(batch)
+            except IntegrityError:
+                render_conn.rollback()
+                for key in batch:
+                    try:
+                        render_conn.execute(_DELETE_SQL, (key,))
+                        render_conn.commit()
+                        render_deleted += 1
+                    except IntegrityError:
+                        render_conn.rollback()
+                        render_blocked += 1
+
+    local_deleted = local_released = 0
+    if not dry_run:
+        local_deleted, local_released = db.delete_jobs(conn, keys)
+
+    return {
+        "source": source, "found": len(keys),
+        "render_deleted": render_deleted, "render_blocked": render_blocked,
+        "local_deleted": local_deleted, "local_released": local_released,
+        "dry_run": dry_run,
+    }

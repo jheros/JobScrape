@@ -140,7 +140,13 @@ def restricted_board_sources() -> dict[str, BoardSource]:
 #: costs six requests a run to re-confirm that, and it is kept rather than
 #: deleted because the adapter itself is fine — a working RAPIDAPI_HOST/PATH is
 #: all it needs, and `--sources jsearch` still runs it.
-OFF_BY_DEFAULT = frozenset({"jsearch"})
+#:
+#: `adzuna` is here at explicit user request — no technical issue with it,
+#: they simply don't want Adzuna postings collected going forward. The
+#: adapter stays registered (still covered by its own tests, still runnable
+#: via `--sources adzuna`) rather than being deleted, matching jsearch's
+#: precedent above.
+OFF_BY_DEFAULT = frozenset({"jsearch", "adzuna"})
 
 ALL_SOURCE_NAMES = sorted(
     (set(BOARD_SOURCES) | set(GLOBAL_SOURCES)) - OFF_BY_DEFAULT

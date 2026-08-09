@@ -1509,6 +1509,61 @@ def cmd_backfill_render_sync_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_delete_source(args: argparse.Namespace) -> int:
+    """One-time: remove every job from one source, locally and on Render.
+
+    For a source turned off for good (`sources.OFF_BY_DEFAULT`) whose
+    existing archive should go too. See `render_sync.delete_source` for why
+    Render has to be deleted first, before the matching local rows.
+    """
+    from . import render_sync
+
+    ok, reason = render_sync.available()
+    if not ok:
+        log.info("delete-source: %s — skipping", reason)
+        return 0
+
+    with db.session(args.db) as conn:
+        run_id = db.start_run(
+            conn, _command_line(), "delete-source", pid=os.getpid()
+        )
+        try:
+            render_conn = render_sync.connect_render()
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            log.exception("delete-source: could not connect to Render")
+            db.log_event(conn, run_id, f"connect failed: {exc}",
+                         stage="delete-source", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+
+        try:
+            result = render_sync.delete_source(
+                conn, render_conn, args.source, dry_run=args.dry_run,
+            )
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            log.exception("delete-source: failed")
+            conn.rollback()
+            db.log_event(conn, run_id, f"delete failed: {exc}",
+                         stage="delete-source", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+        finally:
+            render_conn.close()
+
+        message = (
+            f"delete-source {args.source}: {result['found']} found, "
+            f"{result['render_deleted']} deleted from Render "
+            f"({result['render_blocked']} blocked by a dependent review), "
+            f"{result['local_deleted']} deleted locally "
+            f"({result['local_released']} duplicates released)"
+            + (" (dry run)" if result["dry_run"] else "")
+        )
+        log.info(message)
+        db.log_event(conn, run_id, message, stage="delete-source", counters=result)
+        db.finish_run(conn, run_id, status="ok", stats_payload=result)
+    return 0
+
+
 def cmd_stats(args: argparse.Namespace) -> int:
     with db.session(args.db) as conn:
         print(json.dumps(db.stats(conn), indent=2))
@@ -2011,6 +2066,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_backfill_sync.add_argument("--dry-run", action="store_true",
                                  help="report what would be stamped without writing")
 
+    p_del_source = sub.add_parser(
+        "delete-source",
+        help="one-time: remove every job from one source, locally and on "
+             "Render (needs RENDER_DATABASE_URL)",
+    )
+    p_del_source.add_argument("source", help="e.g. adzuna")
+    p_del_source.add_argument("--dry-run", action="store_true",
+                              help="report what would be deleted without writing")
+
     sub.add_parser("stats", help="summarize what has been collected")
     sub.add_parser("sources", help="list every source and whether it is ready")
 
@@ -2132,6 +2196,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_render_sync(args)
         if args.command == "backfill-render-sync-status":
             return cmd_backfill_render_sync_status(args)
+        if args.command == "delete-source":
+            return cmd_delete_source(args)
         if args.command == "schedule-run":
             return asyncio.run(cmd_schedule_run(args))
         if args.command == "migrate-from-sqlite":

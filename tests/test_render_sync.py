@@ -520,3 +520,106 @@ def test_backfill_batches_across_more_rows_than_one_batch_size(monkeypatch) -> N
         for i in range(5):
             synced_at, status = _local_sync_state(conn, f"c{i}")
             assert synced_at is not None and status == "synced"
+
+
+# --- delete_source(): turning a source off for good, archive and all -------
+
+
+def _job_count(conn, source: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) c FROM jobs WHERE source = ?", (source,)
+    ).fetchone()["c"]
+
+
+def test_delete_source_removes_matching_rows_locally_and_on_render() -> None:
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="d0", posted_at="2026-07-01"),
+            _dup_job(source_job_id="d1", posted_at="2026-07-02",
+                     title="Backend Engineer -Remote"),
+            _dup_job(source="greenhouse", source_job_id="g0", posted_at="2026-07-01"),
+        ])
+        render = _FakeRenderConn()
+        result = render_sync.delete_source(conn, render, "adzuna")
+
+        assert result["found"] == 2
+        assert result["render_deleted"] == 2
+        assert result["render_blocked"] == 0
+        assert result["local_deleted"] == 2
+        assert _job_count(conn, "adzuna") == 0
+        assert _job_count(conn, "greenhouse") == 1  # untouched — different source
+        deletes = [c for c in render.calls if c[0].strip().startswith("DELETE")]
+        assert deletes  # a real DELETE reached the fake Render connection
+
+
+def test_delete_source_releases_a_duplicate_on_another_source() -> None:
+    """An adzuna copy of a since-deleted greenhouse canonical must become
+    visible again, not stay suppressed by a row that no longer exists.
+
+    dedupe's tier-2 clustering is deliberately aggregator -> ATS only (see
+    dedupe.compute_clusters): an ATS/board row is always the canonical over
+    an aggregator's copy of the same posting, never the reverse. So the
+    releasable pairing here is greenhouse-canonical / adzuna-duplicate, not
+    the other way around — this test deletes the ATS side on purpose.
+    """
+    with db.session() as conn:
+        db.upsert_jobs(conn, [
+            _dup_job(source_job_id="d2", posted_at="2026-07-02"),
+            _dup_job(source="greenhouse", source_job_id="g1", posted_at="2026-07-01"),
+        ])
+        result = dedupe.resolve_all(conn)
+        assert result["collapsed"] == 1
+        dup = conn.execute(
+            "SELECT duplicate_of FROM jobs WHERE source_job_id = 'd2'"
+        ).fetchone()
+        assert dup["duplicate_of"] is not None  # d2 (adzuna) is the suppressed one
+
+        render = _FakeRenderConn()
+        delete_result = render_sync.delete_source(conn, render, "greenhouse")
+
+        assert delete_result["local_released"] == 1
+        assert _job_count(conn, "greenhouse") == 0
+        released = conn.execute(
+            "SELECT duplicate_of FROM jobs WHERE source_job_id = 'd2'"
+        ).fetchone()
+        assert released["duplicate_of"] is None
+
+
+def test_delete_source_still_deletes_locally_when_render_blocks_it() -> None:
+    """The user asked for this source gone from the local archive -- a
+    Render-side review FK block is Render's own business, not a reason to
+    leave the row sitting in jobscrape's own database too."""
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="d3", posted_at="2026-07-01")])
+        blocked_key = _dedup_key("adzuna", "d3", "https://x/q0",
+                                  "iOS Engineer -Remote", "Quora")
+        render = _FakeRenderConn(fail_deletes_for={blocked_key})
+        result = render_sync.delete_source(conn, render, "adzuna")
+
+        assert result["render_blocked"] == 1
+        assert result["render_deleted"] == 0
+        assert result["local_deleted"] == 1
+        assert _job_count(conn, "adzuna") == 0
+
+
+def test_delete_source_dry_run_writes_nothing() -> None:
+    with db.session() as conn:
+        db.upsert_jobs(conn, [_dup_job(source_job_id="d4", posted_at="2026-07-01")])
+        render = _FakeRenderConn()
+        result = render_sync.delete_source(conn, render, "adzuna", dry_run=True)
+
+        assert result == {
+            "source": "adzuna", "found": 1,
+            "render_deleted": 0, "render_blocked": 0,
+            "local_deleted": 0, "local_released": 0, "dry_run": True,
+        }
+        assert _job_count(conn, "adzuna") == 1
+        assert not render.calls
+
+
+def test_delete_source_finds_nothing_for_an_absent_source() -> None:
+    with db.session() as conn:
+        render = _FakeRenderConn()
+        result = render_sync.delete_source(conn, render, "nope-not-a-source")
+        assert result["found"] == 0
+        assert result["render_deleted"] == 0 and result["local_deleted"] == 0
