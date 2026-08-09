@@ -306,6 +306,10 @@
       chipList.appendChild(chip);
       syncBlockedCompaniesHidden();
     }
+    // "Amazon, Microsoft, ..." in one go, not just one name per Add click.
+    function addChipsFromInput(value) {
+      value.split(",").forEach(function (part) { addChip(part); });
+    }
     chipList.querySelectorAll(".chip-remove").forEach(function (btn) {
       btn.addEventListener("click", function () {
         btn.closest(".chip").remove();
@@ -314,7 +318,7 @@
     });
     if (chipAddBtn) {
       chipAddBtn.addEventListener("click", function () {
-        addChip(chipAddInput.value);
+        addChipsFromInput(chipAddInput.value);
         chipAddInput.value = "";
         chipAddInput.focus();
       });
@@ -323,7 +327,7 @@
       chipAddInput.addEventListener("keydown", function (event) {
         if (event.key === "Enter") {
           event.preventDefault();
-          addChip(chipAddInput.value);
+          addChipsFromInput(chipAddInput.value);
           chipAddInput.value = "";
         }
       });
