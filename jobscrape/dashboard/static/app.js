@@ -221,62 +221,6 @@
     source.onerror = function () { source.close(); };
   });
 
-  // --- per-job triage -----------------------------------------------------
-  document.querySelectorAll(".status-select").forEach(function (select) {
-    select.addEventListener("change", function () {
-      var source = select.getAttribute("data-source");
-      var jobId = select.getAttribute("data-job-id");
-      var row = select.closest(".job-card");
-      post(
-        "/api/jobs/" + encodeURIComponent(source) + "/" + encodeURIComponent(jobId) + "/status",
-        "status=" + encodeURIComponent(select.value)
-      ).then(function (res) {
-        if (!res.ok) { alert(res.data.error || "Could not save"); return; }
-        if (row) {
-          row.style.transition = "opacity .25s";
-          row.style.opacity = ".45";
-        }
-      });
-    });
-  });
-
-  // --- bulk triage --------------------------------------------------------
-  var bulkBar = document.getElementById("bulk-bar");
-  function selectedIds() {
-    return Array.prototype.slice
-      .call(document.querySelectorAll(".row-check:checked"))
-      .map(function (c) { return c.getAttribute("data-token"); });
-  }
-  function refreshBulk() {
-    if (!bulkBar) return;
-    var n = selectedIds().length;
-    bulkBar.style.display = n ? "flex" : "none";
-    var label = document.getElementById("bulk-count");
-    if (label) label.textContent = n + " selected";
-  }
-  document.querySelectorAll(".row-check").forEach(function (box) {
-    box.addEventListener("change", refreshBulk);
-  });
-  var selectAll = document.getElementById("check-all");
-  if (selectAll) {
-    selectAll.addEventListener("change", function () {
-      document.querySelectorAll(".row-check").forEach(function (box) {
-        box.checked = selectAll.checked;
-      });
-      refreshBulk();
-    });
-  }
-  document.querySelectorAll("[data-bulk-status]").forEach(function (btn) {
-    btn.addEventListener("click", function () {
-      var ids = selectedIds();
-      if (!ids.length) return;
-      post("/api/jobs/bulk",
-        "ids=" + encodeURIComponent(ids.join(",")) +
-        "&status=" + encodeURIComponent(btn.getAttribute("data-bulk-status"))
-      ).then(function () { window.location.reload(); });
-    });
-  });
-
   // --- keep the active-run pill honest ------------------------------------
   if (document.querySelector(".pill.running")) {
     setInterval(function () {

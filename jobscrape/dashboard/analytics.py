@@ -596,5 +596,4 @@ def filter_options(conn: db.Connection) -> dict[str, list[Any]]:
         "industries": [r["v"] for r in conn.execute(
             "SELECT DISTINCT industry v FROM jobs "
             "WHERE industry IS NOT NULL ORDER BY v")],
-        "statuses": list(db.JOB_STATUSES) + ["all"],
     }

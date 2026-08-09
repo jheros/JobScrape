@@ -174,7 +174,6 @@ _JOBS_PAGE_SIZES = (25, 50, 100, 200)
 @app.get("/jobs", response_class=HTMLResponse)
 async def jobs(
     request: Request,
-    status: str = "new",
     source: str | None = None,
     state: str | None = None,
     workplace: str | None = None,
@@ -220,7 +219,7 @@ async def jobs(
         except ValueError:
             until_date = None
         rows, total = analytics.search_jobs(
-            conn, status=status, source=source, state=state, workplace=workplace,
+            conn, status=None, source=source, state=state, workplace=workplace,
             seniority=seniority, skill=skill, query=q,
             company=company, employment_type=employment_type, department=department,
             industry=industry, is_remote=is_remote_bool,
@@ -237,10 +236,9 @@ async def jobs(
             page_sizes=_JOBS_PAGE_SIZES,
             pages=max((total + page_size - 1) // page_size, 1),
             options=analytics.filter_options(conn),
-            statuses=db.JOB_STATUSES,
             render_sync_configured=bool(config.RENDER_DATABASE_URL),
             filters={
-                "status": status, "source": source or "", "state": state or "",
+                "source": source or "", "state": state or "",
                 "workplace": workplace or "", "seniority": seniority or "",
                 "skill": skill or "", "q": q or "",
                 "company": company or "", "employment_type": employment_type or "",
@@ -631,39 +629,6 @@ async def stream_events(run_id: int, after: int = 0) -> StreamingResponse:
             await asyncio.sleep(2)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
-
-
-@app.post("/api/jobs/{source}/{source_job_id:path}/status")
-async def set_status(
-    source: str, source_job_id: str, status: str = Form(...), notes: str = Form("")
-) -> JSONResponse:
-    conn = _conn()
-    try:
-        db.set_job_status(conn, source, source_job_id, status, notes or None)
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    finally:
-        conn.close()
-    return JSONResponse({"ok": True, "status": status})
-
-
-@app.post("/api/jobs/bulk")
-async def bulk_status(ids: str = Form(...), status: str = Form(...)) -> JSONResponse:
-    """Triage several rows at once — ids arrive as `source|job_id` pairs."""
-    conn = _conn()
-    changed = 0
-    try:
-        for token in ids.split(","):
-            if "|" not in token:
-                continue
-            source, _, job_id = token.partition("|")
-            db.set_job_status(conn, source, job_id, status)
-            changed += 1
-    except ValueError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=400)
-    finally:
-        conn.close()
-    return JSONResponse({"ok": True, "changed": changed})
 
 
 @app.get("/api/stats")

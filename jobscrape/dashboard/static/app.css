@@ -279,8 +279,6 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 }
 @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
 
-.status-select { min-width: 118px; font-size: 12px; padding: 5px 7px; }
-
 /* --- job rows ----------------------------------------------------------- */
 
 .job-title { font-weight: 600; color: var(--text-primary); text-decoration: none; font-size: 14.5px; }
@@ -299,12 +297,10 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 /* --- jobs: card list -----------------------------------------------------
    Every requested DB column has to be visible with zero horizontal scroll,
    which a ~20-column table can never do at readable font sizes. Each job is
-   a card instead: identity + triage up top, a reflowing label/value grid
-   for the record-keeping fields, chips and expandable panels below. Every
+   a card instead: identity up top, a reflowing label/value grid for the
+   record-keeping fields, chips and an expandable description below. Every
    piece here wraps (flex-wrap / grid auto-fit) so width never forces a
    scrollbar — only the page's normal vertical scroll is ever needed. */
-.jobs-list-toolbar { display: flex; align-items: center; gap: 8px;
-                      padding-bottom: 12px; font-size: 13px; }
 .jobs-list { display: flex; flex-direction: column; gap: 10px; }
 .jobs-empty { text-align: center; padding: 40px 20px; color: var(--text-muted); }
 
@@ -314,14 +310,12 @@ input:focus, select:focus { outline: 2px solid var(--series-1); outline-offset: 
 .job-card:hover { box-shadow: var(--shadow); }
 
 .job-card-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.job-card-check { margin-top: 5px; flex-shrink: 0; }
 .job-card-main { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 5px; }
 .job-card-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .job-card-company { color: var(--text-secondary); font-size: 12.5px;
                      display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.job-card-actions { display: flex; flex-direction: column; align-items: flex-end;
-                     gap: 6px; flex-shrink: 0; margin-left: auto; }
-.job-card-links { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.job-card-links { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end;
+                   flex-shrink: 0; margin-left: auto; }
 
 .job-card-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
                     gap: 8px 16px; padding-top: 10px; border-top: 1px solid var(--border); }
@@ -440,9 +434,9 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 
 /* --- layout utilities (retire one-off inline `style=` attributes) -------
    Deliberately LAST in the file: every one of these is meant to override a
-   component rule above it (`.btn-sm` beats `.btn`'s padding, `.bulk-bar`
-   beats `.btn-row`'s display, ...) and most of those pairs tie on
-   specificity (single class vs single class), so source order is what
+   component rule above it (`.btn-sm` beats `.btn`'s padding, ...) and most
+   of those pairs tie on specificity (single class vs single class), so
+   source order is what
    decides. Utilities losing that tie is a real, silent bug — it happened
    here once already (the "Cancel edit" button stayed visible because
    `.btn`'s `display: inline-flex` came after `.hidden` in the file) — so
@@ -474,7 +468,6 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
 .flex-1 { flex: 1; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .empty-row td { text-align: center; padding: 32px; color: var(--text-muted); }
-.bulk-bar { display: none; margin-bottom: 12px; align-items: center; gap: 10px; }
 .run-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .card.active-run { border-color: color-mix(in srgb, var(--good) 45%, var(--border)); }
 .sub-tight { color: var(--text-secondary); margin: 0 0 14px; }

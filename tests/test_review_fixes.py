@@ -1024,9 +1024,9 @@ def test_purge_records_the_company_slug_not_its_name(_isolated_db) -> None:
 def test_a_dangerous_url_scheme_is_discarded(url: str) -> None:
     """Both URL fields are raw third-party strings rendered into an `href`.
 
-    A posting carrying `javascript:fetch('/api/jobs/bulk', …)` would run in the
-    dashboard's origin on click — and that origin has no authentication on any
-    of its mutating routes.
+    A posting carrying `javascript:fetch('/api/schedule/1/delete', …)` would
+    run in the dashboard's origin on click — and that origin has no
+    authentication on any of its mutating routes.
     """
     job = Job(source="t", source_job_id="1", title="Engineer", company="A",
               job_url=url, apply_url=url)

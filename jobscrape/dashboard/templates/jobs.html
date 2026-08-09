@@ -4,16 +4,9 @@
 {% block content %}
 
 <h1>Jobs</h1>
-<p class="sub">{{ total|comma }} matching. Set a status and the row leaves this view, so you review each job once.</p>
+<p class="sub">{{ total|comma }} matching.</p>
 
 <form class="filters" method="get">
-  <label>Status
-    <select name="status">
-      {% for s in options.statuses %}
-        <option value="{{ s }}" {% if filters.status == s %}selected{% endif %}>{{ s }}</option>
-      {% endfor %}
-    </select>
-  </label>
   <label>Search
     <input type="search" name="q" value="{{ filters.q }}" placeholder="title, company, text">
   </label>
@@ -152,28 +145,11 @@
   <a class="btn ghost" href="/jobs">Reset</a>
 </form>
 
-<div id="bulk-bar" class="btn-row bulk-bar">
-  <span id="bulk-count" class="pill"></span>
-  <button class="btn ghost" data-bulk-status="saved">Save</button>
-  <button class="btn ghost" data-bulk-status="applied">Applied</button>
-  <button class="btn ghost" data-bulk-status="dismissed">Dismiss</button>
-</div>
-
 <div class="card">
-  <div class="jobs-list-toolbar">
-    <label class="checkbox-label">
-      <input type="checkbox" id="check-all" aria-label="Select all">
-      Select all on this page
-    </label>
-  </div>
-
   <div class="jobs-list">
     {% for row in rows %}
     <article class="job-card">
       <div class="job-card-head">
-        <input type="checkbox" class="row-check job-card-check"
-               data-token="{{ row.source }}|{{ row.source_job_id }}"
-               aria-label="Select job">
         <div class="job-card-main">
           <div class="job-card-title-row">
             <span class="job-title">{{ row.title }}</span>
@@ -197,17 +173,9 @@
             {% if row.seniority %}<span class="tag level">{{ row.seniority }}</span>{% endif %}
           </div>
         </div>
-        <div class="job-card-actions">
-          <select class="status-select" data-source="{{ row.source }}"
-                  data-job-id="{{ row.source_job_id }}" aria-label="Set status">
-            {% for s in statuses %}
-              <option value="{{ s }}" {% if row.status == s %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-          </select>
-          <div class="job-card-links">
-            {% if row.job_url %}<a class="btn ghost btn-sm" href="{{ row.job_url }}" target="_blank" rel="noopener" title="{{ row.job_url }}">Job ↗</a>{% endif %}
-            {% if row.apply_url and row.apply_url != row.job_url %}<a class="btn ghost btn-sm" href="{{ row.apply_url }}" target="_blank" rel="noopener" title="{{ row.apply_url }}">Apply ↗</a>{% endif %}
-          </div>
+        <div class="job-card-links">
+          {% if row.job_url %}<a class="btn ghost btn-sm" href="{{ row.job_url }}" target="_blank" rel="noopener" title="{{ row.job_url }}">Job ↗</a>{% endif %}
+          {% if row.apply_url and row.apply_url != row.job_url %}<a class="btn ghost btn-sm" href="{{ row.apply_url }}" target="_blank" rel="noopener" title="{{ row.apply_url }}">Apply ↗</a>{% endif %}
         </div>
       </div>
 
@@ -227,18 +195,11 @@
       </div>
       {% endif %}
 
-      {% if row.description_text or row.raw_json %}
+      {% if row.description_text %}
       <div class="job-card-expand">
-        {% if row.description_text %}
         <details><summary class="text-sm">description</summary>
           <div class="text-sm smart-view">{{ row.description_text }}</div>
         </details>
-        {% endif %}
-        {% if row.raw_json %}
-        <details><summary class="text-sm">raw_json</summary>
-          <pre class="text-sm smart-view">{{ row.raw_json | tojson(indent=2) }}</pre>
-        </details>
-        {% endif %}
       </div>
       {% endif %}
     </article>
