@@ -958,13 +958,15 @@ def cmd_dedupe(args: argparse.Namespace) -> int:
             log.info("dedupe: another backfill is already running — waiting for it to finish")
             conn.execute("SELECT pg_advisory_xact_lock(hashtext('jobscrape:dedupe')::bigint)")
 
-        result = dedupe.resolve_all(conn, dry_run=args.dry_run)
+        result = dedupe.resolve_all(conn, dry_run=args.dry_run, fuzzy=args.fuzzy)
         label = "Would collapse" if args.dry_run else "Collapsed"
         log.info(
-            "%s %d of %d open jobs (tier1: %d clusters / %d rows, tier2: %d clusters / %d rows)",
+            "%s %d of %d open jobs (tier1: %d clusters / %d rows, tier2: %d clusters / "
+            "%d rows, tier3: %d clusters / %d rows)",
             label, result["collapsed"], result["candidates"],
             result["tier1_clusters"], result["tier1_rows"],
             result["tier2_clusters"], result["tier2_rows"],
+            result["tier3_clusters"], result["tier3_rows"],
         )
         if args.sample:
             for cluster in dedupe.sample_clusters(conn, limit=args.sample):
@@ -2199,6 +2201,10 @@ def build_parser() -> argparse.ArgumentParser:
                           help="print N resolved clusters for review")
     p_dedupe.add_argument("--clear", type=int, default=None, metavar="JOB_ID",
                           help="un-suppress one job by id (reverses a mis-cluster)")
+    p_dedupe.add_argument("--fuzzy", action="store_true",
+                          help="also run tier 3 (fuzzy title/description similarity, "
+                               "aggregator-to-ATS only) -- off by default; see dedupe.py "
+                               "for the match rule and why this stays opt-in")
     return parser
 
 

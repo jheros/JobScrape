@@ -165,6 +165,126 @@ def test_rows_without_a_fingerprint_never_cluster() -> None:
     assert assignments == {}
 
 
+# --- tier 3: fuzzy matching, opt-in only ------------------------------------
+
+def test_fuzzy_off_by_default_leaves_compute_clusters_unchanged() -> None:
+    """These two rows WOULD fuzzy-merge if asked (see
+    `test_fuzzy_merges_true_near_duplicate_across_sources`) -- the plain,
+    no-kwarg call every existing test above already uses must not do so."""
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-a", "role_key": "rk-a",
+         "title": "Software Engineer", "description_text": "Build things.",
+         "location_raw": "San Francisco, CA"},
+        {"id": 2, "source": "adzuna", "company_slug": "acme", "posted_at": "2026-07-10",
+         "first_seen_at": "2026-07-10", "role_fingerprint": "fp-b", "role_key": "rk-b",
+         "title": "Software Engineer II", "description_text": "Build other things.",
+         "location_raw": "San Francisco, California"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows)
+    assert assignments == {}
+    assert counts["tier3_clusters"] == 0 and counts["tier3_rows"] == 0
+
+
+def test_fuzzy_merges_true_near_duplicate_across_sources() -> None:
+    """"Software Engineer" vs "Software Engineer II", same company, locations
+    sharing tokens -- the exact "Engineer" vs "Engineer II" case this tier
+    exists for. Different `role_key`s (tier 2 doesn't already catch it)."""
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-a", "role_key": "rk-a",
+         "title": "Software Engineer", "description_text": "Build things.",
+         "location_raw": "San Francisco, CA"},
+        {"id": 2, "source": "adzuna", "company_slug": "acme", "posted_at": "2026-07-10",
+         "first_seen_at": "2026-07-10", "role_fingerprint": "fp-b", "role_key": "rk-b",
+         "title": "Software Engineer II", "description_text": "Build other things.",
+         "location_raw": "San Francisco, California"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows, fuzzy=True)
+    # Aggregator row (2) points at the ATS row (1) -- same aggregator-to-ATS
+    # direction tier 2 enforces, not a tiebreak.
+    assert assignments == {2: 1}
+    assert counts["tier3_clusters"] == 1 and counts["tier3_rows"] == 1
+
+
+def test_fuzzy_does_not_merge_meaningfully_different_titles() -> None:
+    """"Backend Engineer" vs "Backend Engineering Manager": two real words of
+    difference ("engineering", "manager"), not one allowed seniority token --
+    must not merge even with identical location."""
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-a", "role_key": "rk-a",
+         "title": "Backend Engineer", "description_text": "Backend work.",
+         "location_raw": "Remote"},
+        {"id": 2, "source": "adzuna", "company_slug": "acme", "posted_at": "2026-07-10",
+         "first_seen_at": "2026-07-10", "role_fingerprint": "fp-b", "role_key": "rk-b",
+         "title": "Backend Engineering Manager", "description_text": "Manage the backend team.",
+         "location_raw": "Remote"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows, fuzzy=True)
+    assert assignments == {}
+    assert counts["tier3_clusters"] == 0
+
+
+def test_fuzzy_never_merges_two_ats_rows() -> None:
+    """Directional safety carried into tier 3: two direct-board rows with a
+    high-similarity title pair never merge, even though nothing about their
+    `role_key`s (deliberately distinct here) would stop tier 2 from trying."""
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-a", "role_key": "rk-a",
+         "title": "Software Engineer", "description_text": "Build things.",
+         "location_raw": "Remote"},
+        {"id": 2, "source": "lever", "company_slug": "acme", "posted_at": "2026-07-05",
+         "first_seen_at": "2026-07-05", "role_fingerprint": "fp-b", "role_key": "rk-b",
+         "title": "Software Engineer II", "description_text": "Build other things.",
+         "location_raw": "Remote"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows, fuzzy=True)
+    assert assignments == {}
+    assert counts["tier3_clusters"] == 0
+
+
+def test_fuzzy_same_company_different_teams_do_not_merge() -> None:
+    """Identical titles, but the aggregator side carries no location -- which
+    forces the description-Jaccard fallback -- and the two descriptions
+    describe genuinely different roles. The fallback must correctly refuse,
+    not treat "same title" alone as enough."""
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-a", "role_key": "rk-a",
+         "title": "Platform Engineer", "location_raw": "Austin, TX",
+         "description_text": "Own the internal developer platform, Kubernetes. " * 5},
+        {"id": 2, "source": "adzuna", "company_slug": "acme", "posted_at": "2026-07-10",
+         "first_seen_at": "2026-07-10", "role_fingerprint": "fp-b", "role_key": "rk-b",
+         "title": "Platform Engineer", "location_raw": None,
+         "description_text": "Support payments billing invoicing customer refunds. " * 5},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows, fuzzy=True)
+    assert assignments == {}
+    assert counts["tier3_clusters"] == 0
+
+
+def test_fuzzy_respects_group_size_cap(monkeypatch) -> None:
+    """A company group over `_TIER3_MAX_GROUP_SIZE` is skipped for tier 3
+    entirely -- without the cap this group would produce two merges."""
+    monkeypatch.setattr(dedupe, "_TIER3_MAX_GROUP_SIZE", 2)
+    rows = [
+        {"id": 1, "source": "greenhouse", "company_slug": "acme", "posted_at": "2026-07-01",
+         "first_seen_at": "2026-07-01", "role_fingerprint": "fp-a", "role_key": "rk-a",
+         "title": "Data Engineer", "location_raw": "Remote", "description_text": "x"},
+        {"id": 2, "source": "adzuna", "company_slug": "acme", "posted_at": "2026-07-02",
+         "first_seen_at": "2026-07-02", "role_fingerprint": "fp-b", "role_key": "rk-b",
+         "title": "Data Engineer", "location_raw": "Remote", "description_text": "x"},
+        {"id": 3, "source": "jooble", "company_slug": "acme", "posted_at": "2026-07-03",
+         "first_seen_at": "2026-07-03", "role_fingerprint": "fp-c", "role_key": "rk-c",
+         "title": "Data Engineer", "location_raw": "Remote", "description_text": "x"},
+    ]
+    assignments, counts = dedupe.compute_clusters(rows, fuzzy=True)
+    assert assignments == {}
+    assert counts["tier3_clusters"] == 0 and counts["tier3_rows"] == 0
+
+
 # --- integration: real Postgres writes --------------------------------------
 
 def test_resolve_all_writes_duplicate_of_and_preserves_triage() -> None:
@@ -244,6 +364,55 @@ def test_resolve_scoped_only_touches_one_company() -> None:
             "SELECT COUNT(*) c FROM jobs WHERE company_slug = 'otherco' AND duplicate_of IS NOT NULL"
         ).fetchone()["c"]
         assert other_untouched == 0
+
+
+def test_resolve_all_fuzzy_true_collapses_near_duplicate() -> None:
+    with db.session() as conn:
+        jobs = [
+            _job(source="greenhouse", source_job_id="f0", company="FuzzCo",
+                 company_slug="fuzzco", title="Data Platform Engineer",
+                 posted_at="2026-07-01", location_raw="Seattle, WA",
+                 description_text="Build the data platform. " * 5),
+            _job(source="adzuna", source_job_id="f1", company="FuzzCo",
+                 company_slug="fuzzco", title="Data Platform Engineer II",
+                 posted_at="2026-07-10", location_raw="Seattle, Washington",
+                 description_text="Build the data platform. " * 5),
+        ]
+        db.upsert_jobs(conn, jobs)
+
+        result = dedupe.resolve_all(conn, fuzzy=True)
+        assert result["collapsed"] == 1
+        assert result["tier3_clusters"] == 1 and result["tier3_rows"] == 1
+
+        f1 = conn.execute(
+            "SELECT duplicate_of FROM jobs WHERE source_job_id = 'f1'"
+        ).fetchone()
+        assert f1["duplicate_of"] is not None
+
+
+def test_resolve_all_fuzzy_false_leaves_near_duplicate_uncollapsed() -> None:
+    """Same pair as the test above, `fuzzy` left at its default -- proves the
+    gate end to end, not just in the pure `compute_clusters` function."""
+    with db.session() as conn:
+        jobs = [
+            _job(source="greenhouse", source_job_id="g0", company="GateCo",
+                 company_slug="gateco", title="Data Platform Engineer",
+                 posted_at="2026-07-01", location_raw="Seattle, WA",
+                 description_text="Build the data platform. " * 5),
+            _job(source="adzuna", source_job_id="g1", company="GateCo",
+                 company_slug="gateco", title="Data Platform Engineer II",
+                 posted_at="2026-07-10", location_raw="Seattle, Washington",
+                 description_text="Build the data platform. " * 5),
+        ]
+        db.upsert_jobs(conn, jobs)
+
+        result = dedupe.resolve_all(conn)
+        assert result["collapsed"] == 0
+
+        g1 = conn.execute(
+            "SELECT duplicate_of FROM jobs WHERE source_job_id = 'g1'"
+        ).fetchone()
+        assert g1["duplicate_of"] is None
 
 
 # --- advisory lock: cmd_dedupe's cross-process backfill serialization ------
