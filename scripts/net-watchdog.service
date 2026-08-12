@@ -1,0 +1,10 @@
+[Unit]
+Description=Probe outbound connectivity and recover astrill VPN if it's black-holing traffic
+# Best-effort ordering only -- this unit is fired repeatedly by
+# net-watchdog.timer for as long as the host is up, so it doesn't need to
+# block boot on network-online.target the way a one-shot startup task would.
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/net-watchdog.sh

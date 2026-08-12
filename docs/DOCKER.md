@@ -101,7 +101,48 @@ docker compose restart            # simulates a crash — confirms the scheduler
 ```
 
 Same `/health` endpoint and `runs` table as the bare-metal deployment — see
-`docs/DEPLOYMENT.md`'s **Monitoring** section, unchanged here.
+`docs/DEPLOYMENT.md`'s **Monitoring** section, unchanged here. `/health`'s
+`checks.stuck_stages` flags any stage whose last 3 consecutive runs all
+failed (and turns the whole response unhealthy, HTTP 503) — added after a
+real incident where `render-sync`/`jobright-fetch` failed for 13+ hours
+while `/health` stayed green, because the older check
+(`last_successful_run`) only looks at the single most recent OK run across
+*every* stage, and `fetch` itself kept succeeding the whole time. See
+`jobscrape/observability.py`'s `_stuck_stages()`.
+
+## Network watchdog (VPN auto-recovery)
+
+Only relevant if this host routes its outbound traffic through a VPN client
+(t4-vm runs Astrill). That same incident's actual cause: the VPN got stuck
+in a repeating connect → timeout → reconnect loop, and its split-tunnel
+routes stayed installed the whole time, silently black-holing every
+outbound packet — `systemctl status` showed "active (running)" throughout,
+since the VPN client considers itself healthy mid-reconnect-loop. Only an
+actual outbound request catches this; nothing about the *service's* state
+does.
+
+`scripts/net-watchdog.sh` is that probe, run on a 5-minute timer
+(`scripts/net-watchdog.timer`/`.service`): if a real request to the outside
+world fails and `openvpn-client@astrill` is active, it restarts that
+service and re-checks. It does nothing if astrill isn't running — a genuine
+upstream/ISP outage isn't something restarting a VPN client fixes. Every
+check and any restart it performs is logged
+(`journalctl -u net-watchdog` / `-t net-watchdog`).
+
+Install once, on the host (not inside the container — it manages a
+host-level systemd service the container has no access to):
+
+```bash
+sudo cp scripts/net-watchdog.sh /usr/local/sbin/net-watchdog.sh
+sudo chmod +x /usr/local/sbin/net-watchdog.sh
+sudo cp scripts/net-watchdog.service scripts/net-watchdog.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now net-watchdog.timer
+```
+
+`scripts/net-watchdog.sh`'s own header comment has the full reasoning,
+including why it's deliberately specific to the one VPN client this host
+actually runs rather than a generic "detect any VPN" abstraction.
 
 ## Updating
 

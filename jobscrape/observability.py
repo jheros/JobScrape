@@ -10,7 +10,7 @@ import json
 import logging
 import shutil
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from . import config, db
@@ -73,6 +73,56 @@ def setup_logging(verbose: bool = False, fmt: str | None = None) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
+#: How many consecutive failures of the SAME stage counts as "stuck", not
+#: just one unlucky run. At `render-sync`'s/`jobright-fetch`'s own ~20-30
+#: minute cadence this catches a genuine outage within roughly an hour,
+#: instead of however long it takes someone to notice by hand.
+_STUCK_STAGE_THRESHOLD = 3
+
+#: How far back a stage's run history is even considered — without this, a
+#: stage retired from the schedule long ago (its last 3 runs, whenever they
+#: were, all happened to fail) would flag forever with nothing to fix.
+_STUCK_STAGE_LOOKBACK = timedelta(days=2)
+
+
+def _stuck_stages(conn: db.Connection) -> list[dict[str, Any]]:
+    """Stages whose most recent `_STUCK_STAGE_THRESHOLD` runs are ALL
+    'failed'.
+
+    The blind spot `last_successful_run` alone has: that check only ever
+    looks at the single most-recent OK run across EVERY stage, so one
+    healthy stage (`fetch`, say) hides another that has been failing on
+    every single attempt (`render-sync`, `jobright-fetch`) for hours —
+    exactly what happened for real on 2026-08-12: a host-level network
+    outage silently broke render-sync and jobright-fetch for 13+ hours
+    while `/health` stayed green the entire time, because `fetch` itself
+    doesn't touch the network path that broke.
+    """
+    rows = conn.execute(
+        """
+        WITH ranked AS (
+            SELECT stage, status, ended_at,
+                   ROW_NUMBER() OVER (PARTITION BY stage ORDER BY id DESC) AS rn
+            FROM runs
+            WHERE stage IS NOT NULL AND ended_at > ?
+        )
+        SELECT stage, MAX(ended_at) AS last_failed_at
+        FROM ranked
+        WHERE rn <= ?
+        GROUP BY stage
+        HAVING COUNT(*) = ? AND COUNT(*) FILTER (WHERE status = 'failed') = ?
+        """,
+        (
+            (datetime.now(timezone.utc) - _STUCK_STAGE_LOOKBACK).isoformat(),
+            _STUCK_STAGE_THRESHOLD, _STUCK_STAGE_THRESHOLD, _STUCK_STAGE_THRESHOLD,
+        ),
+    ).fetchall()
+    return [
+        {"stage": r["stage"], "last_failed_at": r["last_failed_at"].isoformat()}
+        for r in rows
+    ]
+
+
 def health() -> dict[str, Any]:
     """Real dependency checks, not just "the process is alive".
 
@@ -83,6 +133,7 @@ def health() -> dict[str, Any]:
     checks: dict[str, Any] = {}
     healthy = True
     last_run = None
+    stuck_stages: list[dict[str, Any]] = []
 
     start = time.monotonic()
     try:
@@ -99,9 +150,14 @@ def health() -> dict[str, Any]:
             last_run = conn.execute(
                 "SELECT ended_at FROM runs WHERE status = 'ok' ORDER BY id DESC LIMIT 1"
             ).fetchone()
+            stuck_stages = _stuck_stages(conn)
     except Exception as exc:
         healthy = False
         checks["database"] = {"ok": False, "error": str(exc)}
+
+    checks["stuck_stages"] = stuck_stages
+    if stuck_stages:
+        healthy = False
 
     if last_run and last_run["ended_at"]:
         ended_at = last_run["ended_at"]

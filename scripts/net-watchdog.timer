@@ -1,0 +1,12 @@
+[Unit]
+Description=Run net-watchdog every 5 minutes
+
+[Timer]
+# 2 minutes after boot -- gives the network and the VPN client themselves a
+# moment to come up on their own before the first probe.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=net-watchdog.service
+
+[Install]
+WantedBy=timers.target
