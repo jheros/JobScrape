@@ -79,6 +79,13 @@ STAGES: dict[str, list[str]] = {
         "Frontend Software Engineer,React Developer,Android Developer,"
         "iOS/Swift Developer,Flutter Developer,DevOps,Site Reliability Engineer",
     ],
+    # Search terms are fixed here rather than caller-supplied, same
+    # `SAFE_EXTRA_FLAGS` reasoning as "jobright-fetch"'s hardcoded roles.
+    # No key, no login, no browser — see `sources/hiringcafe/`.
+    "hiringcafe-fetch": [
+        "hiringcafe-fetch", "--search-term", "software engineer",
+        "--search-term", "backend engineer", "--search-term", "full stack developer",
+    ],
     # Pushes to a separate Render-hosted database — see
     # `jobscrape/render_sync.py`. Fired automatically by `scheduler._fire()`
     # after any Schedule-tab run finishes, not meant to be clicked directly,
@@ -178,7 +185,7 @@ STAGE_GROUPS: dict[str, tuple[str, ...]] = {
 #: date the caller picked explicitly.
 RELATIVE_WINDOWS: dict[str, tuple[str, int]] = {
     f"{base}-{suffix}": (base, days)
-    for base in ("fetch", "apify-pull", "jobright-fetch")
+    for base in ("fetch", "apify-pull", "jobright-fetch", "hiringcafe-fetch")
     for suffix, days in (("1d", 1), ("1w", 7), ("2w", 14), ("1m", 30), ("2m", 60))
 }
 

@@ -432,13 +432,14 @@ async def settings_page(request: Request) -> HTMLResponse:
 #: (`--since`/`--until`) — the only ones a date range may be posted against.
 _WINDOW_STAGES = frozenset(
     stage for stage, argv in STAGES.items()
-    if argv[0] in ("fetch", "export", "jobright-fetch", "apify-pull")
+    if argv[0] in ("fetch", "export", "jobright-fetch", "apify-pull", "hiringcafe-fetch")
 )
 
 _STAGE_DISPLAY_NAMES = {
     "fetch": "Fetch jobs",
     "apify-pull": "Fetch Apify jobs",
     "jobright-fetch": "Fetch Jobright jobs",
+    "hiringcafe-fetch": "Fetch hiring.cafe jobs",
 }
 
 #: The Schedule tab's own curated dropdown — Full Pipeline plus the 15
@@ -454,6 +455,7 @@ _SCHEDULE_STAGE_CHOICES: list[tuple[str, str]] = [
     ),
     ("discover-validate", "Discover + validate sources"),
     ("jobright-fetch", "Fetch Jobright jobs"),
+    ("hiringcafe-fetch", "Fetch hiring.cafe jobs"),
 ]
 
 

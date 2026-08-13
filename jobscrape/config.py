@@ -224,6 +224,12 @@ JOBRIGHT_PASSWORD = _env_str("JOBRIGHT_PASSWORD", "")
 #: supported Chrome 151 while the browser installed was 150.
 JOBRIGHT_CHROME_VERSION = _env_int("JOBRIGHT_CHROME_VERSION", 0)
 
+# --- hiring.cafe ------------------------------------------------------------
+#
+# No key, no login -- `sources/hiringcafe/scraper.py` reads hiring.cafe's own
+# internal Next.js data endpoint directly. Per-search-term page cap only.
+HIRINGCAFE_MAX_PAGES = _env_int("HIRINGCAFE_MAX_PAGES", 10)
+
 # --- Render sync -------------------------------------------------------------
 #
 # `render-sync` pushes new/updated/closed postings into a separate Postgres

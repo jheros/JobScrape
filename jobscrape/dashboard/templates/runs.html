@@ -152,6 +152,41 @@
   {% endcall %}
 </div>
 
+<div class="card">
+  <h2>Fetch hiring.cafe jobs in a date range</h2>
+  <p class="sub-tight">
+    Sweeps a fixed set of search terms (software engineer, backend engineer,
+    full stack developer) on hiring.cafe's own internal search API — no key,
+    no login, no browser. Postings are US-scoped and already-annualized
+    salary is read straight through. Descriptions are <strong>composed</strong>
+    from hiring.cafe's structured fields (activities, requirements, tech
+    stack), not the original job ad text — the source's list results carry
+    no prose description at all. Only postings dated within this range are
+    kept — leave both blank to keep everything scraped.
+  </p>
+  {% call admin.locked(is_admin) %}
+  <form id="hiringcafe-range-form" class="form-grid">
+    <label>From date
+      <input type="date" name="since" id="hiringcafe-since">
+    </label>
+    <label>To date
+      <input type="date" name="until" id="hiringcafe-until">
+    </label>
+    <div class="form-actions">
+      <button class="btn" type="submit">{{ icons.icon('play') }} Fetch hiring.cafe jobs</button>
+    </div>
+  </form>
+  <div class="btn-row mt-md">
+    <button class="btn ghost btn-sm" type="button" data-hc-preset-hours="12">Last 12h</button>
+    <button class="btn ghost btn-sm" type="button" data-hc-preset-hours="24">Last 1d</button>
+    <button class="btn ghost btn-sm" type="button" data-hc-preset-hours="168">Last 1w</button>
+    <button class="btn ghost btn-sm" type="button" data-hc-preset-hours="336">Last 2w</button>
+    <button class="btn ghost btn-sm" type="button" data-hc-preset-hours="720">Last 1 month</button>
+    <button class="btn ghost btn-sm" type="button" data-hc-preset-hours="1440">Last 2 months</button>
+  </div>
+  {% endcall %}
+</div>
+
 <details class="card">
   <summary class="h2-like">Advanced</summary>
   {% call admin.locked(is_admin) %}

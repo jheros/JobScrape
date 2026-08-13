@@ -186,6 +186,41 @@
     });
   }
 
+  // --- hiringcafe-fetch in a date range --------------------------------------
+  // Own block/ids, same reasoning as the jobright one above.
+  var hiringcafeRangeForm = document.getElementById("hiringcafe-range-form");
+  if (hiringcafeRangeForm) {
+    hiringcafeRangeForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var submitBtn = hiringcafeRangeForm.querySelector("button[type=submit]");
+      var label = submitBtn.textContent;
+      submitBtn.disabled = true;
+      submitBtn.textContent = "Starting…";
+      var body = new URLSearchParams(new FormData(hiringcafeRangeForm)).toString();
+      post("/api/runs/hiringcafe-fetch/start", body).then(function (res) {
+        if (!res.ok) {
+          alert(res.data.error || "Could not start");
+          submitBtn.disabled = false;
+          submitBtn.textContent = label;
+          return;
+        }
+        window.location.href = "/runs";
+      });
+    });
+
+    document.querySelectorAll("[data-hc-preset-hours]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var hours = parseInt(btn.getAttribute("data-hc-preset-hours"), 10);
+        var since = new Date(Date.now() - hours * 3600 * 1000);
+        var iso = since.getFullYear() + "-"
+          + String(since.getMonth() + 1).padStart(2, "0") + "-"
+          + String(since.getDate()).padStart(2, "0");
+        document.getElementById("hiringcafe-since").value = iso;
+        document.getElementById("hiringcafe-until").value = "";
+      });
+    });
+  }
+
   // --- apify-pull in a date range -------------------------------------------
   // Own block/ids, same reasoning as the jobright one above.
   var apifyRangeForm = document.getElementById("apify-range-form");

@@ -1436,6 +1436,122 @@ def cmd_jobright_fetch(args: argparse.Namespace) -> int:
     return cmd_stats(_step_args("stats", [], args.db))
 
 
+def cmd_hiringcafe_ingest(args: argparse.Namespace) -> int:
+    """Ingest an already-scraped batch of hiring.cafe search hits by hand.
+
+    The lower-level primitive `hiringcafe-fetch` is built on: takes a JSON
+    array of raw `ssrHits` records -- from `--file`, or stdin by default --
+    and stores them. Also doubles as a one-off backfill route for records
+    collected some other way.
+    """
+    from .sources.hiringcafe import ingest as ingest_module
+
+    if args.file:
+        text = Path(args.file).read_text(encoding="utf-8")
+    else:
+        text = sys.stdin.read()
+
+    try:
+        records = json.loads(text)
+    except ValueError as exc:
+        log.error("hiringcafe-ingest: payload is not valid JSON (%s)", exc)
+        return 1
+    if not isinstance(records, list):
+        log.error("hiringcafe-ingest: expected a JSON array of records, got %s",
+                  type(records).__name__)
+        return 1
+    if not records:
+        log.info("hiringcafe-ingest: no records in payload — nothing to do")
+        return 0
+
+    with db.session(args.db) as conn:
+        result = ingest_module.ingest_and_record(
+            conn, records,
+            max_items=args.max_results,
+            allow_roles=_allowed_roles(args),
+            software_only=not args.all_roles,
+            us_only=not args.worldwide,
+            remote_only=not args.all_workplaces,
+        )
+    if result.funnel:
+        log.info("   funnel: %s", result.funnel)
+    if result.error:
+        return 1
+    # `hiringcafe-fetch` also chains this after ingesting -- without it, a
+    # hand-ingested batch (the recovery/backfill path this command exists
+    # for) never gets deduped against the rest of the archive, unlike every
+    # other ingestion route.
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+    return cmd_stats(_step_args("stats", [], args.db))
+
+
+async def cmd_hiringcafe_fetch(args: argparse.Namespace) -> int:
+    """Search hiring.cafe's own internal data endpoint and store the results.
+
+    No key, no login, no browser -- `sources/hiringcafe/scraper.py` reads
+    hiring.cafe's internal Next.js data route directly with this project's
+    own `Fetcher`. Genuinely async (unlike `jobright-fetch`'s synchronous
+    Selenium session), so unlike that command this one is dispatched through
+    `asyncio.run` -- see `main()`'s dispatch table.
+    """
+    from .sources.hiringcafe import ingest as ingest_module
+    from .sources.hiringcafe import scraper
+
+    since = parse_date(args.since)
+    until = parse_date(args.until)
+    if since and until and since > until:
+        log.error("--since (%s) is after --until (%s)", since, until)
+        return 2
+
+    search_terms = args.search_term or [
+        "software engineer", "backend engineer", "full stack developer",
+    ]
+
+    records: list[dict] = []
+    seen: set[str] = set()
+    async with Fetcher() as fetcher:
+        build_id = await scraper.get_build_id(fetcher)
+        for term in search_terms:
+            hits, note = await scraper.collect(
+                fetcher, term, args.max_pages, build_id=build_id)
+            if note:
+                log.warning("hiringcafe-fetch: %r — %s", term, note)
+            new = 0
+            for hit in hits:
+                key = hit.get("id") or hit.get("objectID") or hit.get("apply_url")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                records.append(hit)
+                new += 1
+            log.info("hiringcafe-fetch: %-24r +%d new (total %d)", term, new, len(records))
+
+    print(f"\nScraped {len(records)} jobs")
+    if not records:
+        return 0
+
+    with db.session(args.db) as conn:
+        result = ingest_module.ingest_and_record(
+            conn, records, command="hiringcafe-fetch",
+            max_items=args.max_results,
+            allow_roles=_allowed_roles(args),
+            software_only=not args.all_roles,
+            us_only=not args.worldwide,
+            remote_only=not args.all_workplaces,
+            since=since, until=until,
+        )
+    if result.funnel:
+        log.info("   funnel: %s", result.funnel)
+    if result.error:
+        return 1
+    rc = cmd_dedupe(_step_args("dedupe", ["--backfill"], args.db))
+    if rc:
+        return rc
+    return cmd_stats(_step_args("stats", [], args.db))
+
+
 def cmd_render_sync(args: argparse.Namespace) -> int:
     """Push new/updated/closed postings to the Render-hosted website database.
 
@@ -2096,6 +2212,51 @@ def build_parser() -> argparse.ArgumentParser:
     jr_sweep.add_argument("--list-taxonomy", action="store_true",
                           help="print the known JobRight category groups and exit")
 
+    p_hiringcafe = sub.add_parser(
+        "hiringcafe-ingest",
+        help="ingest a JSON array of already-scraped hiring.cafe search hits "
+             "(stdin, or --file) — the low-level primitive hiringcafe-fetch "
+             "uses; also handy for a one-off backfill",
+    )
+    p_hiringcafe.add_argument("--file", default=None,
+                              help="read records from this JSON file instead of stdin")
+    p_hiringcafe.add_argument("--max-results", type=int, default=None,
+                              help="cap records read from the payload")
+    p_hiringcafe.add_argument("--all-roles", action="store_true",
+                              help="keep non-software roles too")
+    p_hiringcafe.add_argument("--worldwide", action="store_true",
+                              help="keep non-US locations too")
+    p_hiringcafe.add_argument("--all-workplaces", action="store_true",
+                              help="keep hybrid and onsite roles too")
+    p_hiringcafe.add_argument("--include-roles", action="append", metavar="CATEGORY",
+                              choices=EXCLUDED_ROLE_NAMES, default=None,
+                              help="re-admit an excluded role category (repeatable)")
+
+    p_hc_fetch = sub.add_parser(
+        "hiringcafe-fetch",
+        help="search hiring.cafe's own internal data endpoint (no key, no "
+             "login) and pull postings straight into the database",
+    )
+    add_window(p_hc_fetch)
+    p_hc_fetch.add_argument("--search-term", action="append", default=None,
+                            help="a search query to sweep (repeatable); default: "
+                                 "'software engineer', 'backend engineer', "
+                                 "'full stack developer'")
+    p_hc_fetch.add_argument("--max-pages", type=int, default=config.HIRINGCAFE_MAX_PAGES,
+                            help=f"page cap per search term (default: "
+                                 f"{config.HIRINGCAFE_MAX_PAGES})")
+    p_hc_fetch.add_argument("--max-results", type=int, default=None,
+                            help="cap records kept after scraping")
+    p_hc_fetch.add_argument("--all-roles", action="store_true",
+                            help="keep non-software roles too")
+    p_hc_fetch.add_argument("--worldwide", action="store_true",
+                            help="keep non-US locations too")
+    p_hc_fetch.add_argument("--all-workplaces", action="store_true",
+                            help="keep hybrid and onsite roles too")
+    p_hc_fetch.add_argument("--include-roles", action="append", metavar="CATEGORY",
+                            choices=EXCLUDED_ROLE_NAMES, default=None,
+                            help="re-admit an excluded role category (repeatable)")
+
     p_render = sub.add_parser(
         "render-sync",
         help="push new/updated/closed postings to the Render-hosted "
@@ -2246,6 +2407,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_jobright_ingest(args)
         if args.command == "jobright-fetch":
             return cmd_jobright_fetch(args)
+        if args.command == "hiringcafe-ingest":
+            return cmd_hiringcafe_ingest(args)
+        if args.command == "hiringcafe-fetch":
+            return asyncio.run(cmd_hiringcafe_fetch(args))
         if args.command == "render-sync":
             return cmd_render_sync(args)
         if args.command == "backfill-render-sync-status":
