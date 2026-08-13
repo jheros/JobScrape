@@ -205,9 +205,13 @@ class JobRightSession:
                 time.sleep(4)
 
                 print("  clicking SIGN IN...")
+                # JobRight re-skinned this from a <span> to a real <button> at
+                # some point (broke every login for ~7.5h on 2026-08-12/13,
+                # confirmed live) -- matched by text alone now, not a tag, so
+                # the next such re-skin doesn't repeat this outage.
                 self.driver.execute_script(
                     "arguments[0].click();",
-                    self.driver.find_element(By.XPATH, "//span[text()='SIGN IN']"),
+                    self.driver.find_element(By.XPATH, "//*[text()='SIGN IN']"),
                 )
 
                 print("  waiting for the login form...")
