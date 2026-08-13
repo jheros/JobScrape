@@ -63,6 +63,20 @@ image installs its own Chromium via `apt`, whose version drifts over time
 and won't generally match. Blank lets `undetected-chromedriver` auto-detect
 whatever's actually in the container.
 
+That auto-detect is not infallible, and has already caused a real ~17h
+outage (2026-08-12/13): `undetected-chromedriver` patches a driver for
+whatever Chrome-for-Testing reports as *latest upstream*, not the version
+actually installed via `apt` — the two drift apart whenever apt's package
+lags a new upstream release, and every launch then fails outright
+(`session not created: This version of ChromeDriver only supports Chrome
+version N`). If you see that error, check the real installed version
+(`docker compose exec dashboard google-chrome --version` or `chromium
+--version`) and set `JOBRIGHT_CHROME_VERSION` to its major version
+explicitly in the server's `.env` — this forces `undetected-chromedriver`
+to patch a matching driver instead of trusting its own "latest" lookup.
+Re-pin it (or blank it again and hope apt has caught up) the next time this
+happens; there's no way to make the auto-detect itself reliable from here.
+
 ## Build and start
 
 ```bash
