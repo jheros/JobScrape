@@ -89,6 +89,28 @@ LIVENESS_SOURCES = tuple(
     s for s in _env_str("JOBSCRAPE_LIVENESS_SOURCES", "hackernews,jsearch").split(",") if s
 )
 
+# --- AI second-opinion check (ai-check) ------------------------------------
+#
+# Ollama, self-hosted -- see jobscrape/ai_check.py. Annotate-only: never
+# overwrites workplace_type/seniority/employment_type, only the separate
+# ai_-prefixed columns. Base URL defaults to localhost because Ollama is
+# meant to run as a host-level systemd service on the same box as the
+# dashboard container (network_mode: host, see docs/DOCKER.md) -- the same
+# reachability pattern Postgres already uses at localhost, not a second
+# Docker container needing GPU passthrough plumbed through
+# nvidia-container-toolkit.
+AI_CHECK_BASE_URL = _env_str("JOBSCRAPE_AI_CHECK_BASE_URL", "http://localhost:11434")
+#: No safe default model -- a 7-8B-class model only makes sense once a GPU
+#: is actually in place. Force an explicit choice via --model or this env
+#: var rather than silently trying to run something large on CPU.
+AI_CHECK_MODEL = _env_str("JOBSCRAPE_AI_CHECK_MODEL", "qwen2.5:7b-instruct")
+#: LLM inference can legitimately take 10-60+ seconds -- Fetcher's
+#: HTTP_TIMEOUT (sized for web fetches) is deliberately not reused here.
+AI_CHECK_TIMEOUT = _env_float("JOBSCRAPE_AI_CHECK_TIMEOUT", 120.0)
+#: Kept low by default -- a single local model server mostly serializes
+#: requests regardless of client-side concurrency.
+AI_CHECK_CONCURRENCY = _env_int("JOBSCRAPE_AI_CHECK_CONCURRENCY", 2)
+
 #: Employers whose postings are never collected, ADDED to the built-in list in
 #: `filters.BLOCKED_COMPANIES`. Comma-separated names as you would write them —
 #: "United Health Group" and "unitedhealth-group" normalise to the same key, so

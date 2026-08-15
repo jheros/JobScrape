@@ -120,6 +120,24 @@ CREATE TABLE IF NOT EXISTS jobs (
     -- blocked row and a never-yet-attempted row would look identical.
     render_synced_at   TIMESTAMPTZ,
     render_sync_status TEXT,
+    -- Second opinion from a locally-hosted LLM (see ai_check.py). Separate
+    -- ai_-prefixed columns, never overwriting workplace_type/seniority/
+    -- employment_type -- this is a comparable layer, not a replacement, so
+    -- a hallucinated call can never corrupt already-good rule-based data.
+    -- NULL = not yet checked (or, for one of the 5 fields individually, the
+    -- model's answer didn't parse into that field's vocabulary).
+    ai_workplace_type     TEXT,
+    ai_requires_clearance BOOLEAN,
+    ai_is_us              BOOLEAN,
+    ai_employment_type    TEXT,
+    ai_seniority          TEXT,
+    -- NULL = never checked. Drives ai_check_candidates()'s WHERE clause and
+    -- doubles as the dashboard's "has this ever run" flag.
+    ai_checked_at          TIMESTAMPTZ,
+    -- Which model produced the verdict above, for audit/reproducibility --
+    -- e.g. 'qwen2.5:7b-instruct'. A re-check under a different model should
+    -- be distinguishable from a stale verdict left by an old one.
+    ai_model               TEXT,
     UNIQUE (source, source_job_id)
 );
 
@@ -247,6 +265,8 @@ CREATE INDEX IF NOT EXISTS idx_jobs_source    ON jobs (source);
 CREATE INDEX IF NOT EXISTS idx_jobs_state     ON jobs (state);
 CREATE INDEX IF NOT EXISTS idx_jobs_workplace ON jobs (workplace_type);
 CREATE INDEX IF NOT EXISTS idx_jobs_seniority ON jobs (seniority);
+-- Supports ai_check_candidates()'s WHERE ai_checked_at IS NULL.
+CREATE INDEX IF NOT EXISTS idx_jobs_ai_checked ON jobs (ai_checked_at);
 -- GIN over the parsed skills list. `skills` is stored comma-separated, and
 -- filtering it with a leading-wildcard LIKE cannot use an index at all; that
 -- was slow enough on 44k rows to hang a page load once the staleness cluster
@@ -432,7 +452,11 @@ def _get_engine(database_url: str) -> Engine:
 #: writes, not the whole `jobs` table, so a column added only for bookkeeping
 #: (never part of a `Job`) needs its own entry here or a deployed database
 #: missing it would never trip the "add this column" branch below.
-_MIGRATED_COLUMNS = {"duplicate_marked_at", "render_synced_at", "render_sync_status"}
+_MIGRATED_COLUMNS = {
+    "duplicate_marked_at", "render_synced_at", "render_sync_status",
+    "ai_workplace_type", "ai_requires_clearance", "ai_is_us",
+    "ai_employment_type", "ai_seniority", "ai_checked_at", "ai_model",
+}
 
 #: Same idea as `_MIGRATED_COLUMNS`, for `companies`/`schedules` — columns
 #: added to those tables after their `CREATE TABLE` first shipped. Docker's
@@ -454,6 +478,13 @@ def _migrate(conn: Connection) -> None:
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS duplicate_marked_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS render_synced_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS render_sync_status TEXT")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_workplace_type TEXT")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_requires_clearance BOOLEAN")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_is_us BOOLEAN")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_employment_type TEXT")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_seniority TEXT")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_checked_at TIMESTAMPTZ")
+    conn.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS ai_model TEXT")
     conn.execute(
         "ALTER TABLE companies ADD COLUMN IF NOT EXISTS zero_yield_streak "
         "INTEGER NOT NULL DEFAULT 0"
@@ -1457,6 +1488,45 @@ def record_liveness(conn: Connection, job_id: int, strikes: int, close: bool) ->
             "WHERE id = ? AND liveness_strikes <> ?",
             (strikes, job_id, strikes),
         )
+
+
+def ai_check_candidates(conn: Connection, limit: int = 200) -> list[dict[str, Any]]:
+    """Open, non-duplicate postings never yet checked by `ai_check.py`.
+
+    Newest-touched first -- unlike `liveness_candidates`'s oldest-first
+    backlog walk, a job seeker cares about what's currently open, not
+    clearing a historical queue. A row already checked is skipped entirely
+    (`ai_checked_at IS NULL`); periodic re-checking is a future concern,
+    not something this query does today.
+    """
+    return conn.execute(
+        "SELECT id, title, company, location_raw, description_text, "
+        "       workplace_type, seniority, employment_type "
+        "FROM jobs "
+        "WHERE closed_at IS NULL AND duplicate_of IS NULL "
+        "  AND ai_checked_at IS NULL "
+        "ORDER BY last_seen_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+
+
+def record_ai_check(conn: Connection, job_id: int, verdict: Any, model: str) -> None:
+    """Persist one job's AI verdict.
+
+    `verdict` is an `ai_check.Verdict` (typed loosely here, not imported, to
+    keep this module free of feature-module imports at the top level --
+    same reasoning `upsert_jobs`'s own `from . import scam` stays local to
+    its call site rather than a module-level import). One UPDATE,
+    unconditional -- unlike `record_liveness`'s guarded write, ai_checked_at
+    changes on every call, so there is no no-op case worth skipping.
+    """
+    conn.execute(
+        "UPDATE jobs SET ai_workplace_type = ?, ai_requires_clearance = ?, "
+        "ai_is_us = ?, ai_employment_type = ?, ai_seniority = ?, "
+        "ai_checked_at = ?, ai_model = ? WHERE id = ?",
+        (verdict.workplace_type, verdict.requires_clearance, verdict.is_us,
+         verdict.employment_type, verdict.seniority, now_iso(), model, job_id),
+    )
 
 
 def clear_duplicate(conn: Connection, job_id: int) -> None:

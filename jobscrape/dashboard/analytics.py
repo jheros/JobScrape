@@ -444,6 +444,9 @@ def search_jobs(
     posted_since: date | None = None,
     posted_until: date | None = None,
     scam_signals: bool | None = None,
+    ai_workplace: str | None = None,
+    ai_requires_clearance: bool | None = None,
+    ai_seniority: str | None = None,
     sync_state: str | None = None,
     stale: str | None = None,
     include_closed: bool = False,
@@ -528,6 +531,18 @@ def search_jobs(
         params.append(posted_until)
     if scam_signals:
         where.append("j.scam_signals <> ''")
+    if ai_workplace:
+        where.append("COALESCE(j.ai_workplace_type,'unchecked') = ?")
+        params.append(ai_workplace)
+    if ai_requires_clearance is False:
+        # Opt-in hide only -- never a default-on filter. A row with no AI
+        # verdict yet (NULL) reads as "not flagged", the same permissive
+        # default every other AI_* filter takes, so a job never disappears
+        # just because it hasn't been checked.
+        where.append("COALESCE(j.ai_requires_clearance, false) = false")
+    if ai_seniority:
+        where.append("COALESCE(j.ai_seniority,'unchecked') = ?")
+        params.append(ai_seniority)
     if sync_state:
         where.append(f"{_RENDER_SYNC_STATE_SQL} = ?")
         params.append(sync_state)
@@ -598,4 +613,11 @@ def filter_options(conn: db.Connection) -> dict[str, list[Any]]:
         "industries": [r["v"] for r in conn.execute(
             "SELECT DISTINCT industry v FROM jobs "
             "WHERE industry IS NOT NULL ORDER BY v")],
+        "ai_workplaces": [r["w"] for r in conn.execute(
+            "SELECT DISTINCT COALESCE(ai_workplace_type,'unchecked') w FROM jobs ORDER BY w")],
+        "ai_seniorities": sorted(
+            (r["s"] for r in conn.execute(
+                "SELECT DISTINCT COALESCE(ai_seniority,'unchecked') s FROM jobs")),
+            key=seniority_mod.sort_key,
+        ),
     }

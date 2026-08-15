@@ -242,6 +242,9 @@ async def jobs(
     posted_since: str | None = None,
     posted_until: str | None = None,
     scam_signals: bool = False,
+    ai_workplace: str | None = None,
+    ai_requires_clearance: bool = False,
+    ai_seniority: str | None = None,
     sync_state: str | None = None,
     stale: str | None = None,
     include_closed: bool = False,
@@ -270,6 +273,11 @@ async def jobs(
             until_date = filters.parse_date(posted_until) if posted_until else None
         except ValueError:
             until_date = None
+        # The checkbox means "hide clearance/government jobs" -- checked
+        # becomes search_jobs's ai_requires_clearance=False (its own trigger
+        # value for that filter, see analytics.py), unchecked means no
+        # filter at all, never a default-on hide.
+        ai_requires_clearance_filter = False if ai_requires_clearance else None
         rows, total = analytics.search_jobs(
             conn, status=None, source=source, state=state, workplace=workplace,
             seniority=seniority, skill=skill, query=q,
@@ -277,7 +285,9 @@ async def jobs(
             industry=industry, is_remote=is_remote_bool,
             min_salary=min_salary, max_salary=max_salary,
             posted_since=since_date, posted_until=until_date,
-            scam_signals=scam_signals or None, sync_state=sync_state,
+            scam_signals=scam_signals or None,
+            ai_workplace=ai_workplace, ai_requires_clearance=ai_requires_clearance_filter,
+            ai_seniority=ai_seniority, sync_state=sync_state,
             stale=stale, include_closed=include_closed,
             include_duplicates=include_duplicates,
             sort=sort, limit=page_size, offset=(current - 1) * page_size,
@@ -298,7 +308,11 @@ async def jobs(
                 "is_remote": is_remote or "",
                 "min_salary": min_salary or "", "max_salary": max_salary or "",
                 "posted_since": posted_since or "", "posted_until": posted_until or "",
-                "scam_signals": scam_signals, "sync_state": sync_state or "",
+                "scam_signals": scam_signals,
+                "ai_workplace": ai_workplace or "",
+                "ai_requires_clearance": ai_requires_clearance,
+                "ai_seniority": ai_seniority or "",
+                "sync_state": sync_state or "",
                 "stale": stale or "",
                 "include_closed": include_closed,
                 "include_duplicates": include_duplicates,

@@ -62,6 +62,11 @@ STAGES: dict[str, list[str]] = {
     "dedupe": ["dedupe", "--backfill"],
     "purge": ["purge"],
     "liveness": ["liveness"],
+    # Annotate-only second opinion from a locally-hosted LLM (see
+    # jobscrape/ai_check.py) -- bounded limit, same reasoning as liveness's
+    # own preset: a manual/Advanced-block trigger, not scheduled by default,
+    # since it needs a live accuracy check before running unattended.
+    "ai-check": ["ai-check", "--limit", "150"],
     "stats": ["stats"],
     "sources": ["sources"],
     # Roles and work-model are fixed here rather than caller-supplied, unlike

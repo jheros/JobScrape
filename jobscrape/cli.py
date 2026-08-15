@@ -15,6 +15,8 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from . import config, db, dedupe, export as export_mod
 from .observability import setup_logging
 from .discovery import (
@@ -1060,6 +1062,57 @@ async def cmd_liveness(args: argparse.Namespace) -> int:
         counts[liveness.LIVE], counts[liveness.EXPIRED], counts[liveness.UNCERTAIN],
         label, closed, liveness.CLOSE_THRESHOLD,
     )
+    return 0
+
+
+async def cmd_ai_check(args: argparse.Namespace) -> int:
+    """Ask a locally-hosted LLM for a second opinion on already-stored jobs.
+
+    Annotate-only: writes the ai_* columns, never touches workplace_type,
+    seniority, employment_type, or closed_at. Same shape as cmd_liveness --
+    bounded candidate page, semaphore-gated concurrency, per-row failures
+    absorbed into a degraded verdict rather than raised, --dry-run skips
+    the write but still counts.
+    """
+    from . import ai_check
+
+    base_url = args.base_url or config.AI_CHECK_BASE_URL
+    model = args.model or config.AI_CHECK_MODEL
+    timeout = args.timeout if args.timeout is not None else config.AI_CHECK_TIMEOUT
+
+    with db.session(args.db) as conn:
+        candidates = db.ai_check_candidates(conn, limit=args.limit)
+        if not candidates:
+            log.info("ai-check: nothing to check")
+            return 0
+
+        log.info("ai-check: checking %d postings against %s (%s)",
+                 len(candidates), model, base_url)
+
+        sem = asyncio.Semaphore(args.concurrency)
+        lock = asyncio.Lock()
+        counts = {"ok": 0, "failed": 0}
+
+        async with httpx.AsyncClient() as client:
+            async def one(row: dict[str, Any]) -> None:
+                async with sem:
+                    verdict = await ai_check.classify_job(
+                        client, base_url, model, row, timeout=timeout,
+                    )
+                async with lock:
+                    if verdict.is_empty():
+                        counts["failed"] += 1
+                        return
+                    counts["ok"] += 1
+                    if args.dry_run:
+                        return
+                    db.record_ai_check(conn, row["id"], verdict, model)
+                    conn.commit()
+
+            await asyncio.gather(*(one(row) for row in candidates))
+
+    label = "would check" if args.dry_run else "checked"
+    log.info("ai-check: %s %d, %d failed/unparseable", label, counts["ok"], counts["failed"])
     return 0
 
 
@@ -2313,6 +2366,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_live.add_argument("--dry-run", action="store_true",
                         help="report verdicts without writing")
 
+    # ai-check
+    p_ai = sub.add_parser(
+        "ai-check",
+        help="second opinion from a local LLM on already-stored jobs (annotate-only)",
+    )
+    p_ai.add_argument("--limit", type=int, default=150,
+                      help="max postings to check this run")
+    p_ai.add_argument("--concurrency", type=int, default=config.AI_CHECK_CONCURRENCY,
+                      help="parallel requests to the model server (keep low -- one "
+                           "local model server mostly serializes regardless)")
+    p_ai.add_argument("--model", default=None,
+                      help="override JOBSCRAPE_AI_CHECK_MODEL")
+    p_ai.add_argument("--base-url", default=None,
+                      help="override JOBSCRAPE_AI_CHECK_BASE_URL")
+    p_ai.add_argument("--timeout", type=float, default=None,
+                      help="per-request timeout in seconds "
+                           "(default: JOBSCRAPE_AI_CHECK_TIMEOUT)")
+    p_ai.add_argument("--dry-run", action="store_true",
+                      help="report verdicts without writing")
+
     # dedupe
     p_tenants = sub.add_parser(
         "import-tenants",
@@ -2429,6 +2502,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_purge(args)
         if args.command == "liveness":
             return asyncio.run(cmd_liveness(args))
+        if args.command == "ai-check":
+            return asyncio.run(cmd_ai_check(args))
     except KeyboardInterrupt:
         log.warning("Interrupted — progress is saved; re-run to resume.")
         return 130

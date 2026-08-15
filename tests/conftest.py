@@ -38,14 +38,18 @@ def _isolated_db(monkeypatch):
     # same not-yet-committed transaction is visible to everything the test
     # does afterward, and vanishes with everything else at rollback.
     shared.execute(db.SCHEMA)
-    for statement in filter(None, (s.strip() for s in db._strip_sql_comments(db.INDEXES).split(";"))):
-        shared.execute(statement)
     # `jobscrape_test` is a persistent database, not recreated per run — a
     # column added to `SCHEMA` after that database's `jobs` table already
     # existed needs the same ALTER `ensure_schema` runs against a real
     # deployment. This fixture applies `SCHEMA`/`INDEXES` directly rather
-    # than going through `ensure_schema`, so it has to call this too.
+    # than going through `ensure_schema`, so it has to call this too — and,
+    # like `ensure_schema` itself, must run it BEFORE building indexes: an
+    # index on a migrated-only column (e.g. `idx_jobs_ai_checked`) would 404
+    # on `column ... does not exist` against a pre-existing table that
+    # predates that column, same as it would in a real deployment.
     db._migrate(shared)
+    for statement in filter(None, (s.strip() for s in db._strip_sql_comments(db.INDEXES).split(";"))):
+        shared.execute(statement)
 
     monkeypatch.setattr(shared, "commit", lambda: None)
     monkeypatch.setattr(shared, "close", lambda: None)

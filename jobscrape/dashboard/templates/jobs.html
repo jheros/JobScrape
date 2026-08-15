@@ -130,6 +130,26 @@
         <input type="checkbox" name="scam_signals" value="true" {% if filters.scam_signals %}checked{% endif %}>
         Has a scam signal
       </label>
+      <label>AI: workplace
+        <select name="ai_workplace">
+          <option value="">any</option>
+          {% for v in options.ai_workplaces %}
+            <option value="{{ v }}" {% if filters.ai_workplace == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>AI: seniority
+        <select name="ai_seniority">
+          <option value="">any</option>
+          {% for v in options.ai_seniorities %}
+            <option value="{{ v }}" {% if filters.ai_seniority == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="checkbox-label">
+        <input type="checkbox" name="ai_requires_clearance" value="true" {% if filters.ai_requires_clearance %}checked{% endif %}>
+        Hide clearance/government (AI)
+      </label>
       <label class="checkbox-label">
         <input type="checkbox" name="include_closed" value="true" {% if filters.include_closed %}checked{% endif %}>
         Include closed
@@ -164,6 +184,8 @@
             {% elif row.staleness == 'stale' %}<span class="tag">stale</span>{% endif %}
             {% if row.scam_signals %}<span class="tag critical"
               title="{{ row.scam_signals | scamreasons }}">possible scam</span>{% endif %}
+            {% if row.ai_requires_clearance %}<span class="tag critical"
+              title="AI second opinion: this posting appears to require a security clearance or be a government role">clearance/gov (AI)</span>{% endif %}
             {% if row.closed_at %}<span class="tag">closed</span>{% endif %}
           </div>
           <div class="job-card-company">
@@ -202,6 +224,20 @@
         </details>
       </div>
       {% endif %}
+
+      {% if row.ai_checked_at %}
+      <div class="job-card-expand">
+        <details><summary class="text-sm">AI second opinion ({{ row.ai_model or "unknown model" }}, {{ row.ai_checked_at|datefmt(10) }})</summary>
+          <div class="text-sm smart-view">
+            <span class="field-label">Workplace:</span> {{ row.ai_workplace_type or "unknown" }}<br>
+            <span class="field-label">Requires clearance / government:</span> {{ "yes" if row.ai_requires_clearance else "no" }}<br>
+            <span class="field-label">US job:</span> {{ "yes" if row.ai_is_us else "no" if row.ai_is_us is not none else "unknown" }}<br>
+            <span class="field-label">Employment type:</span> {{ row.ai_employment_type or "unknown" }}<br>
+            <span class="field-label">Seniority:</span> {{ row.ai_seniority or "unknown" }}
+          </div>
+        </details>
+      </div>
+      {% endif %}
     </article>
     {% else %}
     <div class="jobs-empty">Nothing matches these filters.</div>
@@ -218,7 +254,7 @@
     </label>
     <form id="jobs-per-page-form" method="get">
       {% for key, value in filters.items() %}
-        {% if key not in ('scam_signals', 'include_closed', 'include_duplicates') or value %}
+        {% if key not in ('scam_signals', 'ai_requires_clearance', 'include_closed', 'include_duplicates') or value %}
           <input type="hidden" name="{{ key }}" value="{{ value }}">
         {% endif %}
       {% endfor %}
@@ -240,7 +276,7 @@
     {% if pages > 1 %}
     <form class="pager-jump" method="get">
       {% for key, value in filters.items() %}
-        {% if key not in ('scam_signals', 'include_closed', 'include_duplicates') or value %}
+        {% if key not in ('scam_signals', 'ai_requires_clearance', 'include_closed', 'include_duplicates') or value %}
           <input type="hidden" name="{{ key }}" value="{{ value }}">
         {% endif %}
       {% endfor %}
