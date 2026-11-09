@@ -97,6 +97,11 @@ STAGES: dict[str, list[str]] = {
     # but still a plain STAGES entry so it shows up in Runs history like
     # everything else and `--dry-run` rides the existing extra allowlist.
     "render-sync": ["render-sync"],
+    # Pushes to the HTTP endpoints on the Endpoints page — see
+    # `jobscrape/endpoint_sync.py`. Started by `scheduler.maybe_sync_after()`
+    # after a stage finishes (when any endpoint is enabled), and by the
+    # Endpoints page's "Send now".
+    "endpoint-sync": ["endpoint-sync"],
     # Composite: the exact sequence `scripts/schedule.sh` runs, ported to
     # `jobscrape schedule-run` so the dashboard calls one subprocess rather
     # than launching five separately with no way to treat them as one unit.

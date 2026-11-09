@@ -288,3 +288,98 @@ async def test_maybe_sync_after_task_is_referenced_until_done(monkeypatch) -> No
 
     assert started == ["render-sync"]
     assert scheduler._pending_syncs == set()
+
+
+# --- endpoint-sync after a stage ----------------------------------------------
+
+
+def test_endpoint_sync_is_a_runnable_stage() -> None:
+    from jobscrape.dashboard.runner import STAGES
+
+    assert STAGES["endpoint-sync"] == ["endpoint-sync"]
+
+
+async def _drain_pending_syncs() -> None:
+    for task in list(scheduler._pending_syncs):
+        await task
+
+
+def _record_starts(monkeypatch, fail: set[str] = frozenset()) -> list[str]:
+    started: list[str] = []
+
+    async def fake_start(stage, *args, **kw):
+        started.append(stage)
+        if stage in fail:
+            raise RuntimeError(f"{stage} is already running")
+        return {"run_id": 1, "stage": stage, "pid": 1}
+
+    monkeypatch.setattr(manager, "start", fake_start)
+    monkeypatch.setattr(manager, "is_running", lambda stage: False)
+    return started
+
+
+async def test_endpoint_sync_starts_after_a_stage_when_an_endpoint_is_enabled(
+    _isolated_db, monkeypatch,
+) -> None:
+    from jobscrape import config as cfg
+
+    monkeypatch.setattr(cfg, "RENDER_DATABASE_URL", "")
+    db.create_endpoint(_isolated_db, "site", "https://r.test/in", "t")
+    started = _record_starts(monkeypatch)
+    scheduler.maybe_sync_after("fetch")
+    await _drain_pending_syncs()
+    assert started == ["endpoint-sync"]
+
+
+async def test_endpoint_sync_does_not_start_when_none_is_enabled(
+    _isolated_db, monkeypatch,
+) -> None:
+    from jobscrape import config as cfg
+
+    monkeypatch.setattr(cfg, "RENDER_DATABASE_URL", "")
+    db.create_endpoint(_isolated_db, "site", "https://r.test/in", "t", enabled=False)
+    started = _record_starts(monkeypatch)
+    scheduler.maybe_sync_after("fetch")
+    await _drain_pending_syncs()
+    assert started == []
+
+
+@pytest.mark.parametrize("stage", ["endpoint-sync", "render-sync"])
+async def test_endpoint_sync_never_follows_itself_or_render_sync(
+    _isolated_db, monkeypatch, stage,
+) -> None:
+    from jobscrape import config as cfg
+
+    monkeypatch.setattr(cfg, "RENDER_DATABASE_URL", "")
+    db.create_endpoint(_isolated_db, "site", "https://r.test/in", "t")
+    started = _record_starts(monkeypatch)
+    scheduler.maybe_sync_after(stage)
+    await _drain_pending_syncs()
+    assert "endpoint-sync" not in started
+
+
+async def test_a_render_sync_start_failure_does_not_block_endpoint_sync(
+    _isolated_db, monkeypatch,
+) -> None:
+    from jobscrape import config as cfg
+
+    monkeypatch.setattr(cfg, "RENDER_DATABASE_URL", "postgresql://fake/db")
+    db.create_endpoint(_isolated_db, "site", "https://r.test/in", "t")
+    started = _record_starts(monkeypatch, fail={"render-sync"})
+    scheduler.maybe_sync_after("fetch")
+    await _drain_pending_syncs()
+    assert started == ["render-sync", "endpoint-sync"]
+
+
+async def test_fire_starts_endpoint_sync_after_the_scheduled_stage(
+    _isolated_db, monkeypatch,
+) -> None:
+    from jobscrape import config as cfg
+
+    monkeypatch.setattr(cfg, "RENDER_DATABASE_URL", "")
+    db.create_endpoint(_isolated_db, "site", "https://r.test/in", "t")
+    schedule_id = db.create_schedule(_isolated_db, "Daily", "apify-pull", extra="")
+    started = _record_starts(monkeypatch)
+    await scheduler._fire(schedule_id)
+    await _drain_pending_syncs()
+    assert started == ["apify-pull", "endpoint-sync"]

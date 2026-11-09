@@ -79,38 +79,60 @@ async def _fire(schedule_id: int) -> None:
     maybe_sync_after(stage)
 
 
+#: Stages that are themselves output syncs; endpoint-sync never follows these.
+_SYNC_STAGES = frozenset({"render-sync", "endpoint-sync"})
+
+
+def _any_endpoint_enabled() -> bool:
+    try:
+        with db.session() as conn:
+            return db.any_endpoint_enabled(conn)
+    except Exception:  # noqa: BLE001 - a lookup failure must not break the caller
+        log.exception("could not check for enabled sync endpoints")
+        return False
+
+
 def maybe_sync_after(stage: str) -> None:
-    """Fire-and-forget: push what `stage` just wrote to Render once it
-    finishes, if this database is configured to sync at all.
+    """Fire-and-forget: once `stage` finishes, push what it wrote to Render
+    (when `RENDER_DATABASE_URL` is set) and to the HTTP endpoints (when at
+    least one is enabled) — each decided independently of the other.
 
     Shared by the cron fire path above and every manual trigger in `app.py`
     (a Runs-page button, Schedule tab's "Run now") — a manual click should
-    reach Render exactly the same as a schedule firing, not require its own
+    sync exactly the same as a schedule firing, not require its own
     separate button.
     """
-    if stage != "render-sync" and config.RENDER_DATABASE_URL:
+    render = stage != "render-sync" and bool(config.RENDER_DATABASE_URL)
+    endpoints = stage not in _SYNC_STAGES and _any_endpoint_enabled()
+    if render or endpoints:
         # Fire-and-forget: don't hold up the caller waiting on this. Held in
         # `_pending_syncs` — see that set's own comment for why a bare
         # `create_task()` here is not safe on its own.
-        task = asyncio.create_task(_sync_after(stage))
+        task = asyncio.create_task(_sync_after(stage, render=render, endpoints=endpoints))
         _pending_syncs.add(task)
         task.add_done_callback(_pending_syncs.discard)
 
 
-async def _sync_after(stage: str) -> None:
-    """Wait for `stage` to stop running, then push what it wrote to Render.
+async def _sync_after(stage: str, *, render: bool = True, endpoints: bool = False) -> None:
+    """Wait for `stage` to stop running, then start the output syncs.
 
     Polls `manager.is_running` rather than watching the run row directly —
     that's the same state `RunManager` already tracks, so no new bookkeeping
-    is needed to know when a run is done.
+    is needed to know when a run is done. Each sync is started on its own:
+    render-sync failing to start never stops endpoint-sync.
     """
     while manager.is_running(stage):
         await asyncio.sleep(15)
-    try:
-        await manager.start("render-sync")
-    except (ValueError, RuntimeError) as exc:
-        # Benign — e.g. a manually-started render-sync already running.
-        log.info("render-sync after %s skipped: %s", stage, exc)
+    for wanted, sync_stage in ((render, "render-sync"), (endpoints, "endpoint-sync")):
+        if not wanted:
+            continue
+        try:
+            await manager.start(sync_stage)
+        except (ValueError, RuntimeError) as exc:
+            # Benign — e.g. a manually-started sync already running.
+            log.info("%s after %s skipped: %s", sync_stage, stage, exc)
+        except Exception:  # noqa: BLE001 - keep going to the next sync
+            log.exception("%s after %s could not start", sync_stage, stage)
 
 
 def reload() -> None:

@@ -326,12 +326,12 @@ def test_stage_allowlist_prevents_arbitrary_commands() -> None:
         "discover", "discover-fast", "validate", "fetch", "fetch-fast", "fetch-workday",
         "export", "apify-pull", "dedupe", "purge", "liveness", "ai-check", "stats", "sources",
         "daily-schedule", "weekly-schedule", "full-sweep", "jobright-fetch",
-        "hiringcafe-fetch", "render-sync", "discover-validate",
+        "hiringcafe-fetch", "render-sync", "endpoint-sync", "discover-validate",
     }
     known_subcommands = {
         "discover", "validate", "fetch", "export", "apify-pull", "dedupe",
         "purge", "liveness", "ai-check", "stats", "sources", "schedule-run", "jobright-fetch",
-        "hiringcafe-fetch", "render-sync",
+        "hiringcafe-fetch", "render-sync", "endpoint-sync",
     }
     for argv in STAGES.values():
         assert argv[0] in known_subcommands
