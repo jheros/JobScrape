@@ -166,3 +166,110 @@ query behind a job listing:
 WHERE closed_at IS NULL       -- still open
   AND duplicate_of IS NULL    -- not suppressed as a repost or cross-source copy
 ```
+
+## Sending jobs to other systems (Endpoints)
+
+Another application can receive jobs from this one over HTTP. Add it on the dashboard's
+**Endpoints** page (`/endpoints`, under Admin in the sidebar — Settings links to it too):
+
+- **Name** — unique; shown in run logs.
+- **URL** — must be `https://`. Plain `http://` is accepted only for `localhost`,
+  `127.0.0.1` or a literal private IP (e.g. `http://192.168.1.20:3000/import`). URLs with a
+  username or password in them are refused.
+- **Token** — sent as `Authorization: Bearer <token>`. It is write-only: the page shows
+  only "Token set", and no page, API response or log ever contains it. When editing, leave
+  it blank to keep the current one.
+
+**Set `JOBSCRAPE_ADMIN_PASSCODE` before using this.** With it blank every visitor is an
+admin, so anyone who can reach the dashboard could add an endpoint and receive your jobs.
+
+Row actions: **Test connection** posts `{"rows": []}` once and reports the HTTP status
+(it changes nothing). **Send now** starts an `endpoint-sync` run immediately; it sends
+pending changes to every enabled endpoint. **Resend everything** clears that endpoint's
+place and re-sends all open jobs. **Edit**, **on/off** and **Delete** do what they say.
+
+### When jobs are sent
+
+With the dashboard running as a service, an `endpoint-sync` run starts automatically after
+every stage finishes (a schedule firing, a Runs-page click, "Run now"), whenever at least
+one endpoint is enabled. This is independent of `RENDER_DATABASE_URL`, and it never
+follows a `render-sync` or another `endpoint-sync`.
+
+Without the dashboard's scheduler, run it from cron after your pipeline (endpoints are
+still added once on the Endpoints page):
+
+```cron
+CRON_TZ=Asia/Bangkok
+PYTHON=/srv/jobscrape/.venv/bin/python
+30 * * * *  cd /srv/jobscrape && $PYTHON -m jobscrape endpoint-sync >> /srv/jobscrape/data/cron.log 2>&1
+```
+
+In Docker: `docker compose exec dashboard python -m jobscrape endpoint-sync`.
+
+```
+python -m jobscrape endpoint-sync [--endpoint NAME] [--dry-run] [--limit N]
+```
+
+`--dry-run` makes no requests and saves nothing. `--limit` still sends for real; it caps
+rows per endpoint for that run. With no endpoint enabled the command logs a skip and exits
+0. A second run while one is in progress also skips (a Postgres advisory lock). The run is
+recorded on the Runs page as stage `endpoint-sync`, and as `error` if any endpoint failed.
+
+### What is sent
+
+Each endpoint keeps its own place: the `(changed_at, source, source_job_id)` of the last
+row it accepted, where `changed_at` is the newest of `last_seen_at`, `closed_at` and
+`duplicate_marked_at` — the same definition `render-sync` uses. One endpoint failing never
+stops or delays the others; it just catches up on its next successful run.
+
+- **First sync** (or after Resend everything): only open, non-duplicate jobs.
+- **Later syncs**: every row that changed, including ones that closed or were marked as
+  duplicates, so the receiver can close them.
+- **Never sent**: jobs from `linkedin`, `indeed` or `avature`.
+
+### Request
+
+```
+POST <url>
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{"rows": [ { ...one object per job... } ]}
+```
+
+At most 500 rows and 4 MiB of JSON per request. A single job larger than 4 MiB on its own
+is logged and skipped. Each row has exactly these keys, with JobScrape's own column names:
+
+`source`, `source_job_id`, `title`, `company`, `job_url`, `apply_url`,
+`description_text`, `workplace_type`, `ai_workplace_type`, `city`, `state`, `country`,
+`location_raw`, `seniority`, `ai_seniority`, `salary_min`, `salary_max`,
+`salary_currency`, `employment_type`, `skills` (comma-separated text), `department`,
+`industry`, `ai_requires_clearance`, `posted_at`, `closed_at` (ISO 8601 or null),
+`duplicate_of` (id of the job this one duplicates, or null), `scam_signals`.
+
+`(source, source_job_id)` is unique and is the key a receiver should upsert on.
+Datetimes are ISO 8601 with offset, e.g. `2026-07-01T00:00:00+00:00`.
+
+After the last batch, if the receiver reported any inserted, updated, reopened or closed
+rows during the run, one more request carries the run's totals:
+
+```json
+{"rows": [], "announce": {"inserted": 12, "updated": 40, "reopened": 0, "closed": 3}}
+```
+
+### Response
+
+Any 2xx is success; the place is saved after each one. The body should be:
+
+```json
+{"inserted": 0, "updated": 0, "reopened": 0, "closed": 0, "skipped": 0,
+ "rejected": [{"index": 3, "externalId": "greenhouse:123", "message": "why"}]}
+```
+
+Missing keys count as 0. Rejected rows are not re-sent; the count and the first 20
+messages go into the run's log.
+
+Redirects are never followed. Network errors, `429` and `5xx` are retried three times
+(after 2 s, 8 s and 30 s); any other status (`401`, `403`, `404`, a `3xx`...) stops that
+endpoint for this run without moving its place. The timeout is 120 s per request. Each
+endpoint's last sync time, status (`ok`/`error`) and message show on the Endpoints page.

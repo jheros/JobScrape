@@ -795,6 +795,27 @@ decides how often their output is read.
 
 See `docs/DEPLOYMENT.md` for installing this on a server.
 
+### Sending jobs to other systems
+
+Other applications can receive jobs over HTTP. Add each one on the dashboard's
+**Endpoints** page (name, URL, bearer token). After every stage finishes, each enabled
+endpoint is sent the jobs that changed since it last accepted anything: first only open
+jobs, then updates, closures and duplicates too. LinkedIn, Indeed and Avature postings are
+never sent. Without the dashboard's scheduler, run it from cron:
+
+```cron
+30 * * * *  cd /srv/jobscrape && .venv/bin/python -m jobscrape endpoint-sync >> data/cron.log 2>&1
+```
+
+```bash
+python -m jobscrape endpoint-sync --dry-run          # what would be sent; sends nothing
+python -m jobscrape endpoint-sync --endpoint site    # just one endpoint
+```
+
+Set `JOBSCRAPE_ADMIN_PASSCODE` first — with it blank, any visitor can add an endpoint. The
+request and response format a receiver must implement is in `docs/DEPLOYMENT.md`
+("Sending jobs to other systems").
+
 ## Politeness and rate limiting
 
 All traffic goes through one client that enforces per-host concurrency limits, a delay
