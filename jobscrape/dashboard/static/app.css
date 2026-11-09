@@ -614,3 +614,7 @@ table.coverage td.bar span { display: block; height: 9px; border-radius: 3px;
   text-transform: uppercase; letter-spacing: .04em;
 }
 .form-actions { display: flex; gap: 8px; align-items: center; grid-column: 1 / -1; margin-top: 4px; }
+
+/* Endpoints page: row actions wrap instead of overflowing the table. */
+.endpoint-actions { display: flex; flex-wrap: wrap; gap: 6px; min-width: 260px; }
+#endpoint-form > .hint { grid-column: 1 / -1; margin: 0; }

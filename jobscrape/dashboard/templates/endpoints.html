@@ -22,12 +22,14 @@
     </label>
     <label>URL
       <input type="url" name="url" placeholder="https://example.com/api/jobs/import" required>
-      <span class="hint">https required; plain http only for localhost or a private IP</span>
     </label>
     <label>Token
       <input type="password" name="token" id="endpoint-token" placeholder="Bearer token" autocomplete="new-password">
-      <span class="hint" id="endpoint-token-hint">sent as <code>Authorization: Bearer …</code>; never shown again after saving</span>
     </label>
+    <p class="hint">
+      URL: https required; plain http only for localhost or a private IP.
+      <span id="endpoint-token-hint">Token: sent as <code>Authorization: Bearer …</code>; never shown again after saving.</span>
+    </p>
     <div class="form-actions">
       <button class="btn" type="submit" id="endpoint-form-submit">{{ icons.icon('layers') }} Add endpoint</button>
       <a class="btn ghost hidden" id="endpoint-form-cancel">Cancel edit</a>
@@ -64,8 +66,9 @@
           {% if e.last_sync_status %}<span class="pill {{ e.last_sync_status }}">{{ e.last_sync_status }}</span>{% else %}—{% endif %}
         </td>
         <td class="text-sm">{{ e.last_sync_message or "—" }}</td>
-        <td class="nowrap">
+        <td>
           {% call admin.locked(is_admin, inline=true) %}
+          <div class="endpoint-actions">
           <button class="btn ghost btn-sm" data-endpoint-test="{{ e.id }}">{{ icons.icon('activity', 14) }} Test connection</button>
           <button class="btn ghost btn-sm" data-endpoint-send="{{ e.id }}"
                   {% if e.enabled %}title="Sends pending changes to every enabled endpoint"{% else %}disabled title="Enable this endpoint first"{% endif %}>{{ icons.icon('play', 14) }} Send now</button>
@@ -73,6 +76,7 @@
                   data-name="{{ e.name }}" data-url="{{ e.url }}">{{ icons.icon('edit', 14) }} Edit</button>
           <button class="btn ghost btn-sm" data-endpoint-resend="{{ e.id }}" data-name="{{ e.name }}">{{ icons.icon('refresh', 14) }} Resend everything</button>
           <button class="btn danger btn-sm" data-endpoint-delete="{{ e.id }}" data-name="{{ e.name }}">{{ icons.icon('trash', 14) }} Delete</button>
+          </div>
           {% endcall %}
         </td>
       </tr>

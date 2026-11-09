@@ -636,7 +636,7 @@
         endpointForm.elements["name"].value = btn.getAttribute("data-name");
         endpointForm.elements["url"].value = btn.getAttribute("data-url");
         endpointForm.elements["token"].value = "";
-        epTokenHint.textContent = "Token set — leave blank to keep it, or type a new one to replace it";
+        epTokenHint.textContent = "Token: already set — leave blank to keep it, or type a new one to replace it.";
         epSubmit.textContent = "Save endpoint";
         epTitle.textContent = "Edit endpoint";
         epCancel.classList.remove("hidden");
