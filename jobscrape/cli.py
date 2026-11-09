@@ -1668,6 +1668,59 @@ def cmd_render_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_endpoint_sync(args: argparse.Namespace) -> int:
+    """Push changed jobs to every enabled HTTP endpoint (the dashboard's
+    Endpoints page). Same contract as `cmd_render_sync`: a skip (nothing
+    enabled, another sync holding the lock) exits 0; a dashboard-launched
+    run reuses the run row named by `JOBSCRAPE_RUN_ID`.
+    """
+    from . import endpoint_sync
+
+    endpoint_name = getattr(args, "endpoint", None)
+    with db.session(args.db) as conn:
+        if not db.enabled_endpoints(conn, name=endpoint_name):
+            log.info("endpoint-sync: no endpoint enabled%s — skipping",
+                     f" named {endpoint_name!r}" if endpoint_name else "")
+            return 0
+
+        inherited = os.environ.get("JOBSCRAPE_RUN_ID")
+        run_id = int(inherited) if inherited else db.start_run(
+            conn, _command_line(), "endpoint-sync", pid=os.getpid()
+        )
+        try:
+            result = endpoint_sync.sync(
+                conn, endpoint_name=endpoint_name, dry_run=args.dry_run,
+                limit=args.limit, run_id=run_id,
+            )
+        except endpoint_sync.EndpointSyncLocked as exc:
+            log.info("endpoint-sync: %s — skipping", exc)
+            db.finish_run(conn, run_id, status="skipped", error=str(exc))
+            return 0
+        except Exception as exc:                       # noqa: BLE001 - reported, not raised
+            log.exception("endpoint-sync: sync failed")
+            db.log_event(conn, run_id, f"sync failed: {exc}",
+                         stage="endpoint-sync", level="error")
+            db.finish_run(conn, run_id, status="error", error=str(exc))
+            return 1
+
+        failed = [r for r in result["endpoints"] if r["status"] != "ok"]
+        message = (
+            f"endpoint-sync: {len(result['endpoints'])} endpoint(s), "
+            f"{result['sent']} rows sent, {len(failed)} failed"
+            + (" (dry run)" if result["dry_run"] else "")
+        )
+        log.info(message)
+        db.log_event(conn, run_id, message, stage="endpoint-sync",
+                     level="error" if failed else "info",
+                     counters={"sent": result["sent"], "failed": len(failed)})
+        if failed:
+            error = "; ".join(f"{r['name']}: {r['message']}" for r in failed)
+            db.finish_run(conn, run_id, status="error", stats_payload=result, error=error)
+            return 1
+        db.finish_run(conn, run_id, status="ok", stats_payload=result)
+    return 0
+
+
 def cmd_backfill_render_sync_status(args: argparse.Namespace) -> int:
     """One-time catch-up: stamp `render_synced_at` on local rows that were
     already pushed to Render before that column existed. See
@@ -2322,6 +2375,19 @@ def build_parser() -> argparse.ArgumentParser:
                                "(oldest-changed-first); writes for real, unlike "
                                "--dry-run, and advances the watermark to match")
 
+    p_endpoint = sub.add_parser(
+        "endpoint-sync",
+        help="push new/updated/closed postings to the HTTP endpoints set up "
+             "on the dashboard's Endpoints page",
+    )
+    p_endpoint.add_argument("--endpoint", metavar="NAME", default=None,
+                            help="sync only this endpoint (by name)")
+    p_endpoint.add_argument("--dry-run", action="store_true",
+                            help="report what would be sent; no requests, no cursor saved")
+    p_endpoint.add_argument("--limit", type=int, default=None,
+                            help="cap rows sent per endpoint this run; sends for real "
+                                 "and advances that endpoint's cursor to match")
+
     p_backfill_sync = sub.add_parser(
         "backfill-render-sync-status",
         help="one-time: stamp render_synced_at on local rows already pushed "
@@ -2486,6 +2552,8 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(cmd_hiringcafe_fetch(args))
         if args.command == "render-sync":
             return cmd_render_sync(args)
+        if args.command == "endpoint-sync":
+            return cmd_endpoint_sync(args)
         if args.command == "backfill-render-sync-status":
             return cmd_backfill_render_sync_status(args)
         if args.command == "delete-source":

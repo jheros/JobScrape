@@ -419,3 +419,109 @@ def test_sync_skips_while_another_session_holds_the_lock(_isolated_db) -> None:
         other.exec_driver_sql(f"SELECT pg_advisory_unlock({endpoint_sync._LOCK_KEY})")
         other.close()
         other_engine.dispose()
+
+
+# --- CLI ----------------------------------------------------------------------
+
+
+def _cli_args(**kw: Any):
+    import argparse
+
+    base = dict(db=None, dry_run=False, limit=None, endpoint=None)
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _last_run(conn) -> dict[str, Any] | None:
+    return conn.execute(
+        "SELECT * FROM runs WHERE stage = 'endpoint-sync' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+
+
+def _patch_client(monkeypatch, receiver: Receiver) -> None:
+    monkeypatch.setattr(endpoint_sync, "_make_client", lambda: httpx.Client(
+        transport=httpx.MockTransport(receiver.handler)))
+
+
+def test_cli_parses_its_flags() -> None:
+    from jobscrape import cli
+
+    args = cli.build_parser().parse_args(
+        ["endpoint-sync", "--endpoint", "site", "--dry-run", "--limit", "5"])
+    assert (args.command, args.endpoint, args.dry_run, args.limit) == (
+        "endpoint-sync", "site", True, 5)
+
+
+def test_cli_skips_with_exit_0_when_no_endpoint_is_enabled(_isolated_db, caplog) -> None:
+    from jobscrape import cli
+
+    _endpoint(_isolated_db, enabled=False)
+    with caplog.at_level(logging.INFO):
+        assert cli.cmd_endpoint_sync(_cli_args()) == 0
+    assert "no endpoint enabled" in caplog.text
+    assert _last_run(_isolated_db) is None
+
+
+def test_cli_records_an_ok_run(_isolated_db, monkeypatch) -> None:
+    from jobscrape import cli
+
+    _endpoint(_isolated_db)
+    _add(_isolated_db, _job("1"))
+    receiver = Receiver()
+    _patch_client(monkeypatch, receiver)
+    assert cli.cmd_endpoint_sync(_cli_args()) == 0
+    run = _last_run(_isolated_db)
+    assert run["status"] == "ok"
+    assert receiver.sent_ids() == ["1"]
+
+
+def test_cli_reuses_the_inherited_run_id(_isolated_db, monkeypatch) -> None:
+    from jobscrape import cli
+
+    _endpoint(_isolated_db)
+    run_id = db.start_run(_isolated_db, "dashboard", "endpoint-sync")
+    monkeypatch.setenv("JOBSCRAPE_RUN_ID", str(run_id))
+    _patch_client(monkeypatch, Receiver())
+    assert cli.cmd_endpoint_sync(_cli_args()) == 0
+    assert _last_run(_isolated_db)["id"] == run_id
+    assert _last_run(_isolated_db)["status"] == "ok"
+
+
+def test_cli_finishes_with_error_when_an_endpoint_fails(_isolated_db, monkeypatch) -> None:
+    from jobscrape import cli
+
+    _endpoint(_isolated_db)
+    _add(_isolated_db, _job("1"))
+    _patch_client(monkeypatch, Receiver(lambda req, n: httpx.Response(403)))
+    assert cli.cmd_endpoint_sync(_cli_args()) == 1
+    run = _last_run(_isolated_db)
+    assert run["status"] == "error"
+    assert "site" in (run["error"] or "")
+
+
+def test_cli_treats_a_held_lock_as_a_skip(_isolated_db, monkeypatch) -> None:
+    from jobscrape import cli
+
+    _endpoint(_isolated_db)
+
+    def locked(conn, **kw):
+        raise endpoint_sync.EndpointSyncLocked("another endpoint-sync is already running")
+
+    monkeypatch.setattr(endpoint_sync, "sync", locked)
+    assert cli.cmd_endpoint_sync(_cli_args()) == 0
+    assert _last_run(_isolated_db)["status"] == "skipped"
+
+
+def test_cli_dry_run_and_limit_are_passed_through(_isolated_db, monkeypatch) -> None:
+    from jobscrape import cli
+
+    _endpoint(_isolated_db)
+    seen: dict[str, Any] = {}
+
+    def fake_sync(conn, **kw):
+        seen.update(kw)
+        return {"endpoints": [], "failed": 0, "sent": 0, "dry_run": kw["dry_run"]}
+
+    monkeypatch.setattr(endpoint_sync, "sync", fake_sync)
+    assert cli.cmd_endpoint_sync(_cli_args(dry_run=True, limit=7, endpoint="site")) == 0
+    assert (seen["dry_run"], seen["limit"], seen["endpoint_name"]) == (True, 7, "site")

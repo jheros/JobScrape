@@ -97,6 +97,10 @@ def _locked(conn: db.Connection):
         conn.execute("SELECT pg_advisory_unlock(?)", (_LOCK_KEY,))
 
 
+def _make_client() -> httpx.Client:
+    return httpx.Client(timeout=_TIMEOUT_SECONDS, follow_redirects=False)
+
+
 def _select_sql(first_sync: bool, after_cursor: bool) -> str:
     restricted = ", ".join(f"'{s}'" for s in RESTRICTED_SOURCES)
     where = [f"source NOT IN ({restricted})"]
@@ -311,7 +315,7 @@ def sync(
         endpoints = db.enabled_endpoints(conn, name=endpoint_name)
         own_client = client is None
         if own_client:
-            client = httpx.Client(timeout=_TIMEOUT_SECONDS, follow_redirects=False)
+            client = _make_client()
         results: list[dict[str, Any]] = []
         try:
             for endpoint in endpoints:
