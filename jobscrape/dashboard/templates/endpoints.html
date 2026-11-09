@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% import "_icons.html" as icons %}
+{% import "_admin.html" as admin %}
+{% block title %}Endpoints · jobscrape{% endblock %}
+{% block content %}
+
+<h1>Endpoints</h1>
+<p class="sub">
+  Other systems that receive collected jobs over HTTP. After any stage finishes,
+  every enabled endpoint is sent the jobs that changed since it was last sent
+  anything — each endpoint keeps its own place. See <code>docs/DEPLOYMENT.md</code>
+  for the request format a receiver must accept.
+</p>
+
+<div class="card">
+  <h2 id="endpoint-form-title">Add an endpoint</h2>
+  {% call admin.locked(is_admin) %}
+  <form id="endpoint-form" class="form-grid" autocomplete="off">
+    <input type="hidden" name="edit_id" value="">
+    <label>Name
+      <input type="text" name="name" placeholder="Main website" required>
+    </label>
+    <label>URL
+      <input type="url" name="url" placeholder="https://example.com/api/jobs/import" required>
+      <span class="hint">https required; plain http only for localhost or a private IP</span>
+    </label>
+    <label>Token
+      <input type="password" name="token" id="endpoint-token" placeholder="Bearer token" autocomplete="new-password">
+      <span class="hint" id="endpoint-token-hint">sent as <code>Authorization: Bearer …</code>; never shown again after saving</span>
+    </label>
+    <div class="form-actions">
+      <button class="btn" type="submit" id="endpoint-form-submit">{{ icons.icon('layers') }} Add endpoint</button>
+      <a class="btn ghost hidden" id="endpoint-form-cancel">Cancel edit</a>
+    </div>
+  </form>
+  {% endcall %}
+</div>
+
+<div class="card">
+  <h2>Endpoints</h2>
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>URL</th><th>Token</th><th>Enabled</th>
+        <th>Last sync</th><th>Status</th><th>Message</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in endpoints %}
+      <tr>
+        <td>{{ e.name }}</td>
+        <td><code class="text-sm">{{ e.url }}</code></td>
+        <td>{{ "Token set" if e.has_token else "No token" }}</td>
+        <td>
+          {% call admin.locked(is_admin, inline=true) %}
+          <button class="btn ghost btn-sm" data-endpoint-toggle="{{ e.id }}">
+            {{ "on" if e.enabled else "off" }}
+          </button>
+          {% endcall %}
+        </td>
+        <td>{{ e.last_sync_at|datefmt if e.last_sync_at else "never" }}</td>
+        <td>
+          {% if e.last_sync_status %}<span class="pill {{ e.last_sync_status }}">{{ e.last_sync_status }}</span>{% else %}—{% endif %}
+        </td>
+        <td class="text-sm">{{ e.last_sync_message or "—" }}</td>
+        <td class="nowrap">
+          {% call admin.locked(is_admin, inline=true) %}
+          <button class="btn ghost btn-sm" data-endpoint-test="{{ e.id }}">{{ icons.icon('activity', 14) }} Test connection</button>
+          <button class="btn ghost btn-sm" data-endpoint-send="{{ e.id }}"
+                  {% if e.enabled %}title="Sends pending changes to every enabled endpoint"{% else %}disabled title="Enable this endpoint first"{% endif %}>{{ icons.icon('play', 14) }} Send now</button>
+          <button class="btn ghost btn-sm" data-endpoint-edit="{{ e.id }}"
+                  data-name="{{ e.name }}" data-url="{{ e.url }}">{{ icons.icon('edit', 14) }} Edit</button>
+          <button class="btn ghost btn-sm" data-endpoint-resend="{{ e.id }}" data-name="{{ e.name }}">{{ icons.icon('refresh', 14) }} Resend everything</button>
+          <button class="btn danger btn-sm" data-endpoint-delete="{{ e.id }}" data-name="{{ e.name }}">{{ icons.icon('trash', 14) }} Delete</button>
+          {% endcall %}
+        </td>
+      </tr>
+      {% else %}
+      <tr class="empty-row"><td colspan="8">
+        No endpoints yet — add one above.
+      </td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+
+{% endblock %}

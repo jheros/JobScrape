@@ -7,6 +7,7 @@ Routes stay thin: queries live in :mod:`analytics`, process control in
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime as datetime_cls
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -22,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BeforeValidator
 
-from .. import config, db, filters, scam
+from .. import config, db, endpoint_sync, filters, scam
 from ..observability import health as health_check
 from . import analytics, auth, charts, envfile, mdlite
 from . import scheduler as scheduler_module
@@ -427,6 +429,16 @@ async def schedule_page(request: Request) -> HTMLResponse:
         conn.close()
 
 
+@app.get("/endpoints", response_class=HTMLResponse)
+async def endpoints_page(request: Request) -> HTMLResponse:
+    conn = _conn()
+    try:
+        # `list_endpoints` never selects the token -- only `has_token`.
+        return _page(request, "endpoints.html", endpoints=db.list_endpoints(conn))
+    finally:
+        conn.close()
+
+
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request) -> HTMLResponse:
     current = envfile.read_env_file()
@@ -692,6 +704,164 @@ async def run_schedule_now(request: Request, schedule_id: int) -> JSONResponse:
         conn.close()
     scheduler_module.maybe_sync_after(stage)
     return JSONResponse(info)
+
+
+# --- sync endpoints ---------------------------------------------------------
+#
+# The token is write-only: these routes accept it and never return it.
+# Responses carry only ids, booleans and messages.
+
+_PLAIN_HTTP_HOSTS = frozenset({"localhost", "127.0.0.1"})
+
+
+def _endpoint_url_error(url: str) -> str | None:
+    """None when `url` is acceptable: https anywhere; plain http only for
+    localhost, 127.0.0.1 or a literal private IP; never embedded credentials."""
+    url = url.strip()
+    if not url:
+        return "URL is required"
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        return "URL is not valid"
+    if parts.scheme not in ("https", "http"):
+        return "URL must start with https://"
+    if not host:
+        return "URL has no host"
+    if parts.username is not None or parts.password is not None or "@" in parts.netloc:
+        return "URL must not contain a username or password"
+    if parts.scheme == "http" and host.lower() not in _PLAIN_HTTP_HOSTS:
+        try:
+            private = ipaddress.ip_address(host).is_private
+        except ValueError:
+            private = False
+        if not private:
+            return "plain http is only allowed for localhost or a private IP; use https"
+    return None
+
+
+def _endpoint_form_error(name: str, url: str) -> JSONResponse | None:
+    if not name.strip():
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    if (error := _endpoint_url_error(url)) is not None:
+        return JSONResponse({"error": error}, status_code=400)
+    return None
+
+
+def _endpoint_name_taken(name: str) -> JSONResponse:
+    return JSONResponse(
+        {"error": f"an endpoint named {name!r} already exists"}, status_code=400,
+    )
+
+
+def _no_such_endpoint() -> JSONResponse:
+    return JSONResponse({"error": "no such endpoint"}, status_code=404)
+
+
+@app.post("/api/endpoints")
+async def create_endpoint(
+    request: Request, name: str = Form(""), url: str = Form(""), token: str = Form(""),
+) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
+    if (invalid := _endpoint_form_error(name, url)) is not None:
+        return invalid
+    if not token.strip():
+        return JSONResponse({"error": "token is required"}, status_code=400)
+    conn = _conn()
+    try:
+        endpoint_id = db.create_endpoint(conn, name.strip(), url.strip(), token.strip())
+    finally:
+        conn.close()
+    if endpoint_id is None:
+        return _endpoint_name_taken(name.strip())
+    return JSONResponse({"ok": True, "id": endpoint_id})
+
+
+@app.post("/api/endpoints/{endpoint_id}")
+async def update_endpoint(
+    request: Request, endpoint_id: int, name: str = Form(""), url: str = Form(""),
+    token: str = Form(""),
+) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
+    if (invalid := _endpoint_form_error(name, url)) is not None:
+        return invalid
+    conn = _conn()
+    try:
+        if not db.get_endpoint(conn, endpoint_id):
+            return _no_such_endpoint()
+        # A blank token field (the browser always sends it) keeps the current one.
+        if not db.update_endpoint(conn, endpoint_id, name=name.strip(), url=url.strip(),
+                                  token=token.strip() or None):
+            return _endpoint_name_taken(name.strip())
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/endpoints/{endpoint_id}/toggle")
+async def toggle_endpoint(request: Request, endpoint_id: int) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
+    conn = _conn()
+    try:
+        row = db.get_endpoint(conn, endpoint_id)
+        if not row:
+            return _no_such_endpoint()
+        db.update_endpoint(conn, endpoint_id, enabled=not row["enabled"])
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True, "enabled": not row["enabled"]})
+
+
+@app.post("/api/endpoints/{endpoint_id}/delete")
+async def delete_endpoint(request: Request, endpoint_id: int) -> JSONResponse:
+    if (denied := _require_admin(request)) is not None:
+        return denied
+    conn = _conn()
+    try:
+        if not db.get_endpoint(conn, endpoint_id):
+            return _no_such_endpoint()
+        db.delete_endpoint(conn, endpoint_id)
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/endpoints/{endpoint_id}/test")
+async def test_endpoint(request: Request, endpoint_id: int) -> JSONResponse:
+    """POST `{"rows": []}` once with the endpoint's token and report what
+    came back. Changes nothing: no cursor, no last-sync status."""
+    if (denied := _require_admin(request)) is not None:
+        return denied
+    conn = _conn()
+    try:
+        row = db.get_endpoint(conn, endpoint_id, with_token=True)
+    finally:
+        conn.close()
+    if not row:
+        return _no_such_endpoint()
+    # Off the event loop: a slow receiver must not stall the dashboard.
+    result = await asyncio.to_thread(endpoint_sync.test_connection, row["url"], row["token"])
+    return JSONResponse(result)
+
+
+@app.post("/api/endpoints/{endpoint_id}/reset")
+async def reset_endpoint(request: Request, endpoint_id: int) -> JSONResponse:
+    """Clear the cursor: the next sync re-sends every open job."""
+    if (denied := _require_admin(request)) is not None:
+        return denied
+    conn = _conn()
+    try:
+        if not db.get_endpoint(conn, endpoint_id):
+            return _no_such_endpoint()
+        db.reset_endpoint_cursor(conn, endpoint_id)
+    finally:
+        conn.close()
+    return JSONResponse({"ok": True})
 
 
 @app.get("/api/runs/{run_id}/events")

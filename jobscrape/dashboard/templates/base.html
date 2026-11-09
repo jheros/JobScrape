@@ -31,6 +31,7 @@
       <div class="nav-group">
         <span class="nav-label">Admin</span>
         <a href="/schedule" class="{% if request.url.path == '/schedule' %}on{% endif %}">{{ icons.icon('clock') }} Schedule</a>
+        <a href="/endpoints" class="{% if request.url.path == '/endpoints' %}on{% endif %}">{{ icons.icon('layers') }} Endpoints</a>
         <a href="/settings" class="{% if request.url.path == '/settings' %}on{% endif %}">{{ icons.icon('gear') }} Settings</a>
       </div>
     </nav>

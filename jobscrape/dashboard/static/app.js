@@ -610,4 +610,101 @@
       });
     });
   }
+  // --- endpoints page -------------------------------------------------------
+  var endpointForm = document.getElementById("endpoint-form");
+  if (endpointForm) {
+    var epSubmit = document.getElementById("endpoint-form-submit");
+    var epCancel = document.getElementById("endpoint-form-cancel");
+    var epTitle = document.getElementById("endpoint-form-title");
+    var epTokenHint = document.getElementById("endpoint-token-hint");
+    var epEditId = endpointForm.elements["edit_id"];
+    var epTokenDefaultHint = epTokenHint.innerHTML;
+
+    function resetEndpointForm() {
+      endpointForm.reset();
+      epEditId.value = "";
+      epSubmit.textContent = "Add endpoint";
+      epTitle.textContent = "Add an endpoint";
+      epTokenHint.innerHTML = epTokenDefaultHint;
+      epCancel.classList.add("hidden");
+    }
+    epCancel.addEventListener("click", resetEndpointForm);
+
+    document.querySelectorAll("[data-endpoint-edit]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        epEditId.value = btn.getAttribute("data-endpoint-edit");
+        endpointForm.elements["name"].value = btn.getAttribute("data-name");
+        endpointForm.elements["url"].value = btn.getAttribute("data-url");
+        endpointForm.elements["token"].value = "";
+        epTokenHint.textContent = "Token set — leave blank to keep it, or type a new one to replace it";
+        epSubmit.textContent = "Save endpoint";
+        epTitle.textContent = "Edit endpoint";
+        epCancel.classList.remove("hidden");
+        window.scrollTo(0, 0);
+      });
+    });
+
+    endpointForm.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var editId = epEditId.value;
+      var body = new URLSearchParams(new FormData(endpointForm)).toString();
+      post(editId ? "/api/endpoints/" + editId : "/api/endpoints", body).then(function (res) {
+        if (!res.ok) { alert(res.data.error || "Could not save"); return; }
+        window.location.reload();
+      });
+    });
+
+    document.querySelectorAll("[data-endpoint-toggle]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        post("/api/endpoints/" + btn.getAttribute("data-endpoint-toggle") + "/toggle")
+          .then(function () { window.location.reload(); });
+      });
+    });
+
+    document.querySelectorAll("[data-endpoint-test]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var label = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = "Testing…";
+        post("/api/endpoints/" + btn.getAttribute("data-endpoint-test") + "/test").then(function (res) {
+          btn.disabled = false;
+          btn.innerHTML = label;
+          if (!res.ok) { alert(res.data.error || "Could not test"); return; }
+          alert((res.data.ok ? "Connected: " : "Failed: ") + res.data.message);
+        });
+      });
+    });
+
+    function sendNow(btn) {
+      btn.disabled = true;
+      return post("/api/runs/endpoint-sync/start").then(function (res) {
+        if (!res.ok) { alert(res.data.error || "Could not start"); btn.disabled = false; return; }
+        window.location.href = "/runs";
+      });
+    }
+
+    document.querySelectorAll("[data-endpoint-send]").forEach(function (btn) {
+      btn.addEventListener("click", function () { sendNow(btn); });
+    });
+
+    document.querySelectorAll("[data-endpoint-resend]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var name = btn.getAttribute("data-name");
+        if (!confirm("Resend everything to " + name + "?\n\nThis re-sends ALL open jobs to " +
+                     name + ", starting now. It can be a large amount of traffic.")) return;
+        post("/api/endpoints/" + btn.getAttribute("data-endpoint-resend") + "/reset").then(function (res) {
+          if (!res.ok) { alert(res.data.error || "Could not reset"); return; }
+          sendNow(btn);
+        });
+      });
+    });
+
+    document.querySelectorAll("[data-endpoint-delete]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        if (!confirm("Delete the endpoint " + btn.getAttribute("data-name") + "? It will stop receiving jobs.")) return;
+        post("/api/endpoints/" + btn.getAttribute("data-endpoint-delete") + "/delete")
+          .then(function () { window.location.reload(); });
+      });
+    });
+  }
 })();

@@ -350,7 +350,7 @@ def test_connection(url: str, token: str, client: httpx.Client | None = None) ->
     dashboard's "Test connection" button."""
     own_client = client is None
     if own_client:
-        client = httpx.Client(timeout=_TEST_TIMEOUT_SECONDS, follow_redirects=False)
+        client = _make_client()
     try:
         response = _post(client, url, token, b'{"rows": []}', lambda s: None,
                          timeout=_TEST_TIMEOUT_SECONDS, retry=False)

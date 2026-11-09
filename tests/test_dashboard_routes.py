@@ -659,6 +659,10 @@ def test_the_whole_mutating_surface_refuses_a_non_admin_visitor(
     })
     assert create.status_code == 200, create.text
     schedule_id = create.json()["id"]
+    endpoint_payload = {"name": "gate-endpoint", "url": "https://r.test/in", "token": "t"}
+    endpoint = client.post("/api/endpoints", data=endpoint_payload)
+    assert endpoint.status_code == 200, endpoint.text
+    endpoint_id = endpoint.json()["id"]
 
     client.cookies.delete(auth.COOKIE_NAME)  # now a plain, non-admin visitor
 
@@ -675,6 +679,13 @@ def test_the_whole_mutating_surface_refuses_a_non_admin_visitor(
         "run a schedule now": client.post(f"/api/schedule/{schedule_id}/run-now"),
         "delete a schedule": client.post(f"/api/schedule/{schedule_id}/delete"),
         "restart the dashboard": client.post("/api/settings/restart"),
+        "create an endpoint": client.post("/api/endpoints", data=endpoint_payload),
+        "update an endpoint": client.post(f"/api/endpoints/{endpoint_id}", data=endpoint_payload),
+        "toggle an endpoint": client.post(f"/api/endpoints/{endpoint_id}/toggle"),
+        "delete an endpoint": client.post(f"/api/endpoints/{endpoint_id}/delete"),
+        "test an endpoint": client.post(f"/api/endpoints/{endpoint_id}/test"),
+        "reset an endpoint": client.post(f"/api/endpoints/{endpoint_id}/reset"),
+        "send to endpoints now": client.post("/api/runs/endpoint-sync/start"),
     }
     for action, response in denied.items():
         assert response.status_code == 403, f"{action} should have been denied: {response.text}"
