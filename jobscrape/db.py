@@ -219,6 +219,27 @@ CREATE TABLE IF NOT EXISTS schedules (
     last_fired_at    TIMESTAMPTZ
 );
 
+-- External HTTP endpoints that receive collected jobs (endpoint_sync.py),
+-- managed from the dashboard's Endpoints page. Each endpoint keeps its OWN
+-- cursor -- (changed_at, source, source_job_id) of the last row it accepted --
+-- so one slow or failing receiver never holds the others back. `token` is
+-- write-only: the dashboard never renders or returns it.
+CREATE TABLE IF NOT EXISTS sync_endpoints (
+    id                   BIGSERIAL PRIMARY KEY,
+    name                 TEXT NOT NULL UNIQUE,
+    url                  TEXT NOT NULL,
+    token                TEXT NOT NULL,
+    enabled              BOOLEAN NOT NULL DEFAULT TRUE,
+    cursor_changed_at    TEXT,
+    cursor_source        TEXT,
+    cursor_source_job_id TEXT,
+    last_sync_at         TIMESTAMPTZ,
+    last_sync_status     TEXT,
+    last_sync_message    TEXT NOT NULL DEFAULT '',
+    created_at           TIMESTAMPTZ NOT NULL,
+    updated_at           TIMESTAMPTZ NOT NULL
+);
+
 -- Postings whose detail we already downloaded and then *rejected* (wrong role,
 -- wrong region, outside the date window) or turned away before spending a
 -- detail request (the cheap prefilter). Without this they are re-downloaded
@@ -545,9 +566,12 @@ def _schema_is_current(conn: Connection) -> bool:
     row = conn.execute(
         "SELECT to_regclass('jobs') AS jobs, to_regclass('companies') AS companies, "
         "to_regclass('schedules') AS schedules, "
+        "to_regclass('sync_endpoints') AS sync_endpoints, "
         "(SELECT count(*) FROM pg_indexes WHERE schemaname = current_schema()) AS n_idx"
     ).fetchone()
-    if not row or not row["jobs"] or not row["companies"] or not row["schedules"]:
+    if not row or not all(
+        row[t] for t in ("jobs", "companies", "schedules", "sync_endpoints")
+    ):
         return False
     # Column drift matters as much as a missing table: a release that adds one
     # must still run its DDL. Compare what each table has against what SCHEMA
@@ -1347,6 +1371,133 @@ def record_schedule_fired(conn: Connection, schedule_id: int, run_id: int) -> No
     conn.execute(
         "UPDATE schedules SET last_run_id = ?, last_fired_at = ? WHERE id = ?",
         (run_id, now_iso(), schedule_id),
+    )
+    conn.commit()
+
+
+# --- sync endpoints ---------------------------------------------------------
+#
+# Every read the dashboard uses leaves `token` out and reports `has_token`
+# instead; only `get_endpoint(..., with_token=True)` and `enabled_endpoints`
+# (the sender's own reads) include it.
+
+_ENDPOINT_PUBLIC_COLUMNS = (
+    "id, name, url, enabled, cursor_changed_at, cursor_source, "
+    "cursor_source_job_id, last_sync_at, last_sync_status, last_sync_message, "
+    "created_at, updated_at, (token <> '') AS has_token"
+)
+
+
+def create_endpoint(
+    conn: Connection, name: str, url: str, token: str, enabled: bool = True,
+) -> int | None:
+    """Insert one endpoint; None when the name is already taken.
+
+    `ON CONFLICT DO NOTHING` rather than catching `IntegrityError`: a failed
+    statement aborts the whole transaction it ran in, which would take the
+    caller's other work down with it.
+    """
+    now = now_iso()
+    row = conn.execute(
+        "INSERT INTO sync_endpoints (name, url, token, enabled, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING RETURNING id",
+        (name, url, token, enabled, now, now),
+    ).fetchone()
+    conn.commit()
+    return int(row["id"]) if row else None
+
+
+def list_endpoints(conn: Connection) -> list[dict[str, Any]]:
+    return conn.execute(
+        f"SELECT {_ENDPOINT_PUBLIC_COLUMNS} FROM sync_endpoints ORDER BY id"
+    ).fetchall()
+
+
+def get_endpoint(
+    conn: Connection, endpoint_id: int, with_token: bool = False,
+) -> dict[str, Any] | None:
+    columns = "*" if with_token else _ENDPOINT_PUBLIC_COLUMNS
+    return conn.execute(
+        f"SELECT {columns} FROM sync_endpoints WHERE id = ?", (endpoint_id,)
+    ).fetchone()
+
+
+def enabled_endpoints(conn: Connection, name: str | None = None) -> list[dict[str, Any]]:
+    """The sender's view: enabled rows only, token included."""
+    if name is None:
+        return conn.execute(
+            "SELECT * FROM sync_endpoints WHERE enabled ORDER BY id"
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM sync_endpoints WHERE enabled AND name = ? ORDER BY id", (name,)
+    ).fetchall()
+
+
+def any_endpoint_enabled(conn: Connection) -> bool:
+    row = conn.execute(
+        "SELECT EXISTS (SELECT 1 FROM sync_endpoints WHERE enabled) AS any"
+    ).fetchone()
+    return bool(row and row["any"])
+
+
+def update_endpoint(conn: Connection, endpoint_id: int, **fields: Any) -> bool:
+    """Patch `name`/`url`/`token`/`enabled`. A `token` of None (or blank) keeps
+    the current one. False when `name` belongs to another endpoint."""
+    updates = {
+        k: v for k, v in fields.items()
+        if k in ("name", "url", "token", "enabled") and not (k == "token" and not v)
+    }
+    if "name" in updates:
+        taken = conn.execute(
+            "SELECT 1 FROM sync_endpoints WHERE name = ? AND id <> ?",
+            (updates["name"], endpoint_id),
+        ).fetchone()
+        if taken:
+            return False
+    if not updates:
+        return True
+    set_clause = ", ".join(f"{col} = ?" for col in updates)
+    conn.execute(
+        f"UPDATE sync_endpoints SET {set_clause}, updated_at = ? WHERE id = ?",
+        (*updates.values(), now_iso(), endpoint_id),
+    )
+    conn.commit()
+    return True
+
+
+def delete_endpoint(conn: Connection, endpoint_id: int) -> None:
+    conn.execute("DELETE FROM sync_endpoints WHERE id = ?", (endpoint_id,))
+    conn.commit()
+
+
+def save_endpoint_cursor(
+    conn: Connection, endpoint_id: int, changed_at: str, source: str, source_job_id: str,
+) -> None:
+    conn.execute(
+        "UPDATE sync_endpoints SET cursor_changed_at = ?, cursor_source = ?, "
+        "cursor_source_job_id = ? WHERE id = ?",
+        (changed_at, source, source_job_id, endpoint_id),
+    )
+    conn.commit()
+
+
+def reset_endpoint_cursor(conn: Connection, endpoint_id: int) -> None:
+    """Back to a first sync: the next pass re-sends every open job."""
+    conn.execute(
+        "UPDATE sync_endpoints SET cursor_changed_at = NULL, cursor_source = NULL, "
+        "cursor_source_job_id = NULL, updated_at = ? WHERE id = ?",
+        (now_iso(), endpoint_id),
+    )
+    conn.commit()
+
+
+def record_endpoint_sync(
+    conn: Connection, endpoint_id: int, status: str, message: str,
+) -> None:
+    conn.execute(
+        "UPDATE sync_endpoints SET last_sync_at = ?, last_sync_status = ?, "
+        "last_sync_message = ? WHERE id = ?",
+        (now_iso(), status, message, endpoint_id),
     )
     conn.commit()
 
